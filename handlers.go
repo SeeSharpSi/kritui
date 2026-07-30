@@ -1,19 +1,47 @@
 package main
 
 import (
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
+	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/templ"
 )
 
-func homeHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := templates.Home().Render(r.Context(), w); err != nil {
-		http.Error(w, "failed to render page", http.StatusInternalServerError)
+func homeHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("chat") == "" {
+			chats, err := kritui_db.GetChats(r.Context(), database)
+			if err != nil {
+				log.Printf("get chats: %v", err)
+				http.Error(w, "failed to get chats", http.StatusInternalServerError)
+				return
+			}
+
+			nextChatID := int64(1)
+			for _, chat := range chats {
+				if chat.ID >= nextChatID {
+					nextChatID = chat.ID + 1
+				}
+			}
+
+			query := r.URL.Query()
+			query.Set("chat", strconv.FormatInt(nextChatID, 10))
+			target := *r.URL
+			target.RawQuery = query.Encode()
+			http.Redirect(w, r, target.String(), http.StatusSeeOther)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := templates.Home().Render(r.Context(), w); err != nil {
+			http.Error(w, "failed to render page", http.StatusInternalServerError)
+		}
 	}
 }
 
