@@ -21,6 +21,7 @@ const maxErrorBodySize = 1 << 20
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`
+	Model      string     `json:"-"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
@@ -192,10 +193,13 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 		return Completion{}, errors.New("llm: response contained no choices")
 	}
 
+	message := response.Choices[0].Message
+	message.Model = response.Model
+
 	return Completion{
 		ID:           response.ID,
 		Model:        response.Model,
-		Message:      response.Choices[0].Message,
+		Message:      message,
 		FinishReason: response.Choices[0].FinishReason,
 		Usage:        response.Usage,
 	}, nil

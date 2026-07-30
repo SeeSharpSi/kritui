@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS messages (
     position INTEGER NOT NULL CHECK (position >= 0),
     role TEXT NOT NULL CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
     content TEXT NOT NULL DEFAULT '',
+    model TEXT,
     tool_calls TEXT,
     tool_call_id TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

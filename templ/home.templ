@@ -6,11 +6,7 @@ templ Home(chatID string, messages []llm.Message) {
 	@Layout("Kritui") {
 		<main>
 			<section id="messages" class="chat" aria-live="polite">
-				if len(messages) == 0 {
-					@Message("assistant", "What would you like to discuss?")
-				} else {
-					@Messages(messages...)
-				}
+				@Messages(messages...)
 			</section>
 			<form hx-post={ "/messages?chat=" + chatID } hx-target="#messages" hx-swap="beforeend" hx-on::after-request="if (event.detail.successful) this.reset()">
 				<label for="message" class="visually-hidden">Message</label>

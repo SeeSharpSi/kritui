@@ -52,11 +52,12 @@ func TestHomeHandlerUsesFirstChatIDForEmptyDatabase(t *testing.T) {
 
 func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
 	if _, err := database.Exec(`
 		INSERT INTO chats (id) VALUES (8);
-		INSERT INTO messages (chat_id, position, role, content) VALUES
-			(8, 0, 'user', 'Earlier question'),
-			(8, 1, 'assistant', 'Earlier answer');
+		INSERT INTO messages (chat_id, position, role, content, model) VALUES
+			(8, 0, 'user', 'Earlier question', NULL),
+			(8, 1, 'assistant', 'Earlier answer', 'stored-model');
 	`); err != nil {
 		t.Fatalf("insert chat history: %v", err)
 	}
@@ -79,9 +80,18 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	if strings.Contains(response.Body.String(), "What would you like to discuss?") {
 		t.Error("response contains welcome prompt for stored chat")
 	}
+	if !strings.Contains(response.Body.String(), "<strong>stored-model</strong>") {
+		t.Error("response does not label assistant message with model")
+	}
+	if strings.Contains(response.Body.String(), "<strong>env-model</strong>") {
+		t.Error("response labels assistant message with environment model")
+	}
+	if strings.Contains(response.Body.String(), "<strong>assistant</strong>") {
+		t.Error("response labels assistant message with role")
+	}
 }
 
-func TestHomeHandlerRendersWelcomeForEmptyChat(t *testing.T) {
+func TestHomeHandlerRendersEmptyChatWithoutWelcome(t *testing.T) {
 	database := openTestDatabase(t)
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
@@ -91,8 +101,8 @@ func TestHomeHandlerRendersWelcomeForEmptyChat(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if !strings.Contains(response.Body.String(), "What would you like to discuss?") {
-		t.Error("response does not contain welcome prompt")
+	if strings.Contains(response.Body.String(), "What would you like to discuss?") {
+		t.Error("response contains welcome prompt")
 	}
 }
 
@@ -110,6 +120,7 @@ func TestMessageHandlerIncludesEarlierMessages(t *testing.T) {
 		requests <- request.Messages
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
+			"model":"response-model",
 			"choices":[{"message":{"role":"assistant","content":"Remembered."},"finish_reason":"stop"}]
 		}`))
 	}))
@@ -129,6 +140,15 @@ func TestMessageHandlerIncludesEarlierMessages(t *testing.T) {
 
 		if response.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "<strong>response-model</strong>") {
+			t.Error("response does not label assistant message with model")
+		}
+		if strings.Contains(response.Body.String(), "<strong>test-model</strong>") {
+			t.Error("response labels assistant message with environment model")
+		}
+		if strings.Contains(response.Body.String(), "<strong>assistant</strong>") {
+			t.Error("response labels assistant message with role")
 		}
 	}
 

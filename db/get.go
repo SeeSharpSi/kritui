@@ -47,7 +47,7 @@ func GetChats(ctx context.Context, db *sql.DB) ([]Chat, error) {
 // GetMessages returns a chat's messages in conversation order.
 func GetMessages(ctx context.Context, db *sql.DB, chatID int64) ([]llm.Message, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT role, content, tool_calls, tool_call_id
+		SELECT role, content, model, tool_calls, tool_call_id
 		FROM messages
 		WHERE chat_id = ?
 		ORDER BY position
@@ -60,12 +60,16 @@ func GetMessages(ctx context.Context, db *sql.DB, chatID int64) ([]llm.Message, 
 	var messages []llm.Message
 	for rows.Next() {
 		var message llm.Message
+		var model sql.NullString
 		var toolCalls sql.NullString
 		var toolCallID sql.NullString
-		if err := rows.Scan(&message.Role, &message.Content, &toolCalls, &toolCallID); err != nil {
+		if err := rows.Scan(&message.Role, &message.Content, &model, &toolCalls, &toolCallID); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 
+		if model.Valid {
+			message.Model = model.String
+		}
 		if toolCalls.Valid {
 			if err := json.Unmarshal([]byte(toolCalls.String), &message.ToolCalls); err != nil {
 				return nil, fmt.Errorf("decode message tool calls: %w", err)

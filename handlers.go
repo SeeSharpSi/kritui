@@ -113,7 +113,6 @@ func messageHandler(database *sql.DB) http.HandlerFunc {
 			http.Error(w, "failed to store message", http.StatusInternalServerError)
 			return
 		}
-
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := templates.Messages(userMessage, completion.Message).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render message", http.StatusInternalServerError)
