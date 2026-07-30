@@ -39,7 +39,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", homeHandler(database))
-	mux.HandleFunc("POST /messages", messageHandler)
+	mux.HandleFunc("POST /messages", messageHandler(database))
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
 
 	log.Println("listening on http://localhost:8080")

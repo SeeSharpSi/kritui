@@ -1,6 +1,8 @@
 package templates
 
-templ Home() {
+import "seesharpsi/kritui/llm"
+
+templ Home(chatID string, messages []llm.Message) {
 	@Layout("Kritui") {
 		<main>
 			<header>
@@ -8,9 +10,13 @@ templ Home() {
 				<p>Small hypermedia chat interface.</p>
 			</header>
 			<section id="messages" class="chat" aria-live="polite">
-				@Message("assistant", "What would you like to discuss?")
+				if len(messages) == 0 {
+					@Message("assistant", "What would you like to discuss?")
+				} else {
+					@Messages(messages...)
+				}
 			</section>
-			<form hx-post="/messages" hx-target="#messages" hx-swap="beforeend" hx-on::after-request="if (event.detail.successful) this.reset()">
+			<form hx-post={ "/messages?chat=" + chatID } hx-target="#messages" hx-swap="beforeend" hx-on::after-request="if (event.detail.successful) this.reset()">
 				<label for="message" class="visually-hidden">Message</label>
 				<input id="message" name="message" placeholder="Write a message..." required autofocus/>
 				<button type="submit">Send</button>

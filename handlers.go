@@ -15,7 +15,8 @@ import (
 
 func homeHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("chat") == "" {
+		chat := r.URL.Query().Get("chat")
+		if chat == "" {
 			chats, err := kritui_db.GetChats(r.Context(), database)
 			if err != nil {
 				log.Printf("get chats: %v", err)
@@ -38,37 +39,84 @@ func homeHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		chatID, err := strconv.ParseInt(chat, 10, 64)
+		if err != nil || chatID <= 0 {
+			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			return
+		}
+		messages, err := kritui_db.GetMessages(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("get messages: %v", err)
+			http.Error(w, "failed to get messages", http.StatusInternalServerError)
+			return
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.Home().Render(r.Context(), w); err != nil {
+		if err := templates.Home(chat, messages).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render page", http.StatusInternalServerError)
 		}
 	}
 }
 
-func messageHandler(w http.ResponseWriter, r *http.Request) {
-	message := strings.TrimSpace(r.FormValue("message"))
-	if message == "" {
-		http.Error(w, "message is required", http.StatusBadRequest)
-		return
-	}
+func messageHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		message := strings.TrimSpace(r.FormValue("message"))
+		if message == "" {
+			http.Error(w, "message is required", http.StatusBadRequest)
+			return
+		}
 
-	client, err := llm.New(os.Getenv("LLM_KEY"), os.Getenv("LLM_MODEL"), os.Getenv("LLM_ENDPOINT"))
-	if err != nil {
-		log.Printf("configure llm: %v", err)
-		http.Error(w, "failed to configure llm", http.StatusInternalServerError)
-		return
-	}
+		chatID, err := strconv.ParseInt(r.URL.Query().Get("chat"), 10, 64)
+		if err != nil || chatID <= 0 {
+			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			return
+		}
+		if _, err := database.ExecContext(r.Context(), `
+			INSERT INTO chats (id) VALUES (?)
+			ON CONFLICT (id) DO NOTHING
+		`, chatID); err != nil {
+			log.Printf("create chat: %v", err)
+			http.Error(w, "failed to create chat", http.StatusInternalServerError)
+			return
+		}
 
-	userMessage := llm.Message{Role: "user", Content: message}
-	completion, err := client.Complete(r.Context(), []llm.Message{userMessage})
-	if err != nil {
-		log.Printf("complete message: %v", err)
-		http.Error(w, "failed to complete message", http.StatusBadGateway)
-		return
-	}
+		messages, err := kritui_db.GetMessages(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("get messages: %v", err)
+			http.Error(w, "failed to get messages", http.StatusInternalServerError)
+			return
+		}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := templates.Messages(userMessage, completion.Message).Render(r.Context(), w); err != nil {
-		http.Error(w, "failed to render message", http.StatusInternalServerError)
+		client, err := llm.New(os.Getenv("LLM_KEY"), os.Getenv("LLM_MODEL"), os.Getenv("LLM_ENDPOINT"))
+		if err != nil {
+			log.Printf("configure llm: %v", err)
+			http.Error(w, "failed to configure llm", http.StatusInternalServerError)
+			return
+		}
+
+		userMessage := llm.Message{Role: "user", Content: message}
+		position := len(messages)
+		messages = append(messages, userMessage)
+		completion, err := client.Complete(r.Context(), messages)
+		if err != nil {
+			log.Printf("complete message: %v", err)
+			http.Error(w, "failed to complete message", http.StatusBadGateway)
+			return
+		}
+		if _, err := kritui_db.InsertMessage(r.Context(), database, chatID, position, userMessage); err != nil {
+			log.Printf("store user message: %v", err)
+			http.Error(w, "failed to store message", http.StatusInternalServerError)
+			return
+		}
+		if _, err := kritui_db.InsertMessage(r.Context(), database, chatID, position+1, completion.Message); err != nil {
+			log.Printf("store assistant message: %v", err)
+			http.Error(w, "failed to store message", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := templates.Messages(userMessage, completion.Message).Render(r.Context(), w); err != nil {
+			http.Error(w, "failed to render message", http.StatusInternalServerError)
+		}
 	}
 }
