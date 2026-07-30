@@ -1,0 +1,22 @@
+:root {
+  --bg: #0e0e12;
+  --bg-elevated: #1a1a22;
+  --surface: #24242e;
+  --fg: #e8e4e0;
+  --fg-muted: #8a8680;
+  --border: #2e2e38;
+  --primary: #d4788a;
+  --primary-dim: #a85a6a;
+  --primary-bright: #e8a8b0;
+  --secondary: #f5e6c8;
+  --secondary-dim: #c4b090;
+  --accent: #8b2e3a;
+  --highlight: #fff8f0;
+  --star: #c8d0e0;
+  --reflection: #3a2830;
+  --trunk: #6b6560;
+  --success: #7a9e7e;
+  --warning: #e8c080;
+  --error: #8b2e3a;
+  --info: #a8b4c8;
+}
