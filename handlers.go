@@ -1,9 +1,12 @@
 package main
 
 import (
+	"log"
 	"net/http"
+	"os"
 	"strings"
 
+	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/templ"
 )
 
@@ -21,8 +24,23 @@ func messageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	client, err := llm.New(os.Getenv("LLM_KEY"), os.Getenv("LLM_MODEL"), os.Getenv("LLM_ENDPOINT"))
+	if err != nil {
+		log.Printf("configure llm: %v", err)
+		http.Error(w, "failed to configure llm", http.StatusInternalServerError)
+		return
+	}
+
+	userMessage := llm.Message{Role: "user", Content: message}
+	completion, err := client.Complete(r.Context(), []llm.Message{userMessage})
+	if err != nil {
+		log.Printf("complete message: %v", err)
+		http.Error(w, "failed to complete message", http.StatusBadGateway)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := templates.Message("user", message).Render(r.Context(), w); err != nil {
+	if err := templates.Messages(userMessage, completion.Message).Render(r.Context(), w); err != nil {
 		http.Error(w, "failed to render message", http.StatusInternalServerError)
 	}
 }

@@ -1,8 +1,16 @@
 package templates
 
+import "seesharpsi/kritui/llm"
+
 templ Message(role string, content string) {
-	<article class={ "message", templ.KV("user", role == "user") }>
-		<strong>{ role }</strong>
-		<div>{ content }</div>
-	</article>
+	@Messages(llm.Message{Role: role, Content: content})
+}
+
+templ Messages(messages ...llm.Message) {
+	for _, message := range messages {
+		<article class={ "message", templ.KV("user", message.Role == "user") }>
+			<strong>{ message.Role }</strong>
+			<div>{ message.Content }</div>
+		</article>
+	}
 }
