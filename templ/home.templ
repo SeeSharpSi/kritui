@@ -5,10 +5,6 @@ import "seesharpsi/kritui/llm"
 templ Home(chatID string, messages []llm.Message) {
 	@Layout("Kritui") {
 		<main>
-			<header>
-				<h1>Kritui</h1>
-				<p>Small hypermedia chat interface.</p>
-			</header>
 			<section id="messages" class="chat" aria-live="polite">
 				if len(messages) == 0 {
 					@Message("assistant", "What would you like to discuss?")
