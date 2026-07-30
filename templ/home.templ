@@ -5,8 +5,20 @@ import "seesharpsi/kritui/llm"
 templ Home(chatID string, messages []llm.Message) {
 	@Layout("Kritui") {
 		<main>
-			<section id="messages" class="chat" aria-live="polite">
-				@Messages(messages...)
+			<section class="chat">
+				<div id="messages" class="message-list" aria-live="polite">
+					@Messages(messages...)
+				</div>
+				<details class="chat-options">
+					<summary>
+						<span class="visually-hidden">Toggle chat options</span>
+					</summary>
+					<div class="chat-options-list">
+						<button type="button">Model <strong>deepseek-v4-flash</strong></button>
+						<button type="button">Mode <strong>Chat</strong></button>
+						<button type="button">Tools <strong>Off</strong></button>
+					</div>
+				</details>
 			</section>
 			<form hx-post={ "/messages?chat=" + chatID } hx-target="#messages" hx-swap="beforeend" hx-on::after-request="if (event.detail.successful) this.reset()">
 				<label for="message" class="visually-hidden">Message</label>
