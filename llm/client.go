@@ -11,14 +11,31 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"seesharpsi/kritui/tools"
 )
 
 const maxErrorBodySize = 1 << 20
 
 // Message is one message in a chat completion conversation.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// ToolCall is a function invocation requested by an assistant message.
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function FunctionCall `json:"function"`
+}
+
+// FunctionCall identifies a tool and contains its JSON-encoded arguments.
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // Usage reports token counts returned by the endpoint.
@@ -90,16 +107,30 @@ func New(apiKey, model, endpoint string) (*Client, error) {
 
 // Complete requests a non-streaming chat completion for messages.
 func (c *Client) Complete(ctx context.Context, messages []Message) (Completion, error) {
+	return c.complete(ctx, messages, nil)
+}
+
+func (c *Client) complete(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
 	if len(messages) == 0 {
 		return Completion{}, errors.New("llm: at least one message is required")
 	}
 
+	requestTools := make([]completionTool, len(definitions))
+	for index, definition := range definitions {
+		requestTools[index] = completionTool{
+			Type:     "function",
+			Function: definition,
+		}
+	}
+
 	payload, err := json.Marshal(struct {
-		Model    string    `json:"model"`
-		Messages []Message `json:"messages"`
+		Model    string           `json:"model"`
+		Messages []Message        `json:"messages"`
+		Tools    []completionTool `json:"tools,omitempty"`
 	}{
 		Model:    c.model,
 		Messages: messages,
+		Tools:    requestTools,
 	})
 	if err != nil {
 		return Completion{}, fmt.Errorf("llm: encode request: %w", err)
@@ -168,4 +199,9 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (Completion, 
 		FinishReason: response.Choices[0].FinishReason,
 		Usage:        response.Usage,
 	}, nil
+}
+
+type completionTool struct {
+	Type     string           `json:"type"`
+	Function tools.Definition `json:"function"`
 }
