@@ -1,0 +1,8 @@
+package templates
+
+templ Message(role string, content string) {
+	<article class={ "message", templ.KV("user", role == "user") }>
+		<strong>{ role }</strong>
+		<div>{ content }</div>
+	</article>
+}
