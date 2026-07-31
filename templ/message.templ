@@ -20,7 +20,34 @@ templ Messages(messages ...llm.Message) {
 	}
 }
 
-templ PendingSubmission(chatID string, message llm.Message, model string, tools []string) {
+templ ToolCalls(calls []llm.ToolCall, runningID string) {
+	for _, call := range calls {
+		<div class={ "tool-call", templ.KV("loading", call.ID == runningID) } role="listitem">
+			if call.ID == runningID {
+				<span class="braille-spinner" aria-hidden="true"></span>
+				<span class="visually-hidden">Running tool: </span>
+			} else {
+				<span class="tool-call-complete" aria-hidden="true"></span>
+				<span class="visually-hidden">Completed tool: </span>
+			}
+			<strong>{ call.Function.Name }</strong>
+			if call.Function.Arguments != "" && call.Function.Arguments != "{}" {
+				<code>{ call.Function.Arguments }</code>
+			}
+		</div>
+	}
+}
+
+templ CompletedMessage(calls []llm.ToolCall, message llm.Message) {
+	if len(calls) > 0 {
+		<div class="tool-call-list completed-tool-calls" role="list">
+			@ToolCalls(calls, "")
+		</div>
+	}
+	@Messages(message)
+}
+
+templ PendingSubmission(chatID string, requestID string, message llm.Message, model string, tools []string) {
 	@Messages(message)
 	<article
 		class="message loading-message"
@@ -32,9 +59,18 @@ templ PendingSubmission(chatID string, message llm.Message, model string, tools 
 		role="status"
 		aria-label="Waiting for model response"
 	>
-		<strong><span class="braille-spinner" aria-hidden="true"></span>{ model }</strong>
+		<div
+			class="tool-call-list"
+			role="list"
+			hx-get={ "/messages/tools?request=" + requestID }
+			hx-trigger="every 200ms"
+			hx-target="this"
+			hx-swap="innerHTML"
+		></div>
+		<strong class="thinking-indicator"><span class="braille-spinner" aria-hidden="true"></span>{ model }</strong>
 		<input type="hidden" name="message" value={ message.Content }/>
 		<input type="hidden" name="model" value={ model }/>
+		<input type="hidden" name="request" value={ requestID }/>
 		for _, tool := range tools {
 			<input type="hidden" name="tool" value={ tool }/>
 		}

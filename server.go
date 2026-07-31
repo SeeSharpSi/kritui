@@ -55,12 +55,14 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	toolCalls := newToolCallStore()
 	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry))
 	mux.HandleFunc("GET /history", historyHandler(database))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
 	mux.HandleFunc("GET /chat", chatHandler(database))
-	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry))
-	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCallLogger))
+	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, toolCalls))
+	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
+	mux.HandleFunc("GET /messages/tools", messageToolStatusHandler(toolCalls))
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
 
 	log.Println("listening on http://localhost:8080")

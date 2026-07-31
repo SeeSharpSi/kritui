@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/tools"
@@ -229,7 +231,8 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 
-	messageHandler(database, newTestToolRegistry(t))(response, request)
+	toolCalls := newToolCallStore()
+	messageHandler(database, newTestToolRegistry(t), toolCalls)(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -239,11 +242,53 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		"selected-model",
 		`hx-post="/messages/complete?chat=1"`,
 		`hx-trigger="load"`,
+		`hx-get="/messages/tools?request=`,
 		`hx-swap-oob="outerHTML"`,
+		`name="request" value="`,
 		`name="tool" value="webfetch"`,
 	} {
 		if !strings.Contains(response.Body.String(), content) {
 			t.Errorf("response does not contain %q", content)
+		}
+	}
+}
+
+func TestMessageToolStatusHandlerRendersToolCallState(t *testing.T) {
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls)
+	tracker, ok := toolCalls.claim(requestID)
+	if !ok {
+		t.Fatal("claim tool-call tracker failed")
+	}
+	call := llm.ToolCall{
+		ID:   "call-1",
+		Type: "function",
+		Function: llm.FunctionCall{
+			Name:      "websearch",
+			Arguments: `{"query":"braille spinner"}`,
+		},
+	}
+	tracker.observe(call, true)
+
+	request := httptest.NewRequest(http.MethodGet, "/messages/tools?request="+requestID, nil)
+	response := httptest.NewRecorder()
+	messageToolStatusHandler(toolCalls)(response, request)
+
+	for _, content := range []string{"websearch", "braille spinner", `class="braille-spinner"`, "Running tool:"} {
+		if !strings.Contains(response.Body.String(), content) {
+			t.Errorf("running response does not contain %q: %s", content, response.Body.String())
+		}
+	}
+
+	tracker.observe(call, false)
+	response = httptest.NewRecorder()
+	messageToolStatusHandler(toolCalls)(response, request)
+	if strings.Contains(response.Body.String(), `class="braille-spinner"`) {
+		t.Errorf("completed response contains spinner: %s", response.Body.String())
+	}
+	for _, content := range []string{`class="tool-call-complete"`, "Completed tool:"} {
+		if !strings.Contains(response.Body.String(), content) {
+			t.Errorf("completed response does not contain %q: %s", content, response.Body.String())
 		}
 	}
 }
@@ -284,9 +329,15 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	t.Setenv("LLM_MODEL", "test-model")
 	t.Setenv("LLM_ENDPOINT", server.URL)
 
-	handler := messageCompletionHandler(database, newTestToolRegistry(t), nil)
+	toolCalls := newToolCallStore()
+	handler := messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)
 	for _, message := range []string{"My name is Cassian.", "What is my name?"} {
-		form := url.Values{"message": {message}, "model": {"selected-model"}, "tool": {"webfetch"}}
+		form := url.Values{
+			"message": {message},
+			"model":   {"selected-model"},
+			"request": {newToolCallRequest(t, toolCalls)},
+			"tool":    {"webfetch"},
+		}
 		request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		response := httptest.NewRecorder()
@@ -345,12 +396,17 @@ func TestMessageCompletionHandlerStoresRawMarkdown(t *testing.T) {
 	t.Setenv("LLM_MODEL", "test-model")
 	t.Setenv("LLM_ENDPOINT", server.URL)
 
-	form := url.Values{"message": {"Question"}, "model": {"selected-model"}}
+	toolCalls := newToolCallStore()
+	form := url.Values{
+		"message": {"Question"},
+		"model":   {"selected-model"},
+		"request": {newToolCallRequest(t, toolCalls)},
+	}
 	request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 
-	messageCompletionHandler(database, newTestToolRegistry(t), nil)(response, request)
+	messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -371,6 +427,105 @@ func TestMessageCompletionHandlerStoresRawMarkdown(t *testing.T) {
 	}
 }
 
+func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T) {
+	database := openTestDatabase(t)
+	fetchStarted := make(chan struct{}, 1)
+	releaseFetch := make(chan struct{})
+	fetched := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetchStarted <- struct{}{}
+		select {
+		case <-releaseFetch:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte("fetched content"))
+	}))
+	defer fetched.Close()
+
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestNumber++
+		w.Header().Set("Content-Type", "application/json")
+		if requestNumber == 1 {
+			arguments, _ := json.Marshal(map[string]string{"url": fetched.URL, "format": "text"})
+			_, _ = w.Write([]byte(`{
+				"model":"response-model",
+				"choices":[{"message":{"role":"assistant","tool_calls":[{
+					"id":"call-1",
+					"type":"function",
+					"function":{"name":"webfetch","arguments":` + strconv.Quote(string(arguments)) + `}
+				}]},"finish_reason":"tool_calls"}]
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"Final answer."},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls)
+	form := url.Values{
+		"message": {"Use a tool"},
+		"model":   {"selected-model"},
+		"request": {requestID},
+		"tool":    {"webfetch"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	registry := newTestToolRegistry(t)
+
+	completionDone := make(chan struct{})
+	go func() {
+		messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
+		close(completionDone)
+	}()
+	select {
+	case <-fetchStarted:
+	case <-time.After(2 * time.Second):
+		close(releaseFetch)
+		t.Fatal("tool call did not start")
+	}
+
+	statusRequest := httptest.NewRequest(http.MethodGet, "/messages/tools?request="+requestID, nil)
+	statusResponse := httptest.NewRecorder()
+	messageToolStatusHandler(toolCalls)(statusResponse, statusRequest)
+	for _, content := range []string{"webfetch", `class="braille-spinner"`} {
+		if !strings.Contains(statusResponse.Body.String(), content) {
+			t.Errorf("running tool response does not contain %q: %s", content, statusResponse.Body.String())
+		}
+	}
+
+	close(releaseFetch)
+	select {
+	case <-completionDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("message completion did not finish")
+	}
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, content := range []string{"webfetch", fetched.URL, "Final answer.", `class="tool-call-complete"`} {
+		if !strings.Contains(body, content) {
+			t.Errorf("response does not contain %q: %s", content, body)
+		}
+	}
+	if strings.Contains(body, `class="braille-spinner"`) {
+		t.Errorf("completed response contains spinner: %s", body)
+	}
+	if strings.Index(body, "webfetch") > strings.Index(body, "Final answer.") {
+		t.Errorf("tool call does not precede answer: %s", body)
+	}
+}
+
 func newTestToolRegistry(t *testing.T) *tools.Registry {
 	t.Helper()
 
@@ -382,6 +537,16 @@ func newTestToolRegistry(t *testing.T) *tools.Registry {
 		t.Fatalf("NewRegistry() error: %v", err)
 	}
 	return registry
+}
+
+func newToolCallRequest(t *testing.T, toolCalls *toolCallStore) string {
+	t.Helper()
+
+	requestID, err := toolCalls.create()
+	if err != nil {
+		t.Fatalf("create tool-call tracker: %v", err)
+	}
+	return requestID
 }
 
 func openTestDatabase(t *testing.T) *sql.DB {

@@ -1,18 +1,117 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/templ"
 	"seesharpsi/kritui/tools"
 )
+
+const toolCallTrackerTTL = 10 * time.Minute
+
+type toolCallTracker struct {
+	mu      sync.RWMutex
+	calls   []llm.ToolCall
+	running string
+}
+
+func (t *toolCallTracker) observe(call llm.ToolCall, running bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if running {
+		t.calls = append(t.calls, call)
+		t.running = call.ID
+		return
+	}
+	if t.running == call.ID {
+		t.running = ""
+	}
+}
+
+func (t *toolCallTracker) snapshot() ([]llm.ToolCall, string) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return append([]llm.ToolCall(nil), t.calls...), t.running
+}
+
+type toolCallTrackerEntry struct {
+	tracker *toolCallTracker
+	created time.Time
+	started bool
+}
+
+type toolCallStore struct {
+	mu       sync.RWMutex
+	trackers map[string]*toolCallTrackerEntry
+}
+
+func newToolCallStore() *toolCallStore {
+	return &toolCallStore{trackers: make(map[string]*toolCallTrackerEntry)}
+}
+
+func (s *toolCallStore) create() (string, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", err
+	}
+	id := hex.EncodeToString(token[:])
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for existingID, entry := range s.trackers {
+		if now.Sub(entry.created) >= toolCallTrackerTTL {
+			delete(s.trackers, existingID)
+		}
+	}
+	s.trackers[id] = &toolCallTrackerEntry{
+		tracker: &toolCallTracker{},
+		created: now,
+	}
+	return id, nil
+}
+
+func (s *toolCallStore) claim(id string) (*toolCallTracker, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, ok := s.trackers[id]
+	if !ok || entry.started {
+		return nil, false
+	}
+	entry.started = true
+	return entry.tracker, true
+}
+
+func (s *toolCallStore) get(id string) (*toolCallTracker, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, ok := s.trackers[id]
+	if !ok {
+		return nil, false
+	}
+	return entry.tracker, true
+}
+
+func (s *toolCallStore) delete(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.trackers, id)
+}
 
 func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +243,7 @@ func chatHandler(database *sql.DB) http.HandlerFunc {
 	}
 }
 
-func messageHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
+func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		message := strings.TrimSpace(r.FormValue("message"))
 		if message == "" {
@@ -166,22 +265,36 @@ func messageHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc
 			http.Error(w, "invalid tool selection", http.StatusBadRequest)
 			return
 		}
+		requestID, err := toolCalls.create()
+		if err != nil {
+			log.Printf("create tool-call tracker: %v", err)
+			http.Error(w, "failed to prepare message", http.StatusInternalServerError)
+			return
+		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		userMessage := llm.Message{Role: "user", Content: message}
-		if err := templates.PendingSubmission(strconv.FormatInt(chatID, 10), userMessage, model, selected.Names()).Render(r.Context(), w); err != nil {
+		if err := templates.PendingSubmission(strconv.FormatInt(chatID, 10), requestID, userMessage, model, selected.Names()).Render(r.Context(), w); err != nil {
+			toolCalls.delete(requestID)
 			http.Error(w, "failed to render pending message", http.StatusInternalServerError)
 		}
 	}
 }
 
-func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCallLogger *log.Logger) http.HandlerFunc {
+func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore, toolCallLogger *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		message := strings.TrimSpace(r.FormValue("message"))
 		if message == "" {
 			http.Error(w, "message is required", http.StatusBadRequest)
 			return
 		}
+		requestID := strings.TrimSpace(r.FormValue("request"))
+		tracker, ok := toolCalls.claim(requestID)
+		if !ok {
+			http.Error(w, "valid request is required", http.StatusBadRequest)
+			return
+		}
+		defer toolCalls.delete(requestID)
 
 		chatID, err := strconv.ParseInt(r.URL.Query().Get("chat"), 10, 64)
 		if err != nil || chatID <= 0 {
@@ -229,6 +342,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			return
 		}
 		conversation.SetToolCallLogger(toolCallLogger)
+		conversation.SetToolCallObserver(tracker.observe)
 		completion, err := conversation.Send(r.Context(), message)
 		if err != nil {
 			log.Printf("complete message: %v", err)
@@ -246,8 +360,25 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.Messages(completion.Message).Render(r.Context(), w); err != nil {
+		calls, _ := tracker.snapshot()
+		if err := templates.CompletedMessage(calls, completion.Message).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render message", http.StatusInternalServerError)
+		}
+	}
+}
+
+func messageToolStatusHandler(toolCalls *toolCallStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tracker, ok := toolCalls.get(r.URL.Query().Get("request"))
+		if !ok {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		calls, running := tracker.snapshot()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := templates.ToolCalls(calls, running).Render(r.Context(), w); err != nil {
+			http.Error(w, "failed to render tool calls", http.StatusInternalServerError)
 		}
 	}
 }

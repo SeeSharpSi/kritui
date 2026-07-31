@@ -15,10 +15,11 @@ const maxToolCallRounds = 16
 // Conversation retains message history and executes tool calls requested by
 // the model. A Conversation must not be used concurrently.
 type Conversation struct {
-	client         *Client
-	registry       *tools.Registry
-	toolCallLogger *log.Logger
-	messages       []Message
+	client           *Client
+	registry         *tools.Registry
+	toolCallLogger   *log.Logger
+	toolCallObserver func(ToolCall, bool)
+	messages         []Message
 }
 
 // SetToolCallLogger configures logging for tool names, arguments, and results.
@@ -26,6 +27,14 @@ type Conversation struct {
 func (c *Conversation) SetToolCallLogger(logger *log.Logger) {
 	if c != nil {
 		c.toolCallLogger = logger
+	}
+}
+
+// SetToolCallObserver configures a callback invoked when a tool call starts
+// and finishes. The boolean argument is true while the call is running.
+func (c *Conversation) SetToolCallObserver(observer func(ToolCall, bool)) {
+	if c != nil {
+		c.toolCallObserver = observer
 	}
 }
 
@@ -120,6 +129,10 @@ func (c *Conversation) Complete(ctx context.Context) (Completion, error) {
 }
 
 func (c *Conversation) executeToolCall(ctx context.Context, call ToolCall) (result string, err error) {
+	if c.toolCallObserver != nil {
+		c.toolCallObserver(call, true)
+		defer c.toolCallObserver(call, false)
+	}
 	defer func() {
 		if c.toolCallLogger == nil {
 			return

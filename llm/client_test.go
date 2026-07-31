@@ -276,6 +276,13 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 	}
 	var toolCallLog bytes.Buffer
 	conversation.SetToolCallLogger(log.New(&toolCallLog, "", 0))
+	var toolCallStates []bool
+	conversation.SetToolCallObserver(func(call ToolCall, running bool) {
+		if call.Function.Name != "lookup" {
+			t.Errorf("observed tool = %q, want lookup", call.Function.Name)
+		}
+		toolCallStates = append(toolCallStates, running)
+	})
 
 	completion, err := conversation.Send(context.Background(), "question")
 	if err != nil {
@@ -293,6 +300,9 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 	wantLog := "tool call: name=\"lookup\" arguments=\"{\\\"key\\\":\\\"value\\\"}\" response=\"found value\"\n"
 	if toolCallLog.String() != wantLog {
 		t.Errorf("tool call log = %q, want %q", toolCallLog.String(), wantLog)
+	}
+	if len(toolCallStates) != 2 || !toolCallStates[0] || toolCallStates[1] {
+		t.Errorf("tool call states = %v, want [true false]", toolCallStates)
 	}
 }
 
