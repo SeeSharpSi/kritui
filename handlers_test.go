@@ -524,6 +524,33 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	if strings.Index(body, "webfetch") > strings.Index(body, "Final answer.") {
 		t.Errorf("tool call does not precede answer: %s", body)
 	}
+
+	var storedMessages int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 1`).Scan(&storedMessages); err != nil {
+		t.Fatalf("count stored messages: %v", err)
+	}
+	if storedMessages != 4 {
+		t.Errorf("stored message count = %d, want 4", storedMessages)
+	}
+
+	reloadRequest := httptest.NewRequest(http.MethodGet, "/chat?chat=1", nil)
+	reloadResponse := httptest.NewRecorder()
+	chatHandler(database)(reloadResponse, reloadRequest)
+	if reloadResponse.Code != http.StatusOK {
+		t.Fatalf("reload status = %d, want %d; body = %q", reloadResponse.Code, http.StatusOK, reloadResponse.Body.String())
+	}
+	reloaded := reloadResponse.Body.String()
+	for _, content := range []string{"webfetch", fetched.URL, "Final answer.", `class="tool-call-complete"`} {
+		if !strings.Contains(reloaded, content) {
+			t.Errorf("reloaded chat does not contain %q: %s", content, reloaded)
+		}
+	}
+	if strings.Contains(reloaded, "fetched content") {
+		t.Errorf("reloaded chat exposes tool result: %s", reloaded)
+	}
+	if strings.Index(reloaded, "webfetch") > strings.Index(reloaded, "Final answer.") {
+		t.Errorf("reloaded tool call does not precede answer: %s", reloaded)
+	}
 }
 
 func newTestToolRegistry(t *testing.T) *tools.Registry {

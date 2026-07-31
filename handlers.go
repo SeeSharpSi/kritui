@@ -333,7 +333,6 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			return
 		}
 
-		userMessage := llm.Message{Role: "user", Content: message}
 		position := len(messages)
 		conversation, err := llm.NewConversation(client, selected, messages...)
 		if err != nil {
@@ -349,15 +348,13 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			http.Error(w, "failed to complete message", http.StatusBadGateway)
 			return
 		}
-		if _, err := kritui_db.InsertMessage(r.Context(), database, chatID, position, userMessage); err != nil {
-			log.Printf("store user message: %v", err)
-			http.Error(w, "failed to store message", http.StatusInternalServerError)
-			return
-		}
-		if _, err := kritui_db.InsertMessage(r.Context(), database, chatID, position+1, completion.Message); err != nil {
-			log.Printf("store assistant message: %v", err)
-			http.Error(w, "failed to store message", http.StatusInternalServerError)
-			return
+		completedMessages := conversation.Messages()[len(messages)+1:]
+		for index, completedMessage := range completedMessages {
+			if _, err := kritui_db.InsertMessage(r.Context(), database, chatID, position+index, completedMessage); err != nil {
+				log.Printf("store message: %v", err)
+				http.Error(w, "failed to store message", http.StatusInternalServerError)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		calls, _ := tracker.snapshot()
