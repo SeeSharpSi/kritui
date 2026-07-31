@@ -25,10 +25,22 @@ USER root
 COPY --from=build --chown=977:977 /out/kritui /usr/local/bin/kritui
 
 COPY --chown=977:977 <<'EOF' /usr/local/searxng/kritui-settings.yml
-use_default_settings: true
+use_default_settings:
+  engines:
+    keep_only:
+      - duckduckgo
+      - mojeek
+      - wikipedia
+      - github
 
 search:
   max_page: 0
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 60
+  suspended_times:
+    SearxEngineAccessDenied: 60
+    SearxEngineCaptcha: 300
+    SearxEngineTooManyRequests: 60
   formats:
     - html
     - json
@@ -37,6 +49,17 @@ server:
   limiter: false
   public_instance: false
   method: GET
+  image_proxy: false
+
+engines:
+  - name: mojeek
+    disabled: false
+
+outgoing:
+  pool_connections: 20
+  pool_maxsize: 10
+  request_timeout: 5.0
+  enable_http2: false
 EOF
 
 COPY --chmod=755 --chown=977:977 <<'EOF' /usr/local/bin/start-kritui
