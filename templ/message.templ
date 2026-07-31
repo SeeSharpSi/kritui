@@ -7,8 +7,6 @@ templ Messages(messages ...llm.Message) {
 		<article class={ "message" , templ.KV("user", message.Role=="user" ) }>
 			if message.Role == "assistant" {
 				<strong>{ message.Model }</strong>
-			} else {
-				<strong>{ message.Role }</strong>
 			}
 			<div>{ message.Content }</div>
 		</article>
