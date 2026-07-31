@@ -91,6 +91,9 @@ main {
                 .history-entry {
                     min-width: 0;
                     flex: 1;
+                    display: flex;
+                    align-items: center;
+                    gap: .5rem;
                     padding: .85rem 1rem;
                     border: 1px solid var(--color-border);
                     border-radius: .65rem;
@@ -103,6 +106,11 @@ main {
                     &.current {
                         border-color: var(--color-accent);
                         background: var(--color-surface-muted);
+                    }
+
+                    .history-meta {
+                        min-width: 0;
+                        flex: 1;
                     }
 
                     strong {
@@ -133,6 +141,21 @@ main {
                     color: var(--color-on-accent);
                     cursor: pointer;
                     text-decoration: none;
+                }
+
+                .history-delete {
+                    flex: 0 0 2.5rem;
+                    width: 2.5rem;
+                    height: 2.5rem;
+                    border-radius: .5rem;
+                    background: transparent;
+                    color: var(--color-border-strong);
+
+                    &:hover,
+                    &:focus-visible {
+                        background: var(--color-surface);
+                        color: var(--color-text);
+                    }
                 }
 
                 .history-new {
