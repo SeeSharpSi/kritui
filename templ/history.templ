@@ -14,15 +14,15 @@ templ MessageList(messages []llm.Message) {
 		<div id="messages" class="message-thread">
 			@Messages(messages...)
 		</div>
+		if len(messages) == 0 {
+			<p class="chat-empty">begin a convo...</p>
+		}
 	</div>
 }
 
 templ HistoryList(chatID string, chats []kritui_db.Chat) {
 	<div class="message-list history-list">
-		<header class="history-heading">
-			<h1>Chat history</h1>
-			<p>Select a conversation to continue it.</p>
-		</header>
+		<style>.chat-options { display: none; }</style>
 		if len(chats) == 0 {
 			<p class="history-empty">No saved chats yet.</p>
 		} else {
@@ -42,6 +42,12 @@ templ HistoryList(chatID string, chats []kritui_db.Chat) {
 				</ul>
 			</nav>
 		}
+		<a
+			href="/"
+			aria-label="Start a new chat"
+			title="Start a new chat"
+			style="position: sticky; bottom: 0; align-self: flex-end; display: grid; width: 2.75rem; height: 2.75rem; margin-top: auto; border-radius: .5rem; place-items: center; background: var(--color-accent); color: var(--color-on-accent); font-size: 1.75rem; line-height: 1; text-decoration: none;"
+		>+</a>
 	</div>
 	@HistoryButton(chatID, true, true)
 }

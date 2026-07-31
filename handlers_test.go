@@ -81,6 +81,9 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	if strings.Contains(response.Body.String(), "What would you like to discuss?") {
 		t.Error("response contains welcome prompt for stored chat")
 	}
+	if strings.Contains(response.Body.String(), "begin a convo...") {
+		t.Error("response contains empty-chat prompt for stored chat")
+	}
 	if !strings.Contains(response.Body.String(), "<strong>stored-model</strong>") {
 		t.Error("response does not label assistant message with model")
 	}
@@ -89,7 +92,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	}
 }
 
-func TestHomeHandlerRendersEmptyChatWithoutWelcome(t *testing.T) {
+func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	database := openTestDatabase(t)
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
@@ -101,6 +104,9 @@ func TestHomeHandlerRendersEmptyChatWithoutWelcome(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "What would you like to discuss?") {
 		t.Error("response contains welcome prompt")
+	}
+	if !strings.Contains(response.Body.String(), "begin a convo...") {
+		t.Error("response does not contain empty-chat prompt")
 	}
 }
 
