@@ -2,7 +2,16 @@ package templates
 
 import "seesharpsi/kritui/llm"
 
-templ Home(chatID string, messages []llm.Message, models []string, selectedModel string, tools []string) {
+func toolEnabled(enabled []string, name string) bool {
+	for _, tool := range enabled {
+		if tool == name {
+			return true
+		}
+	}
+	return false
+}
+
+templ Home(chatID string, messages []llm.Message, models []string, selectedModel string, tools []string, enabledTools []string) {
 	@Layout("Kritui") {
 		<main>
 			<section class="chat">
@@ -52,7 +61,11 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 							<div class="tool-options">
 								for _, tool := range tools {
 									<label>
-										<input type="checkbox" name="tool" value={ tool } form="message-form"/>
+										if toolEnabled(enabledTools, tool) {
+											<input type="checkbox" name="tool" value={ tool } form="message-form" checked/>
+										} else {
+											<input type="checkbox" name="tool" value={ tool } form="message-form"/>
+										}
 										<span>{ tool }</span>
 										<span class="tool-state" aria-hidden="true"></span>
 									</label>

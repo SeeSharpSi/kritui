@@ -13,6 +13,7 @@ import (
 type Chat struct {
 	ID        int64
 	Title     string
+	Tools     []string
 	CreatedAt string
 	UpdatedAt string
 }
@@ -20,7 +21,7 @@ type Chat struct {
 // GetChats returns chats from most recently updated to least recently updated.
 func GetChats(ctx context.Context, db *sql.DB) ([]Chat, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, title, created_at, updated_at
+		SELECT id, title, tools, created_at, updated_at
 		FROM chats
 		ORDER BY updated_at DESC, id DESC
 	`)
@@ -32,8 +33,15 @@ func GetChats(ctx context.Context, db *sql.DB) ([]Chat, error) {
 	var chats []Chat
 	for rows.Next() {
 		var chat Chat
-		if err := rows.Scan(&chat.ID, &chat.Title, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
+		var tools string
+		if err := rows.Scan(&chat.ID, &chat.Title, &tools, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan chat: %w", err)
+		}
+		if err := json.Unmarshal([]byte(tools), &chat.Tools); err != nil {
+			return nil, fmt.Errorf("decode chat tools: %w", err)
+		}
+		if chat.Tools == nil {
+			chat.Tools = []string{}
 		}
 		chats = append(chats, chat)
 	}
@@ -42,6 +50,28 @@ func GetChats(ctx context.Context, db *sql.DB) ([]Chat, error) {
 	}
 
 	return chats, nil
+}
+
+// GetChatTools returns the enabled tool names for a chat.
+// Missing chats return an empty list.
+func GetChatTools(ctx context.Context, db *sql.DB, chatID int64) ([]string, error) {
+	var tools string
+	err := db.QueryRowContext(ctx, `SELECT tools FROM chats WHERE id = ?`, chatID).Scan(&tools)
+	if err == sql.ErrNoRows {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get chat tools: %w", err)
+	}
+
+	var names []string
+	if err := json.Unmarshal([]byte(tools), &names); err != nil {
+		return nil, fmt.Errorf("decode chat tools: %w", err)
+	}
+	if names == nil {
+		names = []string{}
+	}
+	return names, nil
 }
 
 // GetMessages returns a chat's messages in conversation order.

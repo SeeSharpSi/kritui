@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -150,10 +151,16 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			http.Error(w, "failed to get messages", http.StatusInternalServerError)
 			return
 		}
+		enabledTools, err := kritui_db.GetChatTools(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("get chat tools: %v", err)
+			http.Error(w, "failed to get chat tools", http.StatusInternalServerError)
+			return
+		}
 		models, selectedModel := availableModels(r)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.Home(chat, messages, models, selectedModel, registry.Names()).Render(r.Context(), w); err != nil {
+		if err := templates.Home(chat, messages, models, selectedModel, registry.Names(), enabledTools).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render page", http.StatusInternalServerError)
 		}
 	}
@@ -372,10 +379,18 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			http.Error(w, "invalid tool selection", http.StatusBadRequest)
 			return
 		}
+		toolsJSON, err := json.Marshal(selected.Names())
+		if err != nil {
+			log.Printf("encode chat tools: %v", err)
+			http.Error(w, "failed to store chat tools", http.StatusInternalServerError)
+			return
+		}
 		if _, err := database.ExecContext(r.Context(), `
-			INSERT INTO chats (id, title) VALUES (?, ?)
-			ON CONFLICT (id) DO UPDATE SET title = excluded.title WHERE chats.title = ''
-		`, chatID, message); err != nil {
+			INSERT INTO chats (id, title, tools) VALUES (?, ?, ?)
+			ON CONFLICT (id) DO UPDATE SET
+				title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END,
+				tools = excluded.tools
+		`, chatID, message, string(toolsJSON)); err != nil {
 			log.Printf("create chat: %v", err)
 			http.Error(w, "failed to create chat", http.StatusInternalServerError)
 			return

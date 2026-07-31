@@ -144,6 +144,72 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 	}
 }
 
+func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`INSERT INTO chats (id, tools) VALUES (8, ?)`, `["websearch"]`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	t.Setenv("LLM_MODEL", "env-model")
+
+	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
+	response := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `name="tool" value="websearch" form="message-form" checked`) {
+		t.Errorf("websearch not checked: %s", body)
+	}
+	if strings.Contains(body, `name="tool" value="webfetch" form="message-form" checked`) {
+		t.Errorf("webfetch unexpectedly checked: %s", body)
+	}
+}
+
+func TestMessageCompletionHandlerPersistsChatTools(t *testing.T) {
+	database := openTestDatabase(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	toolCalls := newToolCallStore()
+	form := url.Values{
+		"message": {"Hello"},
+		"model":   {"selected-model"},
+		"request": {newToolCallRequest(t, toolCalls)},
+		"tool":    {"webfetch", "websearch"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=3", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	var tools string
+	if err := database.QueryRow(`SELECT tools FROM chats WHERE id = 3`).Scan(&tools); err != nil {
+		t.Fatalf("query chat tools: %v", err)
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(tools), &names); err != nil {
+		t.Fatalf("decode chat tools: %v", err)
+	}
+	if len(names) != 2 || names[0] != "webfetch" || names[1] != "websearch" {
+		t.Fatalf("tools = %#v, want [webfetch websearch]", names)
+	}
+}
+
 func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 	database := openTestDatabase(t)
 	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (8, 'Project notes')`); err != nil {

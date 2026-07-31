@@ -3,8 +3,15 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
+    tools TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    CHECK (
+        CASE
+            WHEN json_valid(tools) THEN json_type(tools) = 'array'
+            ELSE 0
+        END
+    )
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS messages (
