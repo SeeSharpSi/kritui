@@ -473,6 +473,11 @@ main {
                     }
                 }
 
+                &:has(input:checked) > summary {
+                    color: var(--color-accent);
+                    font-weight: 600;
+                }
+
                 &:not([open]) .tool-options {
                     display: none;
                 }
@@ -481,7 +486,7 @@ main {
                     position: absolute;
                     z-index: 1;
                     bottom: calc(100% + .5rem);
-                    right: 0;
+                    left: 0;
                     min-width: max(100%, 14rem);
                     max-width: min(28rem, calc(100vw - 4rem));
                     max-height: min(24rem, 50dvh);

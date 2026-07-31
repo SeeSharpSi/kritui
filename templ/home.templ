@@ -47,12 +47,12 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 						</details>
 						<details class="tool-picker">
 							<summary style="display: flex; align-items: center; font-size: small;">
-								Tools <strong>Off</strong>
+								Tools
 							</summary>
 							<div class="tool-options">
 								for _, tool := range tools {
 									<label>
-										<input type="checkbox" name="tool" value={ tool } form="message-form" onchange="updateToolSummary(this.closest('details'))"/>
+										<input type="checkbox" name="tool" value={ tool } form="message-form"/>
 										<span>{ tool }</span>
 										<span class="tool-state" aria-hidden="true"></span>
 									</label>
@@ -77,9 +77,13 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 				const messageList = document.querySelector('.message-list');
 				messageList.scrollTop = messageList.scrollHeight;
 
-				function updateToolSummary(picker) {
-					picker.querySelector('summary strong').textContent = picker.querySelector('input:checked') ? 'On' : 'Off';
-				}
+				document.addEventListener('click', (event) => {
+					document.querySelectorAll('.model-picker[open], .tool-picker[open]').forEach((picker) => {
+						if (!picker.contains(event.target)) {
+							picker.removeAttribute('open');
+						}
+					});
+				});
 			</script>
 		</main>
 	}
