@@ -9,6 +9,7 @@
     --color-border-strong: #9f9694;
     --color-accent: #dda0ab;
     --color-on-accent: #24191d;
+    --color-gold: #f6c177;
 }
 
 html {
@@ -312,6 +313,10 @@ main {
             border-radius: .75rem;
             background: var(--color-surface-muted);
 
+            >strong {
+                color: var(--color-gold);
+            }
+
             &.user {
                 margin-left: auto;
                 background: var(--color-accent);
@@ -564,8 +569,8 @@ main {
         }
 
         &[open] {
-            border-bottom-left-radius: inherit;
-            border-bottom-right-radius: inherit;
+            border-radius: 0.75rem;
+            outline: 2px solid var(--color-border);
             background: var(--color-background);
 
             >summary {
