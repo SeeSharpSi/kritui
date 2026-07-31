@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/markdown"
 )
@@ -8,9 +9,7 @@ import (
 templ Messages(messages ...llm.Message) {
 	for _, message := range messages {
 		if message.Role == "assistant" && len(message.ToolCalls) > 0 {
-			<div class="tool-call-list completed-tool-calls" role="list">
-				@ToolCalls(message.ToolCalls, "")
-			</div>
+			@CompletedToolCalls(message.ToolCalls)
 		} else if message.Role != "tool" {
 			<article class={ "message" , templ.KV("user", message.Role=="user" ) }>
 				if message.Role == "assistant" {
@@ -44,12 +43,25 @@ templ ToolCalls(calls []llm.ToolCall, runningID string) {
 	}
 }
 
-templ CompletedMessage(calls []llm.ToolCall, message llm.Message) {
+templ CompletedToolCalls(calls []llm.ToolCall) {
 	if len(calls) > 0 {
-		<div class="tool-call-list completed-tool-calls" role="list">
-			@ToolCalls(calls, "")
-		</div>
+		<details class="completed-tool-calls">
+			<summary>
+				if len(calls) == 1 {
+					1 tool call used
+				} else {
+					{ fmt.Sprintf("%d tool calls used", len(calls)) }
+				}
+			</summary>
+			<div class="tool-call-list" role="list">
+				@ToolCalls(calls, "")
+			</div>
+		</details>
 	}
+}
+
+templ CompletedMessage(calls []llm.ToolCall, message llm.Message) {
+	@CompletedToolCalls(calls)
 	@Messages(message)
 }
 
