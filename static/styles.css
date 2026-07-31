@@ -318,6 +318,10 @@ main {
                 color: var(--color-gold);
             }
 
+            >.message-meta {
+                color: var(--color-border-strong);
+            }
+
             &.user {
                 margin-left: auto;
                 background: var(--color-accent);

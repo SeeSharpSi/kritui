@@ -2,19 +2,20 @@ package templates
 
 import (
 	"fmt"
+	"strings"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/markdown"
 )
 
-func messageModelLabel(message llm.Message) string {
-	label := message.Model
+func messageModelMeta(message llm.Message) string {
+	var parts []string
 	if message.TotalTokens != nil {
-		label += fmt.Sprintf(" · %d tokens", *message.TotalTokens)
+		parts = append(parts, fmt.Sprintf("%d tokens", *message.TotalTokens))
 	}
 	if message.Cost != nil {
-		label += fmt.Sprintf(" · $%.4f", *message.Cost)
+		parts = append(parts, fmt.Sprintf("$%.4f", *message.Cost))
 	}
-	return label
+	return strings.Join(parts, " · ")
 }
 
 templ Messages(messages ...llm.Message) {
@@ -24,7 +25,10 @@ templ Messages(messages ...llm.Message) {
 		} else if message.Role != "tool" {
 			<article class={ "message" , templ.KV("user", message.Role=="user" ) }>
 				if message.Role == "assistant" {
-					<strong>{ messageModelLabel(message) }</strong>
+					<strong>{ message.Model }</strong>
+					if meta := messageModelMeta(message); meta != "" {
+						<span class="message-meta"> · { meta }</span>
+					}
 					<div class="message-content markdown">
 						@markdown.Render(message.Content)
 					</div>
