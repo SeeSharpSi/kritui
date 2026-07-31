@@ -4,7 +4,7 @@ import "seesharpsi/kritui/llm"
 
 templ Messages(messages ...llm.Message) {
 	for _, message := range messages {
-		<article class={ "message", templ.KV("user", message.Role == "user") }>
+		<article class={ "message" , templ.KV("user", message.Role=="user" ) }>
 			if message.Role == "assistant" {
 				<strong>{ message.Model }</strong>
 			} else {
