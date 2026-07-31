@@ -1,14 +1,21 @@
 package templates
 
-import "seesharpsi/kritui/llm"
+import (
+	"seesharpsi/kritui/llm"
+	"seesharpsi/kritui/markdown"
+)
 
 templ Messages(messages ...llm.Message) {
 	for _, message := range messages {
 		<article class={ "message" , templ.KV("user", message.Role=="user" ) }>
 			if message.Role == "assistant" {
 				<strong>{ message.Model }</strong>
+				<div class="message-content markdown">
+					@markdown.Render(message.Content)
+				</div>
+			} else {
+				<div class="message-content plain-text">{ message.Content }</div>
 			}
-			<div>{ message.Content }</div>
 		</article>
 	}
 }

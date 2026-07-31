@@ -81,6 +81,100 @@ main {
                     animation: braille-spinner 800ms steps(1, end) infinite;
                 }
             }
+
+            .message-content {
+                min-width: 0;
+                overflow-wrap: anywhere;
+
+                &.plain-text {
+                    white-space: pre-wrap;
+                }
+
+                &.markdown {
+                    line-height: 1.5;
+
+                    > :first-child {
+                        margin-top: .35rem;
+                    }
+
+                    > :last-child {
+                        margin-bottom: 0;
+                    }
+
+                    p,
+                    ul,
+                    ol,
+                    pre,
+                    blockquote,
+                    table,
+                    hr {
+                        margin: .75rem 0;
+                    }
+
+                    ul,
+                    ol {
+                        padding-left: 1.5rem;
+                    }
+
+                    li + li {
+                        margin-top: .25rem;
+                    }
+
+                    code {
+                        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+                        font-size: .9em;
+                    }
+
+                    :not(pre) > code {
+                        padding: .1rem .3rem;
+                        border-radius: .3rem;
+                        background: var(--color-background);
+                    }
+
+                    pre {
+                        max-width: 100%;
+                        padding: .75rem;
+                        overflow-x: auto;
+                        box-sizing: border-box;
+                        border: 1px solid var(--color-border);
+                        border-radius: .5rem;
+                        background: var(--color-background);
+                    }
+
+                    pre code {
+                        overflow-wrap: normal;
+                    }
+
+                    blockquote {
+                        padding-left: .75rem;
+                        border-left: .2rem solid var(--color-border-strong);
+                        color: var(--color-border-strong);
+                    }
+
+                    a {
+                        color: var(--color-accent);
+                    }
+
+                    table {
+                        display: block;
+                        max-width: 100%;
+                        overflow-x: auto;
+                        border-collapse: collapse;
+                    }
+
+                    th,
+                    td {
+                        padding: .4rem .6rem;
+                        border: 1px solid var(--color-border);
+                        text-align: left;
+                    }
+
+                    img {
+                        max-width: 100%;
+                        height: auto;
+                    }
+                }
+            }
         }
     }
 

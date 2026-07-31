@@ -5,14 +5,18 @@ go 1.25.3
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/a-h/templ v0.3.1020
+	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/yuin/goldmark v1.8.2
 	golang.org/x/net v0.57.0
 	modernc.org/sqlite v1.54.0
 )
 
 require (
 	github.com/JohannesKaufmann/dom v0.3.1 // indirect
+	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/css v1.0.1 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

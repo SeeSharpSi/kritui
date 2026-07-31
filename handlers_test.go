@@ -246,6 +246,46 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	}
 }
 
+func TestMessageCompletionHandlerStoresRawMarkdown(t *testing.T) {
+	database := openTestDatabase(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"**Answer**\n\n- one\n- two"},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	form := url.Values{"message": {"Question"}, "model": {"selected-model"}}
+	request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+
+	messageCompletionHandler(database, newTestToolRegistry(t), nil)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	for _, rendered := range []string{"<strong>Answer</strong>", "<li>one</li>", "<li>two</li>"} {
+		if !strings.Contains(response.Body.String(), rendered) {
+			t.Errorf("response does not contain rendered Markdown %q: %s", rendered, response.Body.String())
+		}
+	}
+
+	const want = "**Answer**\n\n- one\n- two"
+	var stored string
+	if err := database.QueryRow(`SELECT content FROM messages WHERE chat_id = 1 AND role = 'assistant'`).Scan(&stored); err != nil {
+		t.Fatalf("get stored assistant message: %v", err)
+	}
+	if stored != want {
+		t.Errorf("stored content = %q, want raw Markdown %q", stored, want)
+	}
+}
+
 func newTestToolRegistry(t *testing.T) *tools.Registry {
 	t.Helper()
 
