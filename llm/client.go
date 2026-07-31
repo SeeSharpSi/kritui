@@ -1,4 +1,5 @@
-// Package llm provides a client for OpenAI-compatible chat completion APIs.
+// Package llm provides a client for OpenAI-compatible Chat Completions and
+// Responses APIs.
 package llm
 
 import (
@@ -19,11 +20,12 @@ const maxErrorBodySize = 1 << 20
 
 // Message is one message in a chat completion conversation.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	Model      string     `json:"-"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role          string     `json:"role"`
+	Content       string     `json:"content"`
+	Model         string     `json:"-"`
+	ToolCalls     []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID    string     `json:"tool_call_id,omitempty"`
+	responseItems []json.RawMessage
 }
 
 // ToolCall is a function invocation requested by an assistant message.
@@ -71,11 +73,13 @@ type Client struct {
 	apiKey     string
 	model      string
 	endpoint   string
+	responses  bool
 	httpClient *http.Client
 }
 
-// New creates a client. Endpoint must be the full chat completions URL; New
-// does not append a path to it.
+// New creates a client. Endpoint must be the full Chat Completions or Responses
+// URL; New does not append a path to it. A path ending in /responses selects
+// the Responses API; all other paths use Chat Completions.
 func New(apiKey, model, endpoint string) (*Client, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, errors.New("llm: API key is required")
@@ -102,6 +106,7 @@ func New(apiKey, model, endpoint string) (*Client, error) {
 		apiKey:     apiKey,
 		model:      model,
 		endpoint:   endpoint,
+		responses:  strings.TrimRight(parsedEndpoint.Path, "/") != "" && strings.HasSuffix(strings.TrimRight(parsedEndpoint.Path, "/"), "/responses"),
 		httpClient: &http.Client{},
 	}, nil
 }
@@ -119,6 +124,7 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 	}
 	path := strings.TrimRight(modelsURL.Path, "/")
 	path = strings.TrimSuffix(path, "/chat/completions")
+	path = strings.TrimSuffix(path, "/responses")
 	modelsURL.Path = strings.TrimRight(path, "/") + "/models"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL.String(), nil)
@@ -160,7 +166,13 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 	if len(messages) == 0 {
 		return Completion{}, errors.New("llm: at least one message is required")
 	}
+	if c.responses {
+		return c.completeResponse(ctx, messages, definitions)
+	}
+	return c.completeChat(ctx, messages, definitions)
+}
 
+func (c *Client) completeChat(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
 	requestTools := make([]completionTool, len(definitions))
 	for index, definition := range definitions {
 		requestTools[index] = completionTool{
@@ -182,23 +194,11 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 		return Completion{}, fmt.Errorf("llm: encode request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
+	resp, err := c.post(ctx, payload)
 	if err != nil {
-		return Completion{}, fmt.Errorf("llm: create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return Completion{}, fmt.Errorf("llm: send request: %w", err)
+		return Completion{}, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return Completion{}, endpointError(resp)
-	}
 
 	var response struct {
 		ID      string `json:"id"`
@@ -226,6 +226,175 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 		FinishReason: response.Choices[0].FinishReason,
 		Usage:        response.Usage,
 	}, nil
+}
+
+func (c *Client) completeResponse(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
+	input := make([]any, 0, len(messages))
+	for _, message := range messages {
+		if len(message.responseItems) > 0 {
+			for _, item := range message.responseItems {
+				input = append(input, item)
+			}
+			continue
+		}
+		switch message.Role {
+		case "tool":
+			input = append(input, responseInput{
+				Type:   "function_call_output",
+				CallID: message.ToolCallID,
+				Output: message.Content,
+			})
+		default:
+			if message.Content != "" || len(message.ToolCalls) == 0 {
+				input = append(input, responseInput{Role: message.Role, Content: message.Content})
+			}
+			for _, call := range message.ToolCalls {
+				input = append(input, responseInput{
+					Type:      "function_call",
+					CallID:    call.ID,
+					Name:      call.Function.Name,
+					Arguments: call.Function.Arguments,
+				})
+			}
+		}
+	}
+
+	requestTools := make([]responseTool, len(definitions))
+	for index, definition := range definitions {
+		requestTools[index] = responseTool{
+			Type:        "function",
+			Name:        definition.Name,
+			Description: definition.Description,
+			Parameters:  definition.Parameters,
+		}
+	}
+
+	payload, err := json.Marshal(struct {
+		Model string         `json:"model"`
+		Input []any          `json:"input"`
+		Tools []responseTool `json:"tools,omitempty"`
+	}{
+		Model: c.model,
+		Input: input,
+		Tools: requestTools,
+	})
+	if err != nil {
+		return Completion{}, fmt.Errorf("llm: encode request: %w", err)
+	}
+
+	resp, err := c.post(ctx, payload)
+	if err != nil {
+		return Completion{}, err
+	}
+	defer resp.Body.Close()
+
+	var response struct {
+		ID                string `json:"id"`
+		Model             string `json:"model"`
+		Status            string `json:"status"`
+		IncompleteDetails struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+		Output []json.RawMessage `json:"output"`
+		Usage  struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			TotalTokens  int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return Completion{}, fmt.Errorf("llm: decode response: %w", err)
+	}
+
+	message := Message{
+		Role:          "assistant",
+		Model:         response.Model,
+		responseItems: cloneRawMessages(response.Output),
+	}
+	for _, rawOutput := range response.Output {
+		var output struct {
+			Type      string `json:"type"`
+			Role      string `json:"role"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+			Content   []struct {
+				Type    string `json:"type"`
+				Text    string `json:"text"`
+				Refusal string `json:"refusal"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(rawOutput, &output); err != nil {
+			return Completion{}, fmt.Errorf("llm: decode response output: %w", err)
+		}
+		switch output.Type {
+		case "message":
+			if output.Role != "" {
+				message.Role = output.Role
+			}
+			for _, content := range output.Content {
+				switch content.Type {
+				case "output_text":
+					message.Content += content.Text
+				case "refusal":
+					message.Content += content.Refusal
+				}
+			}
+		case "function_call":
+			message.ToolCalls = append(message.ToolCalls, ToolCall{
+				ID:   output.CallID,
+				Type: "function",
+				Function: FunctionCall{
+					Name:      output.Name,
+					Arguments: output.Arguments,
+				},
+			})
+		}
+	}
+	if message.Content == "" && len(message.ToolCalls) == 0 {
+		return Completion{}, errors.New("llm: response contained no assistant output")
+	}
+
+	finishReason := "stop"
+	if len(message.ToolCalls) > 0 {
+		finishReason = "tool_calls"
+	} else if response.IncompleteDetails.Reason != "" {
+		finishReason = response.IncompleteDetails.Reason
+	} else if response.Status != "" && response.Status != "completed" {
+		finishReason = response.Status
+	}
+
+	return Completion{
+		ID:           response.ID,
+		Model:        response.Model,
+		Message:      message,
+		FinishReason: finishReason,
+		Usage: Usage{
+			PromptTokens:     response.Usage.InputTokens,
+			CompletionTokens: response.Usage.OutputTokens,
+			TotalTokens:      response.Usage.TotalTokens,
+		},
+	}, nil
+}
+
+func (c *Client) post(ctx context.Context, payload []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("llm: create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("llm: send request: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		defer resp.Body.Close()
+		return nil, endpointError(resp)
+	}
+	return resp, nil
 }
 
 func endpointError(resp *http.Response) error {
@@ -257,4 +426,29 @@ func endpointError(resp *http.Response) error {
 type completionTool struct {
 	Type     string           `json:"type"`
 	Function tools.Definition `json:"function"`
+}
+
+type responseInput struct {
+	Type      string `json:"type,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Output    string `json:"output,omitempty"`
+}
+
+type responseTool struct {
+	Type        string          `json:"type"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+func cloneRawMessages(messages []json.RawMessage) []json.RawMessage {
+	cloned := make([]json.RawMessage, len(messages))
+	for index, message := range messages {
+		cloned[index] = append(json.RawMessage(nil), message...)
+	}
+	return cloned
 }

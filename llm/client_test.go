@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"seesharpsi/kritui/tools"
 )
 
 func TestNewRequiresConfiguration(t *testing.T) {
@@ -175,4 +177,146 @@ func TestCompleteRejectsResponseWithoutChoices(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no choices") {
 		t.Fatalf("Complete() error = %v, want no choices error", err)
 	}
+}
+
+func TestResponsesConversationWithToolCall(t *testing.T) {
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber++
+		if r.URL.RequestURI() != "/v1/responses?api-version=1" {
+			t.Errorf("request URI = %q, want Responses endpoint", r.URL.RequestURI())
+		}
+
+		var request struct {
+			Model string `json:"model"`
+			Input []struct {
+				Type      string `json:"type"`
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				CallID    string `json:"call_id"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+				Output    string `json:"output"`
+			} `json:"input"`
+			Tools []struct {
+				Type        string          `json:"type"`
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Parameters  json.RawMessage `json:"parameters"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Model != "configured-model" {
+			t.Errorf("model = %q, want configured-model", request.Model)
+		}
+		if len(request.Tools) != 1 || request.Tools[0].Type != "function" || request.Tools[0].Name != "lookup" {
+			t.Errorf("tools = %#v, want flattened Responses function tool", request.Tools)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		switch requestNumber {
+		case 1:
+			if len(request.Input) != 1 || request.Input[0].Role != "user" || request.Input[0].Content != "question" {
+				t.Errorf("first input = %#v, want user question", request.Input)
+			}
+			_, _ = w.Write([]byte(`{
+				"id":"response-1",
+				"model":"configured-model",
+				"status":"completed",
+			"output":[
+				{"type":"reasoning","id":"reasoning-1","summary":[]},
+				{"type":"function_call","call_id":"call-1","name":"lookup","arguments":"{\"key\":\"value\"}"}
+			],
+				"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}
+			}`))
+		case 2:
+			if len(request.Input) != 4 {
+				t.Fatalf("second input length = %d, want 4", len(request.Input))
+			}
+			if reasoning := request.Input[1]; reasoning.Type != "reasoning" {
+				t.Errorf("reasoning input = %#v", reasoning)
+			}
+			if call := request.Input[2]; call.Type != "function_call" || call.CallID != "call-1" || call.Name != "lookup" || call.Arguments != `{"key":"value"}` {
+				t.Errorf("function call input = %#v", call)
+			}
+			if output := request.Input[3]; output.Type != "function_call_output" || output.CallID != "call-1" || output.Output != "found value" {
+				t.Errorf("function output input = %#v", output)
+			}
+			_, _ = w.Write([]byte(`{
+				"id":"response-2",
+				"model":"configured-model",
+				"status":"completed",
+				"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}],
+				"usage":{"input_tokens":7,"output_tokens":11,"total_tokens":18}
+			}`))
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New("secret-key", "configured-model", server.URL+"/v1/responses?api-version=1")
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	registry, err := tools.NewRegistry(responseTestTool{})
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	conversation, err := NewConversation(client, registry)
+	if err != nil {
+		t.Fatalf("NewConversation() error: %v", err)
+	}
+
+	completion, err := conversation.Send(context.Background(), "question")
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+	if completion.ID != "response-2" || completion.Message.Content != "answer" || completion.FinishReason != "stop" {
+		t.Errorf("completion = %#v, want final Responses answer", completion)
+	}
+	if completion.Usage != (Usage{PromptTokens: 7, CompletionTokens: 11, TotalTokens: 18}) {
+		t.Errorf("usage = %#v, want Responses token counts", completion.Usage)
+	}
+	if requestNumber != 2 {
+		t.Errorf("request count = %d, want 2", requestNumber)
+	}
+}
+
+func TestModelsFromResponsesEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != "/v1/models?api-version=1" {
+			t.Errorf("request URI = %q, want models endpoint", r.URL.RequestURI())
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New("key", "model-a", server.URL+"/v1/responses?api-version=1")
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	models, err := client.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models() error: %v", err)
+	}
+	if len(models) != 1 || models[0] != "model-a" {
+		t.Errorf("Models() = %#v, want model-a", models)
+	}
+}
+
+type responseTestTool struct{}
+
+func (responseTestTool) Definition() tools.Definition {
+	return tools.Definition{
+		Name:        "lookup",
+		Description: "Looks up a value",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"key":{"type":"string"}}}`),
+	}
+}
+
+func (responseTestTool) Execute(context.Context, json.RawMessage) (string, error) {
+	return "found value", nil
 }
