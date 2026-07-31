@@ -27,11 +27,12 @@ main {
     flex-direction: column;
 
     .chat {
+        position: relative;
         min-height: 0;
         flex: 1;
         display: flex;
         flex-direction: column;
-        overflow: hidden;
+        overflow: visible;
         padding: 0;
         border: 1px solid var(--color-border);
         border-radius: .75rem;
@@ -46,6 +47,7 @@ main {
             scrollbar-width: none;
             padding: 1rem;
             box-sizing: border-box;
+            border-radius: inherit;
 
             &::-webkit-scrollbar {
                 display: none;
@@ -172,7 +174,7 @@ main {
         .message-thread {
             display: contents;
 
-            &:not(:empty) + .chat-empty {
+            &:not(:empty)+.chat-empty {
                 display: none;
             }
         }
@@ -211,7 +213,7 @@ main {
                     margin: 0;
                 }
 
-                .tool-call-list:not(:empty) + .thinking-indicator {
+                .tool-call-list:not(:empty)+.thinking-indicator {
                     display: block;
                     margin-top: .45rem;
                 }
@@ -251,7 +253,7 @@ main {
                         padding-left: 1.5rem;
                     }
 
-                    li + li {
+                    li+li {
                         margin-top: .25rem;
                     }
 
@@ -260,7 +262,7 @@ main {
                         font-size: .9em;
                     }
 
-                    :not(pre) > code {
+                    :not(pre)>code {
                         padding: .1rem .3rem;
                         border-radius: .3rem;
                         background: var(--color-background);
@@ -347,15 +349,31 @@ main {
     }
 
     .chat-options {
+        position: relative;
         flex: none;
+        display: flex;
+        flex-direction: column;
+        border-top-left-radius: .75rem;
+        border-top-right-radius: .75rem;
 
-        summary {
-            height: 1.5rem;
+        >summary {
+            position: absolute;
+            z-index: 2;
+            left: 50%;
+            bottom: 0;
+            order: 2;
+            width: 3rem;
+            height: 3rem;
             display: grid;
             place-items: center;
+            box-sizing: border-box;
+            border: 3px solid var(--color-border);
+            border-radius: 50%;
+            background: var(--color-surface);
             color: var(--color-border-strong);
             cursor: pointer;
             list-style: none;
+            transform: translate(-50%, 50%);
 
             &::-webkit-details-marker {
                 display: none;
@@ -363,26 +381,37 @@ main {
 
             &::after {
                 content: "";
-                width: .4rem;
-                height: .4rem;
-                border-top: 1px solid currentColor;
-                border-left: 1px solid currentColor;
-                transform: translateY(.1rem) rotate(45deg);
+                width: .35rem;
+                height: .35rem;
+                border-top: 1.5px solid currentColor;
+                border-left: 1.5px solid currentColor;
+                transform: translateY(.12rem) rotate(45deg);
                 transition: transform 150ms ease;
+            }
+
+            &:hover,
+            &:focus-visible {
+                border-color: var(--color-border-strong);
+                color: var(--color-text);
             }
 
             &:focus-visible {
                 outline: 2px solid var(--color-accent);
-                outline-offset: -2px;
-                border-radius: .25rem;
+                outline-offset: 2px;
             }
         }
 
         &[open] {
+            border-bottom-left-radius: inherit;
+            border-bottom-right-radius: inherit;
             background: var(--color-background);
 
-            summary::after {
-                transform: translateY(-.1rem) rotate(225deg);
+            >summary {
+                background: var(--color-background);
+
+                &::after {
+                    transform: translateY(-.08rem) rotate(225deg);
+                }
             }
         }
 
@@ -394,11 +423,11 @@ main {
             display: flex;
             flex-wrap: wrap;
             gap: .5rem;
-            padding: .5rem 1rem;
+            padding: 1rem;
 
             button,
-            .model-picker > summary,
-            .tool-picker > summary {
+            .model-picker>summary,
+            .tool-picker>summary {
                 padding: .55rem .75rem;
                 border: 1px solid var(--color-border);
                 border-radius: .5rem;
@@ -419,7 +448,7 @@ main {
             .model-picker {
                 position: relative;
 
-                > summary {
+                >summary {
                     list-style: none;
 
                     &::after {
@@ -484,7 +513,7 @@ main {
             .tool-picker {
                 position: relative;
 
-                > summary {
+                >summary {
                     list-style: none;
 
                     &::after {
@@ -496,7 +525,7 @@ main {
                     }
                 }
 
-                &:has(input:checked) > summary {
+                &:has(input:checked)>summary {
                     color: var(--color-accent);
                     font-weight: 600;
                 }
@@ -581,6 +610,7 @@ main {
             border-radius: .5rem;
             background: var(--color-surface);
             color: var(--color-text);
+            z-index: 1000;
         }
 
         button {
@@ -600,16 +630,45 @@ main {
 }
 
 @keyframes braille-spinner {
-    0% { content: "⠋"; }
-    10% { content: "⠙"; }
-    20% { content: "⠹"; }
-    30% { content: "⠸"; }
-    40% { content: "⠼"; }
-    50% { content: "⠴"; }
-    60% { content: "⠦"; }
-    70% { content: "⠧"; }
-    80% { content: "⠇"; }
-    90% { content: "⠏"; }
+    0% {
+        content: "⠋";
+    }
+
+    10% {
+        content: "⠙";
+    }
+
+    20% {
+        content: "⠹";
+    }
+
+    30% {
+        content: "⠸";
+    }
+
+    40% {
+        content: "⠼";
+    }
+
+    50% {
+        content: "⠴";
+    }
+
+    60% {
+        content: "⠦";
+    }
+
+    70% {
+        content: "⠧";
+    }
+
+    80% {
+        content: "⠇";
+    }
+
+    90% {
+        content: "⠏";
+    }
 }
 
 .braille-spinner::before {

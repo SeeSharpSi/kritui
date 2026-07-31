@@ -8,9 +8,6 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 			<section class="chat">
 				@MessageList(messages)
 				<details class="chat-options">
-					<summary style="outline: none;">
-						<span class="visually-hidden">Toggle chat options</span>
-					</summary>
 					<div class="chat-options-list">
 						<details class="model-picker">
 							<summary style="display: flex; align-items: center; font-size: small;">
@@ -60,6 +57,9 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 							</div>
 						</details>
 					</div>
+					<summary style="outline: none;">
+						<span class="visually-hidden">Toggle chat options</span>
+					</summary>
 				</details>
 			</section>
 			<form
