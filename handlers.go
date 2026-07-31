@@ -83,6 +83,44 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 	}
 }
 
+func deleteChatHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID, err := strconv.ParseInt(r.PathValue("chat"), 10, 64)
+		if err != nil || chatID <= 0 {
+			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			return
+		}
+		current := r.URL.Query().Get("current")
+		currentChatID, err := strconv.ParseInt(current, 10, 64)
+		if err != nil || currentChatID <= 0 {
+			http.Error(w, "valid current chat is required", http.StatusBadRequest)
+			return
+		}
+
+		if _, err := database.ExecContext(r.Context(), `DELETE FROM chats WHERE id = ?`, chatID); err != nil {
+			log.Printf("delete chat: %v", err)
+			http.Error(w, "failed to delete chat", http.StatusInternalServerError)
+			return
+		}
+		if chatID == currentChatID {
+			w.Header().Set("HX-Redirect", "/")
+			return
+		}
+
+		chats, err := kritui_db.GetChats(r.Context(), database)
+		if err != nil {
+			log.Printf("get chats: %v", err)
+			http.Error(w, "failed to get chats", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := templates.HistoryList(current, chats).Render(r.Context(), w); err != nil {
+			http.Error(w, "failed to render chat history", http.StatusInternalServerError)
+		}
+	}
+}
+
 func chatHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")

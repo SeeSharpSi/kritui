@@ -142,6 +142,85 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 	}
 }
 
+func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (8, 'Project notes')`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/history?chat=8", nil)
+	response := httptest.NewRecorder()
+
+	historyHandler(database)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	for _, content := range []string{
+		`class="history-action history-delete"`,
+		`hx-delete="/chats/8?current=8"`,
+		`hx-confirm="Permanently delete Project notes?"`,
+		`aria-label="Delete Project notes"`,
+	} {
+		if !strings.Contains(response.Body.String(), content) {
+			t.Errorf("response does not contain %q", content)
+		}
+	}
+}
+
+func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, title) VALUES (7, 'Delete me'), (8, 'Keep me');
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(7, 0, 'user', 'Deleted message'),
+			(8, 0, 'user', 'Kept message');
+	`); err != nil {
+		t.Fatalf("insert chats: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
+	request := httptest.NewRequest(http.MethodDelete, "/chats/7?current=8", nil)
+	response := httptest.NewRecorder()
+
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "Delete me") {
+		t.Error("response still contains deleted chat")
+	}
+	if !strings.Contains(response.Body.String(), "Keep me") {
+		t.Error("response does not contain remaining chat")
+	}
+	var chats, deletedMessages, keptMessages int
+	if err := database.QueryRow(`
+		SELECT
+			(SELECT COUNT(*) FROM chats),
+			(SELECT COUNT(*) FROM messages WHERE chat_id = 7),
+			(SELECT COUNT(*) FROM messages WHERE chat_id = 8)
+	`).Scan(&chats, &deletedMessages, &keptMessages); err != nil {
+		t.Fatalf("count stored rows: %v", err)
+	}
+	if chats != 1 || deletedMessages != 0 || keptMessages != 1 {
+		t.Errorf("stored rows = chats %d, deleted messages %d, kept messages %d; want 1, 0, 1", chats, deletedMessages, keptMessages)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/chats/8?current=8", nil)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if redirect := response.Header().Get("HX-Redirect"); redirect != "/" {
+		t.Errorf("HX-Redirect = %q, want /", redirect)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&chats); err != nil {
+		t.Fatalf("count chats: %v", err)
+	}
+	if chats != 0 {
+		t.Errorf("chat count = %d, want 0", chats)
+	}
+}
+
 func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "default-model")
