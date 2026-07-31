@@ -6,7 +6,9 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 	@Layout("Kritui") {
 		<main>
 			<section class="chat">
-				@MessageList(messages)
+				<div class="message-panel">
+					@MessageList(messages)
+				</div>
 				<details class="chat-options">
 					<div class="chat-options-list">
 						<details class="model-picker">
