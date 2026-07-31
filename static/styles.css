@@ -135,7 +135,7 @@ main {
             padding: .5rem 1rem;
 
             button,
-            .model-picker > summary {
+            .tool-picker > summary {
                 padding: .55rem .75rem;
                 border: 1px solid var(--color-border);
                 border-radius: .5rem;
@@ -153,7 +153,7 @@ main {
                 }
             }
 
-            .model-picker {
+            .tool-picker {
                 position: relative;
 
                 > summary {
@@ -168,15 +168,15 @@ main {
                     }
                 }
 
-                &:not([open]) .model-options {
+                &:not([open]) .tool-options {
                     display: none;
                 }
 
-                .model-options {
+                .tool-options {
                     position: absolute;
                     z-index: 1;
                     bottom: calc(100% + .5rem);
-                    left: 0;
+                    right: 0;
                     min-width: max(100%, 14rem);
                     max-width: min(28rem, calc(100vw - 4rem));
                     max-height: min(24rem, 50dvh);
@@ -189,7 +189,10 @@ main {
                     box-shadow: 0 .5rem 1.5rem rgb(0 0 0 / 35%);
 
                     label {
-                        display: block;
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 1rem;
                         padding: .55rem .65rem;
                         overflow: hidden;
                         border-radius: .35rem;
@@ -205,6 +208,18 @@ main {
                         &:has(input:checked) {
                             color: var(--color-accent);
                             font-weight: 600;
+                        }
+
+                        .tool-state::after {
+                            content: "Off";
+                            color: var(--color-border-strong);
+                            font-size: small;
+                            font-weight: 400;
+                        }
+
+                        &:has(input:checked) .tool-state::after {
+                            content: "On";
+                            color: var(--color-accent);
                         }
 
                         input {

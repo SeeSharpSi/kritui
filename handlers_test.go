@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"seesharpsi/kritui/llm"
+	"seesharpsi/kritui/tools"
 )
 
 func TestHomeHandlerRedirectsToNextChatID(t *testing.T) {
@@ -20,7 +21,7 @@ func TestHomeHandlerRedirectsToNextChatID(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?view=compact", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database)(response, request)
+	homeHandler(database, newTestToolRegistry(t))(response, request)
 
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusSeeOther)
@@ -43,7 +44,7 @@ func TestHomeHandlerUsesFirstChatIDForEmptyDatabase(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database)(response, request)
+	homeHandler(database, newTestToolRegistry(t))(response, request)
 
 	if location := response.Header().Get("Location"); location != "/?chat=1" {
 		t.Errorf("Location = %q, want %q", location, "/?chat=1")
@@ -64,7 +65,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database)(response, request)
+	homeHandler(database, newTestToolRegistry(t))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -93,7 +94,7 @@ func TestHomeHandlerRendersEmptyChatWithoutWelcome(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database)(response, request)
+	homeHandler(database, newTestToolRegistry(t))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -118,7 +119,7 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database)(response, request)
+	homeHandler(database, newTestToolRegistry(t))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -128,17 +129,22 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 			t.Errorf("response does not contain model option %q", model)
 		}
 	}
+	for _, tool := range []string{"webfetch", "websearch"} {
+		if !strings.Contains(response.Body.String(), `name="tool" value="`+tool+`"`) {
+			t.Errorf("response does not contain tool option %q", tool)
+		}
+	}
 }
 
 func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "default-model")
-	form := url.Values{"message": {"Hello"}, "model": {"selected-model"}}
+	form := url.Values{"message": {"Hello"}, "model": {"selected-model"}, "tool": {"webfetch"}}
 	request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 
-	messageHandler(database)(response, request)
+	messageHandler(database, newTestToolRegistry(t))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -149,6 +155,7 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`hx-post="/messages/complete?chat=1"`,
 		`hx-trigger="load"`,
 		`hx-swap-oob="outerHTML"`,
+		`name="tool" value="webfetch"`,
 	} {
 		if !strings.Contains(response.Body.String(), content) {
 			t.Errorf("response does not contain %q", content)
@@ -158,12 +165,18 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 
 func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	database := openTestDatabase(t)
-	requests := make(chan []llm.Message, 2)
+	type completionRequest struct {
+		Model    string        `json:"model"`
+		Messages []llm.Message `json:"messages"`
+		Tools    []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	requests := make(chan completionRequest, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Model    string        `json:"model"`
-			Messages []llm.Message `json:"messages"`
-		}
+		var request completionRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
@@ -171,7 +184,10 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 		if request.Model != "selected-model" {
 			t.Errorf("model = %q, want selected-model", request.Model)
 		}
-		requests <- request.Messages
+		if len(request.Tools) != 1 || request.Tools[0].Function.Name != "webfetch" {
+			t.Errorf("tools = %#v, want only webfetch", request.Tools)
+		}
+		requests <- request
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"model":"response-model",
@@ -183,9 +199,9 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	t.Setenv("LLM_MODEL", "test-model")
 	t.Setenv("LLM_ENDPOINT", server.URL)
 
-	handler := messageCompletionHandler(database)
+	handler := messageCompletionHandler(database, newTestToolRegistry(t))
 	for _, message := range []string{"My name is Cassian.", "What is my name?"} {
-		form := url.Values{"message": {message}, "model": {"selected-model"}}
+		form := url.Values{"message": {message}, "model": {"selected-model"}, "tool": {"webfetch"}}
 		request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		response := httptest.NewRecorder()
@@ -207,12 +223,12 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	}
 
 	firstRequest := <-requests
-	if len(firstRequest) != 1 || firstRequest[0].Content != "My name is Cassian." {
-		t.Fatalf("first request messages = %#v, want first user message", firstRequest)
+	if len(firstRequest.Messages) != 1 || firstRequest.Messages[0].Content != "My name is Cassian." {
+		t.Fatalf("first request messages = %#v, want first user message", firstRequest.Messages)
 	}
 	secondRequest := <-requests
-	if len(secondRequest) != 3 {
-		t.Fatalf("second request message count = %d, want 3", len(secondRequest))
+	if len(secondRequest.Messages) != 3 {
+		t.Fatalf("second request message count = %d, want 3", len(secondRequest.Messages))
 	}
 	want := []llm.Message{
 		{Role: "user", Content: "My name is Cassian."},
@@ -220,10 +236,23 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 		{Role: "user", Content: "What is my name?"},
 	}
 	for index := range want {
-		if secondRequest[index].Role != want[index].Role || secondRequest[index].Content != want[index].Content {
-			t.Errorf("second request message %d = %#v, want %#v", index, secondRequest[index], want[index])
+		if secondRequest.Messages[index].Role != want[index].Role || secondRequest.Messages[index].Content != want[index].Content {
+			t.Errorf("second request message %d = %#v, want %#v", index, secondRequest.Messages[index], want[index])
 		}
 	}
+}
+
+func newTestToolRegistry(t *testing.T) *tools.Registry {
+	t.Helper()
+
+	registry, err := tools.NewRegistry(
+		tools.NewWebFetchTool(),
+		tools.NewWebSearchTool("https://search.example"),
+	)
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	return registry
 }
 
 func openTestDatabase(t *testing.T) *sql.DB {

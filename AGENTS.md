@@ -15,12 +15,13 @@
 
 # Architecture
 
-- `server.go` is the HTTP entrypoint: `GET /` renders the page, `POST /messages` appends user and assistant HTML message fragments, and `GET /static/` serves embedded assets. The message handler creates an `llm.Client` for each request; conversations, tools, and the database are not wired into the server yet.
+- `server.go` is the HTTP entrypoint: `GET /` renders the page, `POST /messages` appends user and assistant HTML message fragments, and `GET /static/` serves embedded assets. It registers all user-facing tools once at startup.
 - `templ/*.templ` contains source components despite using package name `templates`. Edit these source files, then regenerate.
 - `static/` is embedded into the executable. Restart `go run .` after asset changes. htmx is vendored as `static/htmx.min.js`; there is no npm build pipeline.
 - `db/schema.sql` defines SQLite `chats` and position-ordered `messages`. Callers provide `*sql.DB`; the project does not yet configure a database driver or connection.
 - `db.InsertChat` and `db.InsertMessage` persist chats and `llm.Message` values. `db.GetChats` lists chats by recent activity, while `db.GetMessages` restores conversation order and decodes tool-call fields.
-- `llm.Client` is non-streaming and constructor-configured. Its endpoint argument must be the full chat-completions URL; no path is appended. The server reads `LLM_KEY`, `LLM_MODEL`, and `LLM_ENDPOINT` directly and does not load a `.env` file.
+- `llm.Client` is non-streaming and constructor-configured. Its endpoint argument must be the full chat-completions URL; no path is appended. The server reads `LLM_KEY`, `LLM_MODEL`, `LLM_ENDPOINT`, and `SEARXNG_URL` directly and does not load a `.env` file.
 - `llm.NewConversation` creates a stateful, non-concurrent conversation around a client and optional `tools.Registry`. Initial messages may be supplied to the constructor; `Send` appends a user message, while `Complete` resumes from existing history.
 - Conversations advertise registry definitions using OpenAI-compatible function tools. Assistant `tool_calls` are executed through the registry, appended as `tool` messages with matching `tool_call_id` values, and sent back to the model until it returns a final response. Tool and argument errors are returned to the model as tool output; transport, context, and malformed protocol errors are returned to the caller. Consecutive tool-call chains are limited to 16 rounds.
+- Chat tool options come from the startup registry. Each message carries selected names through the pending htmx request, and `tools.Registry.Select` derives the registry exposed to that completion.
 - `tools.Registry` validates definitions and that invocation arguments are JSON objects. Each `Tool.Execute` implementation must still validate arguments against its own schema before side effects.

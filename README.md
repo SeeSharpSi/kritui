@@ -11,7 +11,7 @@ cp .env.example .env
 set -a; . ./.env; set +a
 ```
 
-`LLM_ENDPOINT` must be the full chat-completions URL.
+`LLM_ENDPOINT` must be the full chat-completions URL. `SEARXNG_URL` configures the server used by the optional `websearch` tool.
 
 Generate templates and start the server:
 
@@ -47,4 +47,4 @@ go vet ./...
 - `tools/`: validated tool registry and web-fetch tool
 - `db/`: SQLite schema and queries
 
-Tools are implemented but not currently connected to the HTTP chat flow.
+The server registers `webfetch` and `websearch`. Only tools selected in the chat options are exposed to the LLM for that request.

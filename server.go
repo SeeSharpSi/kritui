@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 
+	"seesharpsi/kritui/tools"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -36,11 +38,18 @@ func main() {
 			log.Fatalf("initialize database: %v", err)
 		}
 	}
+	toolRegistry, err := tools.NewRegistry(
+		tools.NewWebFetchTool(),
+		tools.NewWebSearchTool(os.Getenv("SEARXNG_URL")),
+	)
+	if err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", homeHandler(database))
-	mux.HandleFunc("POST /messages", messageHandler(database))
-	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database))
+	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry))
+	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry))
+	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry))
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
 
 	log.Println("listening on http://localhost:8080")

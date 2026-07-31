@@ -2,7 +2,7 @@ package templates
 
 import "seesharpsi/kritui/llm"
 
-templ Home(chatID string, messages []llm.Message, models []string, selectedModel string) {
+templ Home(chatID string, messages []llm.Message, models []string, selectedModel string, tools []string) {
 	@Layout("Kritui") {
 		<main>
 			<section class="chat">
@@ -25,7 +25,20 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 							</select>
 						</label>
 						<button type="button">Mode <strong>Chat</strong></button>
-						<button type="button">Tools <strong>Off</strong></button>
+						<details class="tool-picker">
+							<summary style="display: flex; align-items: center; font-size: small;">
+								Tools <strong>Off</strong>
+							</summary>
+							<div class="tool-options">
+								for _, tool := range tools {
+									<label>
+										<input type="checkbox" name="tool" value={ tool } form="message-form" onchange="updateToolSummary(this.closest('details'))"/>
+										<span>{ tool }</span>
+										<span class="tool-state" aria-hidden="true"></span>
+									</label>
+								}
+							</div>
+						</details>
 					</div>
 				</details>
 			</section>
@@ -42,6 +55,10 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 			<script>
 				const messageList = document.querySelector('.message-list');
 				messageList.scrollTop = messageList.scrollHeight;
+
+				function updateToolSummary(picker) {
+					picker.querySelector('summary strong').textContent = picker.querySelector('input:checked') ? 'On' : 'Off';
+				}
 			</script>
 		</main>
 	}

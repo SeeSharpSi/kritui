@@ -11,9 +11,10 @@ import (
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/templ"
+	"seesharpsi/kritui/tools"
 )
 
-func homeHandler(database *sql.DB) http.HandlerFunc {
+func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
 		if chat == "" {
@@ -53,13 +54,13 @@ func homeHandler(database *sql.DB) http.HandlerFunc {
 		models, selectedModel := availableModels(r)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.Home(chat, messages, models, selectedModel).Render(r.Context(), w); err != nil {
+		if err := templates.Home(chat, messages, models, selectedModel, registry.Names()).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render page", http.StatusInternalServerError)
 		}
 	}
 }
 
-func messageHandler(database *sql.DB) http.HandlerFunc {
+func messageHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		message := strings.TrimSpace(r.FormValue("message"))
 		if message == "" {
@@ -76,16 +77,21 @@ func messageHandler(database *sql.DB) http.HandlerFunc {
 		if model == "" {
 			model = os.Getenv("LLM_MODEL")
 		}
+		selected, err := registry.Select(r.Form["tool"]...)
+		if err != nil {
+			http.Error(w, "invalid tool selection", http.StatusBadRequest)
+			return
+		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		userMessage := llm.Message{Role: "user", Content: message}
-		if err := templates.PendingSubmission(strconv.FormatInt(chatID, 10), userMessage, model).Render(r.Context(), w); err != nil {
+		if err := templates.PendingSubmission(strconv.FormatInt(chatID, 10), userMessage, model, selected.Names()).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render pending message", http.StatusInternalServerError)
 		}
 	}
 }
 
-func messageCompletionHandler(database *sql.DB) http.HandlerFunc {
+func messageCompletionHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		message := strings.TrimSpace(r.FormValue("message"))
 		if message == "" {
@@ -96,6 +102,11 @@ func messageCompletionHandler(database *sql.DB) http.HandlerFunc {
 		chatID, err := strconv.ParseInt(r.URL.Query().Get("chat"), 10, 64)
 		if err != nil || chatID <= 0 {
 			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			return
+		}
+		selected, err := registry.Select(r.Form["tool"]...)
+		if err != nil {
+			http.Error(w, "invalid tool selection", http.StatusBadRequest)
 			return
 		}
 		if _, err := database.ExecContext(r.Context(), `
@@ -127,8 +138,13 @@ func messageCompletionHandler(database *sql.DB) http.HandlerFunc {
 
 		userMessage := llm.Message{Role: "user", Content: message}
 		position := len(messages)
-		messages = append(messages, userMessage)
-		completion, err := client.Complete(r.Context(), messages)
+		conversation, err := llm.NewConversation(client, selected, messages...)
+		if err != nil {
+			log.Printf("configure conversation: %v", err)
+			http.Error(w, "failed to configure conversation", http.StatusInternalServerError)
+			return
+		}
+		completion, err := conversation.Send(r.Context(), message)
 		if err != nil {
 			log.Printf("complete message: %v", err)
 			http.Error(w, "failed to complete message", http.StatusBadGateway)

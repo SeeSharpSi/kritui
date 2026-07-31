@@ -13,7 +13,7 @@ templ Messages(messages ...llm.Message) {
 	}
 }
 
-templ PendingSubmission(chatID string, message llm.Message, model string) {
+templ PendingSubmission(chatID string, message llm.Message, model string, tools []string) {
 	@Messages(message)
 	<article
 		class="message loading-message"
@@ -28,6 +28,9 @@ templ PendingSubmission(chatID string, message llm.Message, model string) {
 		<strong><span class="braille-spinner" aria-hidden="true"></span>{ model }</strong>
 		<input type="hidden" name="message" value={ message.Content }/>
 		<input type="hidden" name="model" value={ model }/>
+		for _, tool := range tools {
+			<input type="hidden" name="tool" value={ tool }/>
+		}
 	</article>
 	@MessageInput(true)
 }
