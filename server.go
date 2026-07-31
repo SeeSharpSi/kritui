@@ -45,11 +45,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("register tools: %v", err)
 	}
+	var toolCallLogger *log.Logger
+	switch value := os.Getenv("SHOW_TOOLCALLS"); value {
+	case "", "false":
+	case "true":
+		toolCallLogger = log.Default()
+	default:
+		log.Fatalf("SHOW_TOOLCALLS must be true or false, got %q", value)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry))
-	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry))
+	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCallLogger))
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
 
 	log.Println("listening on http://localhost:8080")

@@ -1,9 +1,11 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -269,6 +271,8 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConversation() error: %v", err)
 	}
+	var toolCallLog bytes.Buffer
+	conversation.SetToolCallLogger(log.New(&toolCallLog, "", 0))
 
 	completion, err := conversation.Send(context.Background(), "question")
 	if err != nil {
@@ -282,6 +286,10 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 	}
 	if requestNumber != 2 {
 		t.Errorf("request count = %d, want 2", requestNumber)
+	}
+	wantLog := "tool call: name=\"lookup\" arguments=\"{\\\"key\\\":\\\"value\\\"}\" response=\"found value\"\n"
+	if toolCallLog.String() != wantLog {
+		t.Errorf("tool call log = %q, want %q", toolCallLog.String(), wantLog)
 	}
 }
 

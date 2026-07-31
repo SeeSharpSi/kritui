@@ -16,14 +16,39 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 						<span class="visually-hidden">Toggle chat options</span>
 					</summary>
 					<div class="chat-options-list">
-						<label class="model-picker" style="display: flex; align-items: center; padding: .55rem .75rem; border: 1px solid var(--color-border); border-radius: .5rem; background: var(--color-surface); font-size: small;">
-							Model
-							<select name="model" form="message-form" style="max-width: 20rem; margin-left: .25rem; background: var(--color-surface); color: var(--color-text); border: 0; font-weight: bold;">
+						<details class="model-picker">
+							<summary style="display: flex; align-items: center; font-size: small;">
+								Model
+								<strong>
+									{ selectedModel }
+								</strong>
+							</summary>
+							<div class="model-options">
 								for _, model := range models {
-									<option value={ model } selected?={ model == selectedModel }>{ model }</option>
+									<label>
+										if model == selectedModel {
+											<input
+												type="radio"
+												name="model"
+												value={ model }
+												form="message-form"
+												checked
+												onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
+											/>
+										} else {
+											<input
+												type="radio"
+												name="model"
+												value={ model }
+												form="message-form"
+												onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
+											/>
+										}
+										<span>{ model }</span>
+									</label>
 								}
-							</select>
-						</label>
+							</div>
+						</details>
 						<button type="button">Mode <strong>Chat</strong></button>
 						<details class="tool-picker">
 							<summary style="display: flex; align-items: center; font-size: small;">

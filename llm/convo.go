@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 
 	"seesharpsi/kritui/tools"
 )
@@ -14,9 +15,18 @@ const maxToolCallRounds = 16
 // Conversation retains message history and executes tool calls requested by
 // the model. A Conversation must not be used concurrently.
 type Conversation struct {
-	client   *Client
-	registry *tools.Registry
-	messages []Message
+	client         *Client
+	registry       *tools.Registry
+	toolCallLogger *log.Logger
+	messages       []Message
+}
+
+// SetToolCallLogger configures logging for tool names, arguments, and results.
+// Passing nil disables tool-call logging.
+func (c *Conversation) SetToolCallLogger(logger *log.Logger) {
+	if c != nil {
+		c.toolCallLogger = logger
+	}
 }
 
 // NewConversation creates a conversation with optional existing history. A
@@ -106,12 +116,23 @@ func (c *Conversation) Complete(ctx context.Context) (Completion, error) {
 	}
 }
 
-func (c *Conversation) executeToolCall(ctx context.Context, call ToolCall) (string, error) {
+func (c *Conversation) executeToolCall(ctx context.Context, call ToolCall) (result string, err error) {
+	defer func() {
+		if c.toolCallLogger == nil {
+			return
+		}
+		if err != nil {
+			c.toolCallLogger.Printf("tool call: name=%q arguments=%q error=%q", call.Function.Name, call.Function.Arguments, err.Error())
+			return
+		}
+		c.toolCallLogger.Printf("tool call: name=%q arguments=%q response=%q", call.Function.Name, call.Function.Arguments, result)
+	}()
+
 	if c.registry == nil {
 		return fmt.Sprintf("Tool error: no tools are available; cannot execute %q", call.Function.Name), nil
 	}
 
-	result, err := c.registry.Execute(ctx, call.Function.Name, json.RawMessage(call.Function.Arguments))
+	result, err = c.registry.Execute(ctx, call.Function.Name, json.RawMessage(call.Function.Arguments))
 	if err == nil {
 		return result, nil
 	}

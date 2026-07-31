@@ -91,7 +91,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc
 	}
 }
 
-func messageCompletionHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
+func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCallLogger *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		message := strings.TrimSpace(r.FormValue("message"))
 		if message == "" {
@@ -144,6 +144,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry) http.H
 			http.Error(w, "failed to configure conversation", http.StatusInternalServerError)
 			return
 		}
+		conversation.SetToolCallLogger(toolCallLogger)
 		completion, err := conversation.Send(r.Context(), message)
 		if err != nil {
 			log.Printf("complete message: %v", err)

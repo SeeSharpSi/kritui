@@ -199,7 +199,7 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	t.Setenv("LLM_MODEL", "test-model")
 	t.Setenv("LLM_ENDPOINT", server.URL)
 
-	handler := messageCompletionHandler(database, newTestToolRegistry(t))
+	handler := messageCompletionHandler(database, newTestToolRegistry(t), nil)
 	for _, message := range []string{"My name is Cassian.", "What is my name?"} {
 		form := url.Values{"message": {message}, "model": {"selected-model"}, "tool": {"webfetch"}}
 		request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
