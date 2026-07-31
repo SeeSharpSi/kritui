@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
     content TEXT NOT NULL DEFAULT '',
     model TEXT,
+    total_tokens INTEGER,
+    cost REAL,
     tool_calls TEXT,
     tool_call_id TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

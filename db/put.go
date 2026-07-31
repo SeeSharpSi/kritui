@@ -79,11 +79,19 @@ func InsertMessage(ctx context.Context, db *sql.DB, chatID int64, position int, 
 	if message.Model != "" {
 		model = message.Model
 	}
+	var totalTokens any
+	if message.TotalTokens != nil {
+		totalTokens = *message.TotalTokens
+	}
+	var cost any
+	if message.Cost != nil {
+		cost = *message.Cost
+	}
 
 	result, err := db.ExecContext(ctx, `
-		INSERT INTO messages (chat_id, position, role, content, model, tool_calls, tool_call_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, chatID, position, message.Role, message.Content, model, toolCalls, toolCallID)
+		INSERT INTO messages (chat_id, position, role, content, model, total_tokens, cost, tool_calls, tool_call_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, chatID, position, message.Role, message.Content, model, totalTokens, cost, toolCalls, toolCallID)
 	if err != nil {
 		return 0, fmt.Errorf("insert message: %w", err)
 	}

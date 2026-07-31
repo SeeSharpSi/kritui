@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"seesharpsi/kritui/tools"
 
@@ -37,6 +38,8 @@ func main() {
 		if _, err := database.Exec(schema); err != nil {
 			log.Fatalf("initialize database: %v", err)
 		}
+	} else if err := migrateDatabase(database); err != nil {
+		log.Fatalf("migrate database: %v", err)
 	}
 	toolRegistry, err := tools.NewRegistry(
 		tools.NewWebFetchTool(),
@@ -70,4 +73,16 @@ func main() {
 	if err := http.ListenAndServe(":8080", mux); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func migrateDatabase(database *sql.DB) error {
+	for _, statement := range []string{
+		`ALTER TABLE messages ADD COLUMN total_tokens INTEGER`,
+		`ALTER TABLE messages ADD COLUMN cost REAL`,
+	} {
+		if _, err := database.Exec(statement); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
 }
