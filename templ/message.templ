@@ -86,8 +86,8 @@ templ PendingSubmission(chatID string, requestID string, message llm.Message, mo
 
 templ MessageInput(outOfBand bool) {
 	if outOfBand {
-		<input id="message" name="message" placeholder="Write a message..." required autofocus hx-swap-oob="outerHTML"/>
+		<input id="message" name="message" placeholder="Write a message..." required autocomplete="off" hx-swap-oob="outerHTML"/>
 	} else {
-		<input id="message" name="message" placeholder="Write a message..." required autofocus/>
+		<input id="message" name="message" placeholder="Write a message..." required autocomplete="off" autofocus/>
 	}
 }
