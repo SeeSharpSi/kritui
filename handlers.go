@@ -168,6 +168,14 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.URL.Query().Has("close") {
+			if err := templates.HistoryClose(chat).Render(r.Context(), w); err != nil {
+				http.Error(w, "failed to close chat history", http.StatusInternalServerError)
+			}
+			return
+		}
+
 		chats, err := kritui_db.GetChats(r.Context(), database)
 		if err != nil {
 			log.Printf("get chats: %v", err)
@@ -175,7 +183,6 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := templates.HistoryList(chat, chats).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render chat history", http.StatusInternalServerError)
 		}

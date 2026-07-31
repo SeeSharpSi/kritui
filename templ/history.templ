@@ -21,7 +21,7 @@ templ MessageList(messages []llm.Message) {
 }
 
 templ HistoryList(chatID string, chats []kritui_db.Chat) {
-	<div class="message-list history-list">
+	<div class="history-list">
 		<style>
         .chat-options {
             display: none;
@@ -45,6 +45,10 @@ templ HistoryList(chatID string, chats []kritui_db.Chat) {
 	@HistoryButton(chatID, true, true)
 }
 
+templ HistoryClose(chatID string) {
+	@HistoryButton(chatID, false, true)
+}
+
 templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 	<div
 		class={ "history-entry", templ.KV("current", strconv.FormatInt(chat.ID, 10) == chatID) }
@@ -60,8 +64,8 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 				<form
 					class="history-rename"
 					hx-put={ renameChatURL(chat.ID, chatID) }
-					hx-target=".message-list"
-					hx-swap="outerHTML"
+					hx-target="#history-panel"
+					hx-swap="innerHTML"
 				>
 					<input
 						type="text"
@@ -123,8 +127,8 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 			type="button"
 			class="history-action history-delete"
 			hx-delete={ deleteChatURL(chat.ID, chatID) }
-			hx-target=".message-list"
-			hx-swap="outerHTML"
+			hx-target="#history-panel"
+			hx-swap="innerHTML"
 			hx-confirm={ "Permanently delete " + historyTitle(chat) + "?" }
 			aria-label={ "Delete " + historyTitle(chat) }
 			title={ "Delete " + historyTitle(chat) }
@@ -160,8 +164,8 @@ templ HistoryButton(chatID string, active bool, outOfBand bool) {
 		type="button"
 		class={ "history-button" , templ.KV("active", active) }
 		hx-get={ historyToggleURL(chatID, active) }
-		hx-target=".message-list"
-		hx-swap={ historySwap(active) }
+		hx-target="#history-panel"
+		hx-swap="innerHTML"
 		aria-pressed={ strconv.FormatBool(active) }
 		if outOfBand {
 			hx-swap-oob="outerHTML"
@@ -171,16 +175,9 @@ templ HistoryButton(chatID string, active bool, outOfBand bool) {
 
 func historyToggleURL(chatID string, active bool) string {
 	if active {
-		return "/chat?chat=" + chatID
+		return "/history?chat=" + chatID + "&close=1"
 	}
 	return "/history?chat=" + chatID
-}
-
-func historySwap(active bool) string {
-	if active {
-		return "outerHTML scroll:bottom"
-	}
-	return "outerHTML"
 }
 
 func deleteChatURL(chatID int64, currentChatID string) string {
