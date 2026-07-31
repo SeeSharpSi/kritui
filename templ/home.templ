@@ -6,47 +6,24 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 	@Layout("Kritui") {
 		<main>
 			<section class="chat">
-				<div id="messages" class="message-list" aria-live="polite">
-					@Messages(messages...)
+				<div class="message-list" aria-live="polite">
+					<div id="messages" class="message-thread">
+						@Messages(messages...)
+					</div>
 				</div>
 				<details class="chat-options">
 					<summary style="outline: none;">
 						<span class="visually-hidden">Toggle chat options</span>
 					</summary>
 					<div class="chat-options-list">
-						<details class="model-picker">
-							<summary style="display: flex; align-items: center; font-size: small;">
-								Model
-								<strong>
-									{ selectedModel }
-								</strong>
-							</summary>
-							<div class="model-options">
+						<label class="model-picker" style="display: flex; align-items: center; padding: .55rem .75rem; border: 1px solid var(--color-border); border-radius: .5rem; background: var(--color-surface); font-size: small;">
+							Model
+							<select name="model" form="message-form" style="max-width: 20rem; margin-left: .25rem; background: var(--color-surface); color: var(--color-text); border: 0; font-weight: bold;">
 								for _, model := range models {
-									<label>
-										if model == selectedModel {
-											<input
-												type="radio"
-												name="model"
-												value={ model }
-												form="message-form"
-												checked
-												onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
-											/>
-										} else {
-											<input
-												type="radio"
-												name="model"
-												value={ model }
-												form="message-form"
-												onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
-											/>
-										}
-										<span>{ model }</span>
-									</label>
+									<option value={ model } selected?={ model == selectedModel }>{ model }</option>
 								}
-							</div>
-						</details>
+							</select>
+						</label>
 						<button type="button">Mode <strong>Chat</strong></button>
 						<button type="button">Tools <strong>Off</strong></button>
 					</div>
@@ -56,14 +33,16 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 				id="message-form"
 				hx-post={ "/messages?chat=" + chatID }
 				hx-target="#messages"
-				hx-swap="beforeend"
-				hx-on::before-request="const input = this.querySelector('#message'); const article = document.createElement('article'); article.className = 'message user'; const role = document.createElement('strong'); role.textContent = 'user'; const content = document.createElement('div'); content.textContent = input.value; article.append(role, content); document.querySelector('#messages').append(article); event.detail.xhr.pendingMessage = article; input.value = ''; input.focus()"
-				hx-on::after-request="if (event.detail.successful) event.detail.xhr.pendingMessage.remove()"
+				hx-swap="beforeend scroll:.message-list:bottom"
 			>
 				<label for="message" class="visually-hidden">Message</label>
-				<input id="message" name="message" placeholder="Write a message..." required autofocus/>
+				@MessageInput(false)
 				<button type="submit">Send</button>
 			</form>
+			<script>
+				const messageList = document.querySelector('.message-list');
+				messageList.scrollTop = messageList.scrollHeight;
+			</script>
 		</main>
 	}
 }

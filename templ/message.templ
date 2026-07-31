@@ -14,3 +14,30 @@ templ Messages(messages ...llm.Message) {
 		</article>
 	}
 }
+
+templ PendingSubmission(chatID string, message llm.Message, model string) {
+	@Messages(message)
+	<article
+		class="message loading-message"
+		hx-post={ "/messages/complete?chat=" + chatID }
+		hx-trigger="load"
+		hx-target="this"
+		hx-swap="outerHTML show:bottom"
+		hx-include="this"
+		role="status"
+		aria-label="Waiting for model response"
+	>
+		<strong><span class="braille-spinner" aria-hidden="true"></span>{ model }</strong>
+		<input type="hidden" name="message" value={ message.Content }/>
+		<input type="hidden" name="model" value={ model }/>
+	</article>
+	@MessageInput(true)
+}
+
+templ MessageInput(outOfBand bool) {
+	if outOfBand {
+		<input id="message" name="message" placeholder="Write a message..." required autofocus hx-swap-oob="outerHTML"/>
+	} else {
+		<input id="message" name="message" placeholder="Write a message..." required autofocus/>
+	}
+}

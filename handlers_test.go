@@ -130,7 +130,33 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 	}
 }
 
-func TestMessageHandlerIncludesEarlierMessages(t *testing.T) {
+func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "default-model")
+	form := url.Values{"message": {"Hello"}, "model": {"selected-model"}}
+	request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+
+	messageHandler(database)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	for _, content := range []string{
+		"Hello",
+		"selected-model",
+		`hx-post="/messages/complete?chat=1"`,
+		`hx-trigger="load"`,
+		`hx-swap-oob="outerHTML"`,
+	} {
+		if !strings.Contains(response.Body.String(), content) {
+			t.Errorf("response does not contain %q", content)
+		}
+	}
+}
+
+func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	database := openTestDatabase(t)
 	requests := make(chan []llm.Message, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +183,7 @@ func TestMessageHandlerIncludesEarlierMessages(t *testing.T) {
 	t.Setenv("LLM_MODEL", "test-model")
 	t.Setenv("LLM_ENDPOINT", server.URL)
 
-	handler := messageHandler(database)
+	handler := messageCompletionHandler(database)
 	for _, message := range []string{"My name is Cassian.", "What is my name?"} {
 		form := url.Values{"message": {message}, "model": {"selected-model"}}
 		request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))

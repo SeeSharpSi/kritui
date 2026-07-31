@@ -72,6 +72,32 @@ func messageHandler(database *sql.DB) http.HandlerFunc {
 			http.Error(w, "valid chat is required", http.StatusBadRequest)
 			return
 		}
+		model := strings.TrimSpace(r.FormValue("model"))
+		if model == "" {
+			model = os.Getenv("LLM_MODEL")
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		userMessage := llm.Message{Role: "user", Content: message}
+		if err := templates.PendingSubmission(strconv.FormatInt(chatID, 10), userMessage, model).Render(r.Context(), w); err != nil {
+			http.Error(w, "failed to render pending message", http.StatusInternalServerError)
+		}
+	}
+}
+
+func messageCompletionHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		message := strings.TrimSpace(r.FormValue("message"))
+		if message == "" {
+			http.Error(w, "message is required", http.StatusBadRequest)
+			return
+		}
+
+		chatID, err := strconv.ParseInt(r.URL.Query().Get("chat"), 10, 64)
+		if err != nil || chatID <= 0 {
+			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			return
+		}
 		if _, err := database.ExecContext(r.Context(), `
 			INSERT INTO chats (id) VALUES (?)
 			ON CONFLICT (id) DO NOTHING
@@ -119,7 +145,7 @@ func messageHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.Messages(userMessage, completion.Message).Render(r.Context(), w); err != nil {
+		if err := templates.Messages(completion.Message).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render message", http.StatusInternalServerError)
 		}
 	}

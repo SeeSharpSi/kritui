@@ -47,6 +47,10 @@ main {
             box-sizing: border-box;
         }
 
+        .message-thread {
+            display: contents;
+        }
+
         .message {
             width: fit-content;
             max-width: 80%;
@@ -59,6 +63,23 @@ main {
                 margin-left: auto;
                 background: var(--color-accent);
                 color: var(--color-on-accent);
+            }
+
+            &.loading-message {
+                display: none;
+                padding: .7rem 0;
+                background: transparent;
+
+                &.htmx-request {
+                    display: block;
+                }
+
+                .braille-spinner::before {
+                    content: "⠋";
+                    display: inline-block;
+                    width: 1.1em;
+                    animation: braille-spinner 800ms steps(1, end) infinite;
+                }
             }
         }
     }
@@ -223,6 +244,19 @@ main {
             cursor: pointer;
         }
     }
+}
+
+@keyframes braille-spinner {
+    0% { content: "⠋"; }
+    10% { content: "⠙"; }
+    20% { content: "⠹"; }
+    30% { content: "⠸"; }
+    40% { content: "⠼"; }
+    50% { content: "⠴"; }
+    60% { content: "⠦"; }
+    70% { content: "⠧"; }
+    80% { content: "⠇"; }
+    90% { content: "⠏"; }
 }
 
 .visually-hidden {
