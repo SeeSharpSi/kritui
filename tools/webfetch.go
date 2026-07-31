@@ -11,22 +11,23 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
-	"golang.org/x/net/html"
 )
 
 const (
 	webFetchMaxResponseSize = 5 * 1024 * 1024
 	webFetchDefaultTimeout  = 30 * time.Second
 	webFetchMaxTimeout      = 120 * time.Second
+	webFetchDefaultLimit    = 8000
+	webFetchMaxLimit        = 32000
 
-	webFetchDescription = `Fetches content from a specified URL.
-Takes a URL and optional format as input.
-Fetches the URL content and converts it to the requested format (markdown by default).
-Use this tool to retrieve and analyze web content.
+	webFetchAccept = "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"
 
-The URL must be a fully formed HTTP or HTTPS URL. Supported formats are markdown, text, and html. This tool is read-only and does not modify files.`
+	webFetchDescription = `Fetches content from a specified URL and returns compact JSON.
+HTML pages are converted to markdown. Use offset and limit to page through long content.
+The URL must be a fully formed HTTP or HTTPS URL. This tool is read-only and does not modify files.`
 	webFetchParameters = `{
   "type": "object",
   "properties": {
@@ -34,11 +35,18 @@ The URL must be a fully formed HTTP or HTTPS URL. Supported formats are markdown
       "type": "string",
       "description": "The URL to fetch content from"
     },
-    "format": {
-      "type": "string",
-      "enum": ["text", "markdown", "html"],
-      "description": "The format to return the content in (text, markdown, or html). Defaults to markdown.",
-      "default": "markdown"
+    "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Character offset into the converted content"
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32000,
+      "default": 8000,
+      "description": "Maximum number of characters to return"
     },
     "timeout": {
       "type": "number",
@@ -49,12 +57,6 @@ The URL must be a fully formed HTTP or HTTPS URL. Supported formats are markdown
   "additionalProperties": false
 }`
 )
-
-var webFetchAcceptHeaders = map[string]string{
-	"markdown": "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1",
-	"text":     "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1",
-	"html":     "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1",
-}
 
 // WebFetchTool fetches web content. Its zero value uses http.DefaultClient and
 // is safe for concurrent use when its HTTPClient is safe for concurrent use.
@@ -76,7 +78,7 @@ func (WebFetchTool) Definition() Definition {
 	}
 }
 
-// Execute fetches a URL and returns its content in the requested format.
+// Execute fetches a URL and returns a JSON slice of its content.
 func (t WebFetchTool) Execute(ctx context.Context, arguments json.RawMessage) (string, error) {
 	params, err := parseWebFetchArguments(arguments)
 	if err != nil {
@@ -99,7 +101,7 @@ func (t WebFetchTool) Execute(ctx context.Context, arguments json.RawMessage) (s
 		client = http.DefaultClient
 	}
 
-	response, err := fetchWebResponse(requestContext, client, params.url, params.format, webFetchBrowserUserAgent)
+	response, err := fetchWebResponse(requestContext, client, params.url, webFetchBrowserUserAgent)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(requestContext.Err(), context.DeadlineExceeded) {
 			return "", errors.New("webfetch: request timed out")
@@ -109,7 +111,7 @@ func (t WebFetchTool) Execute(ctx context.Context, arguments json.RawMessage) (s
 
 	if response.StatusCode == http.StatusForbidden && response.Header.Get("cf-mitigated") == "challenge" {
 		response.Body.Close()
-		response, err = fetchWebResponse(requestContext, client, params.url, params.format, "opencode")
+		response, err = fetchWebResponse(requestContext, client, params.url, "opencode")
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(requestContext.Err(), context.DeadlineExceeded) {
 				return "", errors.New("webfetch: request timed out")
@@ -142,35 +144,51 @@ func (t WebFetchTool) Execute(ctx context.Context, arguments json.RawMessage) (s
 	contentType := response.Header.Get("Content-Type")
 	mimeType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 	if strings.HasPrefix(mimeType, "image/") && mimeType != "image/svg+xml" && mimeType != "image/vnd.fastbidsheet" {
-		return "Image fetched successfully", nil
+		return encodeWebFetchResponse(webFetchResponse{
+			URL:     params.url,
+			Content: "Image fetched successfully",
+			Offset:  0,
+			Limit:   params.limit,
+			Total:   0,
+		})
 	}
 
-	result := strings.ToValidUTF8(string(content), "\uFFFD")
+	body := strings.ToValidUTF8(string(content), "\uFFFD")
 	if strings.Contains(strings.ToLower(contentType), "text/html") {
-		switch params.format {
-		case "markdown":
-			markdown, err := htmltomarkdown.ConvertString(result)
-			if err != nil {
-				return "", fmt.Errorf("webfetch: convert HTML to markdown: %w", err)
-			}
-			return markdown, nil
-		case "text":
-			text, err := extractTextFromHTML(result)
-			if err != nil {
-				return "", fmt.Errorf("webfetch: extract HTML text: %w", err)
-			}
-			return text, nil
+		markdown, err := htmltomarkdown.ConvertString(body)
+		if err != nil {
+			return "", fmt.Errorf("webfetch: convert HTML to markdown: %w", err)
 		}
+		body = markdown
 	}
-	return result, nil
+
+	sliced, total := sliceRunes(body, params.offset, params.limit)
+	return encodeWebFetchResponse(webFetchResponse{
+		URL:       params.url,
+		Content:   sliced,
+		Offset:    params.offset,
+		Limit:     params.limit,
+		Total:     total,
+		Truncated: params.offset+utf8.RuneCountInString(sliced) < total,
+	})
 }
 
 const webFetchBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 
 type webFetchArguments struct {
 	url     string
-	format  string
+	offset  int
+	limit   int
 	timeout *float64
+}
+
+type webFetchResponse struct {
+	URL       string `json:"url"`
+	Content   string `json:"content"`
+	Offset    int    `json:"offset"`
+	Limit     int    `json:"limit"`
+	Total     int    `json:"total"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 func parseWebFetchArguments(arguments json.RawMessage) (webFetchArguments, error) {
@@ -179,7 +197,9 @@ func parseWebFetchArguments(arguments json.RawMessage) (webFetchArguments, error
 		return webFetchArguments{}, errors.New("webfetch: arguments must be a JSON object")
 	}
 	for name := range values {
-		if name != "url" && name != "format" && name != "timeout" {
+		switch name {
+		case "url", "offset", "limit", "timeout":
+		default:
 			return webFetchArguments{}, fmt.Errorf("webfetch: unknown argument %q", name)
 		}
 	}
@@ -197,14 +217,24 @@ func parseWebFetchArguments(arguments json.RawMessage) (webFetchArguments, error
 		return webFetchArguments{}, errors.New("webfetch: URL must be a fully formed HTTP or HTTPS URL")
 	}
 
-	params.format = "markdown"
-	if rawFormat, exists := values["format"]; exists {
-		if err := json.Unmarshal(rawFormat, &params.format); err != nil {
-			return webFetchArguments{}, errors.New("webfetch: format must be a string")
+	params.offset = 0
+	if rawOffset, exists := values["offset"]; exists {
+		if err := json.Unmarshal(rawOffset, &params.offset); err != nil {
+			return webFetchArguments{}, errors.New("webfetch: offset must be an integer")
 		}
 	}
-	if params.format != "markdown" && params.format != "text" && params.format != "html" {
-		return webFetchArguments{}, errors.New(`webfetch: format must be "markdown", "text", or "html"`)
+	if params.offset < 0 {
+		return webFetchArguments{}, errors.New("webfetch: offset must be >= 0")
+	}
+
+	params.limit = webFetchDefaultLimit
+	if rawLimit, exists := values["limit"]; exists {
+		if err := json.Unmarshal(rawLimit, &params.limit); err != nil {
+			return webFetchArguments{}, errors.New("webfetch: limit must be an integer")
+		}
+	}
+	if params.limit < 1 || params.limit > webFetchMaxLimit {
+		return webFetchArguments{}, fmt.Errorf("webfetch: limit must be between 1 and %d", webFetchMaxLimit)
 	}
 
 	if rawTimeout, exists := values["timeout"]; exists {
@@ -218,44 +248,34 @@ func parseWebFetchArguments(arguments json.RawMessage) (webFetchArguments, error
 	return params, nil
 }
 
-func fetchWebResponse(ctx context.Context, client *http.Client, address, format, userAgent string) (*http.Response, error) {
+func fetchWebResponse(ctx context.Context, client *http.Client, address, userAgent string) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("User-Agent", userAgent)
-	request.Header.Set("Accept", webFetchAcceptHeaders[format])
+	request.Header.Set("Accept", webFetchAccept)
 	request.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	return client.Do(request)
 }
 
-func extractTextFromHTML(source string) (string, error) {
-	root, err := html.Parse(strings.NewReader(source))
+func sliceRunes(content string, offset, limit int) (string, int) {
+	runes := []rune(content)
+	total := len(runes)
+	if offset >= total {
+		return "", total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return string(runes[offset:end]), total
+}
+
+func encodeWebFetchResponse(result webFetchResponse) (string, error) {
+	encoded, err := json.Marshal(result)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("webfetch: encode response: %w", err)
 	}
-	var output strings.Builder
-	writeHTMLText(&output, root)
-	return strings.TrimSpace(output.String()), nil
-}
-
-func writeHTMLText(output *strings.Builder, node *html.Node) {
-	if node.Type == html.ElementNode && shouldSkipHTMLText(node.Data) {
-		return
-	}
-	if node.Type == html.TextNode {
-		output.WriteString(node.Data)
-	}
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		writeHTMLText(output, child)
-	}
-}
-
-func shouldSkipHTMLText(tag string) bool {
-	switch tag {
-	case "script", "style", "noscript", "iframe", "object", "embed":
-		return true
-	default:
-		return false
-	}
+	return string(encoded), nil
 }

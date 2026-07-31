@@ -549,7 +549,7 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 		requestNumber++
 		w.Header().Set("Content-Type", "application/json")
 		if requestNumber == 1 {
-			arguments, _ := json.Marshal(map[string]string{"url": fetched.URL, "format": "text"})
+			arguments, _ := json.Marshal(map[string]string{"url": fetched.URL})
 			_, _ = w.Write([]byte(`{
 				"model":"response-model",
 				"choices":[{"message":{"role":"assistant","tool_calls":[{
