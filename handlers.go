@@ -220,6 +220,65 @@ func deleteChatHandler(database *sql.DB) http.HandlerFunc {
 	}
 }
 
+func renameChatHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID, err := strconv.ParseInt(r.PathValue("chat"), 10, 64)
+		if err != nil || chatID <= 0 {
+			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			return
+		}
+		current := r.URL.Query().Get("current")
+		currentChatID, err := strconv.ParseInt(current, 10, 64)
+		if err != nil || currentChatID <= 0 {
+			http.Error(w, "valid current chat is required", http.StatusBadRequest)
+			return
+		}
+
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		title := strings.TrimSpace(r.FormValue("title"))
+		if title == "" {
+			http.Error(w, "title is required", http.StatusBadRequest)
+			return
+		}
+
+		result, err := database.ExecContext(r.Context(), `
+			UPDATE chats
+			SET title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			WHERE id = ?
+		`, title, chatID)
+		if err != nil {
+			log.Printf("rename chat: %v", err)
+			http.Error(w, "failed to rename chat", http.StatusInternalServerError)
+			return
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			log.Printf("rename chat rows affected: %v", err)
+			http.Error(w, "failed to rename chat", http.StatusInternalServerError)
+			return
+		}
+		if affected == 0 {
+			http.Error(w, "chat not found", http.StatusNotFound)
+			return
+		}
+
+		chats, err := kritui_db.GetChats(r.Context(), database)
+		if err != nil {
+			log.Printf("get chats: %v", err)
+			http.Error(w, "failed to get chats", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := templates.HistoryList(current, chats).Render(r.Context(), w); err != nil {
+			http.Error(w, "failed to render chat history", http.StatusInternalServerError)
+		}
+	}
+}
+
 func chatHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")

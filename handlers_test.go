@@ -158,14 +158,50 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 	for _, content := range []string{
+		`class="history-action history-edit"`,
+		`class="history-action history-cancel"`,
 		`class="history-action history-delete"`,
+		`hx-put="/chats/8?current=8"`,
 		`hx-delete="/chats/8?current=8"`,
 		`hx-confirm="Permanently delete Project notes?"`,
 		`aria-label="Delete Project notes"`,
+		`name="title"`,
+		`value="Project notes"`,
 	} {
 		if !strings.Contains(response.Body.String(), content) {
 			t.Errorf("response does not contain %q", content)
 		}
+	}
+}
+
+func TestRenameChatHandlerUpdatesTitle(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (8, 'Old title'), (9, 'Other')`); err != nil {
+		t.Fatalf("insert chats: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
+	request := httptest.NewRequest(http.MethodPut, "/chats/8?current=9", strings.NewReader("title=New+title"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "New title") {
+		t.Error("response does not contain renamed chat")
+	}
+	if strings.Contains(response.Body.String(), "Old title") {
+		t.Error("response still contains old title")
+	}
+	var title string
+	if err := database.QueryRow(`SELECT title FROM chats WHERE id = 8`).Scan(&title); err != nil {
+		t.Fatalf("query title: %v", err)
+	}
+	if title != "New title" {
+		t.Errorf("stored title = %q, want %q", title, "New title")
 	}
 }
 

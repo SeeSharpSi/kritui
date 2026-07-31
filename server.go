@@ -59,6 +59,7 @@ func main() {
 	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry))
 	mux.HandleFunc("GET /history", historyHandler(database))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
+	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
 	mux.HandleFunc("GET /chat", chatHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, toolCalls))
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))

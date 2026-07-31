@@ -74,6 +74,7 @@ main {
 
             &.history-list {
                 gap: 1rem;
+                overflow-x: hidden;
 
                 .history-heading {
                     padding: .5rem .25rem 1rem;
@@ -95,22 +96,30 @@ main {
                     color: var(--color-border-strong);
                 }
 
-                .history-nav ul {
-                    display: grid;
-                    gap: .65rem;
-                    margin: 0;
-                    padding: 0;
-                    list-style: none;
+                .history-nav {
+                    min-width: 0;
+                    width: 100%;
 
-                    li {
-                        display: flex;
-                        align-items: center;
+                    ul {
+                        display: grid;
                         gap: .65rem;
+                        margin: 0;
+                        padding: 0;
+                        list-style: none;
+                        min-width: 0;
+
+                        li {
+                            display: flex;
+                            align-items: center;
+                            gap: .65rem;
+                            min-width: 0;
+                        }
                     }
                 }
 
                 .history-entry {
                     min-width: 0;
+                    max-width: 100%;
                     flex: 1;
                     display: flex;
                     align-items: center;
@@ -120,10 +129,10 @@ main {
                     border-radius: .65rem;
                     background: var(--color-background);
                     color: var(--color-text);
-                    text-decoration: none;
+                    overflow: hidden;
 
                     &:hover,
-                    &:focus-visible,
+                    &:focus-within,
                     &.current {
                         border-color: var(--color-accent);
                         background: var(--color-surface-muted);
@@ -132,6 +141,25 @@ main {
                     .history-meta {
                         min-width: 0;
                         flex: 1;
+                        overflow: hidden;
+                    }
+
+                    .history-title-slot {
+                        display: grid;
+                        grid-template-areas: "title";
+                        min-width: 0;
+                        align-items: center;
+                    }
+
+                    .history-title-link,
+                    .history-rename {
+                        grid-area: title;
+                        min-width: 0;
+                    }
+
+                    .history-title-link {
+                        color: inherit;
+                        text-decoration: none;
                     }
 
                     strong {
@@ -141,11 +169,54 @@ main {
                         white-space: nowrap;
                     }
 
+                    .history-rename {
+                        margin: 0;
+                        visibility: hidden;
+                        pointer-events: none;
+
+                        input {
+                            box-sizing: border-box;
+                            display: block;
+                            width: 100%;
+                            margin: 0;
+                            padding: 0;
+                            border: 0;
+                            border-radius: 0;
+                            background: transparent;
+                            color: inherit;
+                            font: inherit;
+                            font-size: 1em;
+                            font-weight: 700;
+                            line-height: inherit;
+                            outline: none;
+                        }
+                    }
+
                     time {
                         display: block;
                         margin-top: .35rem;
                         color: var(--color-border-strong);
                         font-size: small;
+                    }
+
+                    &.editing {
+                        .history-title-link {
+                            visibility: hidden;
+                            pointer-events: none;
+                        }
+
+                        .history-edit {
+                            display: none;
+                        }
+
+                        .history-rename {
+                            visibility: visible;
+                            pointer-events: auto;
+                        }
+
+                        .history-cancel {
+                            display: grid;
+                        }
                     }
                 }
 
@@ -164,6 +235,8 @@ main {
                     text-decoration: none;
                 }
 
+                .history-edit,
+                .history-cancel,
                 .history-delete {
                     flex: 0 0 2.5rem;
                     width: 2.5rem;
@@ -177,6 +250,10 @@ main {
                         background: var(--color-surface);
                         color: var(--color-text);
                     }
+                }
+
+                .history-cancel {
+                    display: none;
                 }
 
                 .history-new {
