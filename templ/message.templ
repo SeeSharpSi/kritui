@@ -18,22 +18,55 @@ func messageModelMeta(message llm.Message) string {
 	return strings.Join(parts, " · ")
 }
 
+// messageView is one UI block: combined tool-call rounds and/or a visible message.
+type messageView struct {
+	ToolCalls []llm.ToolCall
+	Message   *llm.Message
+}
+
+// messagesForView merges consecutive assistant tool-call rounds into one group,
+// matching the live completion tracker. Tool role messages stay hidden.
+func messagesForView(messages []llm.Message) []messageView {
+	var views []messageView
+	var pending []llm.ToolCall
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		views = append(views, messageView{ToolCalls: pending})
+		pending = nil
+	}
+	for i := range messages {
+		message := &messages[i]
+		switch {
+		case message.Role == "tool":
+			continue
+		case message.Role == "assistant" && len(message.ToolCalls) > 0:
+			pending = append(pending, message.ToolCalls...)
+		default:
+			flush()
+			views = append(views, messageView{Message: message})
+		}
+	}
+	flush()
+	return views
+}
+
 templ Messages(messages ...llm.Message) {
-	for _, message := range messages {
-		if message.Role == "assistant" && len(message.ToolCalls) > 0 {
-			@CompletedToolCalls(message.ToolCalls)
-		} else if message.Role != "tool" {
-			<article class={ "message" , templ.KV("user", message.Role=="user" ) }>
-				if message.Role == "assistant" {
-					<strong>{ message.Model }</strong>
-					if meta := messageModelMeta(message); meta != "" {
+	for _, view := range messagesForView(messages) {
+		@CompletedToolCalls(view.ToolCalls)
+		if view.Message != nil {
+			<article class={ "message" , templ.KV("user", view.Message.Role=="user" ) }>
+				if view.Message.Role == "assistant" {
+					<strong>{ view.Message.Model }</strong>
+					if meta := messageModelMeta(*view.Message); meta != "" {
 						<span class="message-meta"> · { meta }</span>
 					}
 					<div class="message-content markdown">
-						@markdown.Render(message.Content)
+						@markdown.Render(view.Message.Content)
 					</div>
 				} else {
-					<div class="message-content plain-text">{ message.Content }</div>
+					<div class="message-content plain-text">{ view.Message.Content }</div>
 				}
 			</article>
 		}

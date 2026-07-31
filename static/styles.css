@@ -606,6 +606,7 @@ main {
                 background: var(--color-surface);
                 color: var(--color-text);
                 cursor: pointer;
+                user-select: none;
 
                 &:hover,
                 &:focus-visible {
