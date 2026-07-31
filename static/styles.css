@@ -50,6 +50,69 @@ main {
             &::-webkit-scrollbar {
                 display: none;
             }
+
+            &.history-list {
+                gap: 1rem;
+
+                .history-heading {
+                    padding: .5rem .25rem 1rem;
+                    border-bottom: 1px solid var(--color-border);
+
+                    h1 {
+                        margin: 0;
+                        font-size: 1.25rem;
+                    }
+
+                    p {
+                        margin: .35rem 0 0;
+                        color: var(--color-border-strong);
+                    }
+                }
+
+                .history-empty {
+                    margin: auto;
+                    color: var(--color-border-strong);
+                }
+
+                .history-nav ul {
+                    display: grid;
+                    gap: .65rem;
+                    margin: 0;
+                    padding: 0;
+                    list-style: none;
+                }
+
+                .history-entry {
+                    display: block;
+                    padding: .85rem 1rem;
+                    border: 1px solid var(--color-border);
+                    border-radius: .65rem;
+                    background: var(--color-background);
+                    color: var(--color-text);
+                    text-decoration: none;
+
+                    &:hover,
+                    &:focus-visible,
+                    &.current {
+                        border-color: var(--color-accent);
+                        background: var(--color-surface-muted);
+                    }
+
+                    strong {
+                        display: block;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                        white-space: nowrap;
+                    }
+
+                    time {
+                        display: block;
+                        margin-top: .35rem;
+                        color: var(--color-border-strong);
+                        font-size: small;
+                    }
+                }
+            }
         }
 
         .message-thread {
@@ -421,6 +484,11 @@ main {
             background: var(--color-accent);
             color: var(--color-on-accent);
             cursor: pointer;
+
+            &.history-button.active {
+                background: var(--color-surface-muted);
+                color: var(--color-text);
+            }
         }
     }
 }

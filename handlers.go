@@ -60,6 +60,52 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	}
 }
 
+func historyHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chat := r.URL.Query().Get("chat")
+		chatID, err := strconv.ParseInt(chat, 10, 64)
+		if err != nil || chatID <= 0 {
+			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			return
+		}
+
+		chats, err := kritui_db.GetChats(r.Context(), database)
+		if err != nil {
+			log.Printf("get chats: %v", err)
+			http.Error(w, "failed to get chats", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := templates.HistoryList(chat, chats).Render(r.Context(), w); err != nil {
+			http.Error(w, "failed to render chat history", http.StatusInternalServerError)
+		}
+	}
+}
+
+func chatHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chat := r.URL.Query().Get("chat")
+		chatID, err := strconv.ParseInt(chat, 10, 64)
+		if err != nil || chatID <= 0 {
+			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			return
+		}
+
+		messages, err := kritui_db.GetMessages(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("get messages: %v", err)
+			http.Error(w, "failed to get messages", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := templates.ChatMessageList(chat, messages).Render(r.Context(), w); err != nil {
+			http.Error(w, "failed to render chat", http.StatusInternalServerError)
+		}
+	}
+}
+
 func messageHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		message := strings.TrimSpace(r.FormValue("message"))
@@ -110,9 +156,9 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			return
 		}
 		if _, err := database.ExecContext(r.Context(), `
-			INSERT INTO chats (id) VALUES (?)
-			ON CONFLICT (id) DO NOTHING
-		`, chatID); err != nil {
+			INSERT INTO chats (id, title) VALUES (?, ?)
+			ON CONFLICT (id) DO UPDATE SET title = excluded.title WHERE chats.title = ''
+		`, chatID, message); err != nil {
 			log.Printf("create chat: %v", err)
 			http.Error(w, "failed to create chat", http.StatusInternalServerError)
 			return

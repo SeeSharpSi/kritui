@@ -56,6 +56,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry))
+	mux.HandleFunc("GET /history", historyHandler(database))
+	mux.HandleFunc("GET /chat", chatHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry))
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCallLogger))
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))

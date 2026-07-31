@@ -1,0 +1,96 @@
+package templates
+
+import (
+	"strconv"
+	"strings"
+	"time"
+
+	kritui_db "seesharpsi/kritui/db"
+	"seesharpsi/kritui/llm"
+)
+
+templ MessageList(messages []llm.Message) {
+	<div class="message-list" aria-live="polite">
+		<div id="messages" class="message-thread">
+			@Messages(messages...)
+		</div>
+	</div>
+}
+
+templ HistoryList(chatID string, chats []kritui_db.Chat) {
+	<div class="message-list history-list">
+		<header class="history-heading">
+			<h1>Chat history</h1>
+			<p>Select a conversation to continue it.</p>
+		</header>
+		if len(chats) == 0 {
+			<p class="history-empty">No saved chats yet.</p>
+		} else {
+			<nav class="history-nav" aria-label="Chat history">
+				<ul>
+					for _, chat := range chats {
+						<li>
+							<a
+								class={ "history-entry", templ.KV("current", strconv.FormatInt(chat.ID, 10) == chatID) }
+								href={ templ.URL("/?chat=" + strconv.FormatInt(chat.ID, 10)) }
+							>
+								<strong>{ historyTitle(chat) }</strong>
+								<time datetime={ chat.UpdatedAt }>{ historyTime(chat.UpdatedAt) }</time>
+							</a>
+						</li>
+					}
+				</ul>
+			</nav>
+		}
+	</div>
+	@HistoryButton(chatID, true, true)
+}
+
+templ ChatMessageList(chatID string, messages []llm.Message) {
+	@MessageList(messages)
+	@HistoryButton(chatID, false, true)
+}
+
+templ HistoryButton(chatID string, active bool, outOfBand bool) {
+	<button
+		id="history-button"
+		type="button"
+		class={ "history-button", templ.KV("active", active) }
+		hx-get={ historyToggleURL(chatID, active) }
+		hx-target=".message-list"
+		hx-swap={ historySwap(active) }
+		aria-pressed={ strconv.FormatBool(active) }
+		if outOfBand {
+			hx-swap-oob="outerHTML"
+		}
+	>History</button>
+}
+
+func historyToggleURL(chatID string, active bool) string {
+	if active {
+		return "/chat?chat=" + chatID
+	}
+	return "/history?chat=" + chatID
+}
+
+func historySwap(active bool) string {
+	if active {
+		return "outerHTML scroll:bottom"
+	}
+	return "outerHTML"
+}
+
+func historyTitle(chat kritui_db.Chat) string {
+	if title := strings.TrimSpace(chat.Title); title != "" {
+		return title
+	}
+	return "Chat " + strconv.FormatInt(chat.ID, 10)
+}
+
+func historyTime(value string) string {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return value
+	}
+	return parsed.Local().Format("Jan 2, 2006 at 3:04 PM")
+}

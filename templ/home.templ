@@ -6,11 +6,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 	@Layout("Kritui") {
 		<main>
 			<section class="chat">
-				<div class="message-list" aria-live="polite">
-					<div id="messages" class="message-thread">
-						@Messages(messages...)
-					</div>
-				</div>
+				@MessageList(messages)
 				<details class="chat-options">
 					<summary style="outline: none;">
 						<span class="visually-hidden">Toggle chat options</span>
@@ -49,7 +45,6 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 								}
 							</div>
 						</details>
-						<button type="button">Mode <strong>Chat</strong></button>
 						<details class="tool-picker">
 							<summary style="display: flex; align-items: center; font-size: small;">
 								Tools <strong>Off</strong>
@@ -75,6 +70,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 			>
 				<label for="message" class="visually-hidden">Message</label>
 				@MessageInput(false)
+				@HistoryButton(chatID, false, false)
 				<button type="submit">Send</button>
 			</form>
 			<script>
