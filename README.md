@@ -11,7 +11,7 @@ cp .env.example .env
 set -a; . ./.env; set +a
 ```
 
-`LLM_ENDPOINT` must be the full chat-completions URL. `SEARXNG_URL` configures the server used by the optional `websearch` tool.
+`LLM_ENDPOINT` must be the full chat-completions URL. `SEARXNG_URL` configures the server used by the optional `websearch` tool. The SearXNG instance must have the JSON response format enabled.
 
 Generate templates and start the server:
 

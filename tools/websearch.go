@@ -80,7 +80,9 @@ func (t WebSearchTool) Execute(ctx context.Context, arguments json.RawMessage) (
 	if err != nil {
 		return "", fmt.Errorf("websearch: create request: %w", err)
 	}
-	request.Header.Set("Accept", "application/json")
+	// SearXNG's limiter expects browser-compatible headers even for JSON searches.
+	request.Header.Set("Accept", "application/json, text/html;q=0.9, */*;q=0.8")
+	request.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	request.Header.Set("User-Agent", "kritui/1.0")
 
 	client := t.HTTPClient
