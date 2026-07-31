@@ -10,6 +10,7 @@ RUN go mod download
 COPY server.go handlers.go ./
 COPY db/ ./db/
 COPY llm/ ./llm/
+COPY markdown/ ./markdown/
 COPY static/ ./static/
 COPY templ/ ./templ/
 COPY tools/ ./tools/
