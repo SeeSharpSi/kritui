@@ -39,7 +39,10 @@ func NewConversation(client *Client, registry *tools.Registry, messages ...Messa
 	return &Conversation{
 		client:   client,
 		registry: registry,
-		messages: cloneMessages(messages),
+		messages: append(
+			[]Message{{Role: "system", Content: systemPrompt}},
+			cloneMessages(messages)...,
+		),
 	}, nil
 }
 

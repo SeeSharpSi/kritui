@@ -223,12 +223,15 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	}
 
 	firstRequest := <-requests
-	if len(firstRequest.Messages) != 1 || firstRequest.Messages[0].Content != "My name is Cassian." {
-		t.Fatalf("first request messages = %#v, want first user message", firstRequest.Messages)
+	if len(firstRequest.Messages) != 2 || firstRequest.Messages[0].Role != "system" || firstRequest.Messages[0].Content == "" || firstRequest.Messages[1].Content != "My name is Cassian." {
+		t.Fatalf("first request messages = %#v, want system prompt and first user message", firstRequest.Messages)
 	}
 	secondRequest := <-requests
-	if len(secondRequest.Messages) != 3 {
-		t.Fatalf("second request message count = %d, want 3", len(secondRequest.Messages))
+	if len(secondRequest.Messages) != 4 {
+		t.Fatalf("second request message count = %d, want 4", len(secondRequest.Messages))
+	}
+	if secondRequest.Messages[0].Role != "system" || secondRequest.Messages[0].Content != firstRequest.Messages[0].Content {
+		t.Errorf("second request system message = %#v, want %#v", secondRequest.Messages[0], firstRequest.Messages[0])
 	}
 	want := []llm.Message{
 		{Role: "user", Content: "My name is Cassian."},
@@ -236,8 +239,9 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 		{Role: "user", Content: "What is my name?"},
 	}
 	for index := range want {
-		if secondRequest.Messages[index].Role != want[index].Role || secondRequest.Messages[index].Content != want[index].Content {
-			t.Errorf("second request message %d = %#v, want %#v", index, secondRequest.Messages[index], want[index])
+		message := secondRequest.Messages[index+1]
+		if message.Role != want[index].Role || message.Content != want[index].Content {
+			t.Errorf("second request message %d = %#v, want %#v", index+1, message, want[index])
 		}
 	}
 }

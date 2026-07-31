@@ -220,8 +220,8 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch requestNumber {
 		case 1:
-			if len(request.Input) != 1 || request.Input[0].Role != "user" || request.Input[0].Content != "question" {
-				t.Errorf("first input = %#v, want user question", request.Input)
+			if len(request.Input) != 2 || request.Input[0].Role != "system" || request.Input[0].Content != systemPrompt || request.Input[1].Role != "user" || request.Input[1].Content != "question" {
+				t.Errorf("first input = %#v, want system prompt and user question", request.Input)
 			}
 			_, _ = w.Write([]byte(`{
 				"id":"response-1",
@@ -234,16 +234,19 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 				"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}
 			}`))
 		case 2:
-			if len(request.Input) != 4 {
-				t.Fatalf("second input length = %d, want 4", len(request.Input))
+			if len(request.Input) != 5 {
+				t.Fatalf("second input length = %d, want 5", len(request.Input))
 			}
-			if reasoning := request.Input[1]; reasoning.Type != "reasoning" {
+			if request.Input[0].Role != "system" || request.Input[0].Content != systemPrompt {
+				t.Errorf("system input = %#v", request.Input[0])
+			}
+			if reasoning := request.Input[2]; reasoning.Type != "reasoning" {
 				t.Errorf("reasoning input = %#v", reasoning)
 			}
-			if call := request.Input[2]; call.Type != "function_call" || call.CallID != "call-1" || call.Name != "lookup" || call.Arguments != `{"key":"value"}` {
+			if call := request.Input[3]; call.Type != "function_call" || call.CallID != "call-1" || call.Name != "lookup" || call.Arguments != `{"key":"value"}` {
 				t.Errorf("function call input = %#v", call)
 			}
-			if output := request.Input[3]; output.Type != "function_call_output" || output.CallID != "call-1" || output.Output != "found value" {
+			if output := request.Input[4]; output.Type != "function_call_output" || output.CallID != "call-1" || output.Output != "found value" {
 				t.Errorf("function output input = %#v", output)
 			}
 			_, _ = w.Write([]byte(`{
