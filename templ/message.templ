@@ -6,6 +6,17 @@ import (
 	"seesharpsi/kritui/markdown"
 )
 
+func messageModelLabel(message llm.Message) string {
+	label := message.Model
+	if message.TotalTokens != nil {
+		label += fmt.Sprintf(" · %d tokens", *message.TotalTokens)
+	}
+	if message.Cost != nil {
+		label += fmt.Sprintf(" · $%.4f", *message.Cost)
+	}
+	return label
+}
+
 templ Messages(messages ...llm.Message) {
 	for _, message := range messages {
 		if message.Role == "assistant" && len(message.ToolCalls) > 0 {
@@ -13,7 +24,7 @@ templ Messages(messages ...llm.Message) {
 		} else if message.Role != "tool" {
 			<article class={ "message" , templ.KV("user", message.Role=="user" ) }>
 				if message.Role == "assistant" {
-					<strong>{ message.Model }</strong>
+					<strong>{ messageModelLabel(message) }</strong>
 					<div class="message-content markdown">
 						@markdown.Render(message.Content)
 					</div>

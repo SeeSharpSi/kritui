@@ -23,6 +23,8 @@ type Message struct {
 	Role          string     `json:"role"`
 	Content       string     `json:"content"`
 	Model         string     `json:"-"`
+	TotalTokens   *int       `json:"-"`
+	Cost          *float64   `json:"-"`
 	ToolCalls     []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID    string     `json:"tool_call_id,omitempty"`
 	responseItems []json.RawMessage
@@ -43,9 +45,10 @@ type FunctionCall struct {
 
 // Usage reports token counts returned by the endpoint.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens     int      `json:"prompt_tokens"`
+	CompletionTokens int      `json:"completion_tokens"`
+	TotalTokens      int      `json:"total_tokens"`
+	Cost             *float64 `json:"cost,omitempty"`
 }
 
 // Completion is the first choice returned by a chat completion request.
@@ -218,6 +221,7 @@ func (c *Client) completeChat(ctx context.Context, messages []Message, definitio
 
 	message := response.Choices[0].Message
 	message.Model = response.Model
+	applyUsage(&message, response.Usage)
 
 	return Completion{
 		ID:           response.ID,
@@ -296,21 +300,29 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 			Reason string `json:"reason"`
 		} `json:"incomplete_details"`
 		Output []json.RawMessage `json:"output"`
-		Usage  struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			TotalTokens  int `json:"total_tokens"`
+		Usage struct {
+			InputTokens  int      `json:"input_tokens"`
+			OutputTokens int      `json:"output_tokens"`
+			TotalTokens  int      `json:"total_tokens"`
+			Cost         *float64 `json:"cost,omitempty"`
 		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return Completion{}, fmt.Errorf("llm: decode response: %w", err)
 	}
 
+	usage := Usage{
+		PromptTokens:     response.Usage.InputTokens,
+		CompletionTokens: response.Usage.OutputTokens,
+		TotalTokens:      response.Usage.TotalTokens,
+		Cost:             response.Usage.Cost,
+	}
 	message := Message{
 		Role:          "assistant",
 		Model:         response.Model,
 		responseItems: cloneRawMessages(response.Output),
 	}
+	applyUsage(&message, usage)
 	for _, rawOutput := range response.Output {
 		var output struct {
 			Type      string `json:"type"`
@@ -369,12 +381,19 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 		Model:        response.Model,
 		Message:      message,
 		FinishReason: finishReason,
-		Usage: Usage{
-			PromptTokens:     response.Usage.InputTokens,
-			CompletionTokens: response.Usage.OutputTokens,
-			TotalTokens:      response.Usage.TotalTokens,
-		},
+		Usage:        usage,
 	}, nil
+}
+
+func applyUsage(message *Message, usage Usage) {
+	if usage.TotalTokens != 0 || usage.PromptTokens != 0 || usage.CompletionTokens != 0 {
+		total := usage.TotalTokens
+		message.TotalTokens = &total
+	}
+	if usage.Cost != nil {
+		cost := *usage.Cost
+		message.Cost = &cost
+	}
 }
 
 func (c *Client) post(ctx context.Context, payload []byte) (*http.Response, error) {
