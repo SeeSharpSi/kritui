@@ -50,9 +50,10 @@ func homeHandler(database *sql.DB) http.HandlerFunc {
 			http.Error(w, "failed to get messages", http.StatusInternalServerError)
 			return
 		}
+		models, selectedModel := availableModels(r)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.Home(chat, messages).Render(r.Context(), w); err != nil {
+		if err := templates.Home(chat, messages, models, selectedModel).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render page", http.StatusInternalServerError)
 		}
 	}
@@ -87,7 +88,11 @@ func messageHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		client, err := llm.New(os.Getenv("LLM_KEY"), os.Getenv("LLM_MODEL"), os.Getenv("LLM_ENDPOINT"))
+		model := strings.TrimSpace(r.FormValue("model"))
+		if model == "" {
+			model = os.Getenv("LLM_MODEL")
+		}
+		client, err := llm.New(os.Getenv("LLM_KEY"), model, os.Getenv("LLM_ENDPOINT"))
 		if err != nil {
 			log.Printf("configure llm: %v", err)
 			http.Error(w, "failed to configure llm", http.StatusInternalServerError)
@@ -118,4 +123,27 @@ func messageHandler(database *sql.DB) http.HandlerFunc {
 			http.Error(w, "failed to render message", http.StatusInternalServerError)
 		}
 	}
+}
+
+func availableModels(r *http.Request) ([]string, string) {
+	selected := strings.TrimSpace(os.Getenv("LLM_MODEL"))
+	client, err := llm.New(os.Getenv("LLM_KEY"), selected, os.Getenv("LLM_ENDPOINT"))
+	if err != nil {
+		if selected == "" {
+			return nil, ""
+		}
+		return []string{selected}, selected
+	}
+
+	models, err := client.Models(r.Context())
+	if err != nil {
+		log.Printf("get models: %v", err)
+		return []string{selected}, selected
+	}
+	for _, model := range models {
+		if model == selected {
+			return models, selected
+		}
+	}
+	return append([]string{selected}, models...), selected
 }

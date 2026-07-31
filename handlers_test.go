@@ -83,9 +83,6 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "<strong>stored-model</strong>") {
 		t.Error("response does not label assistant message with model")
 	}
-	if strings.Contains(response.Body.String(), "<strong>env-model</strong>") {
-		t.Error("response labels assistant message with environment model")
-	}
 	if strings.Contains(response.Body.String(), "<strong>assistant</strong>") {
 		t.Error("response labels assistant message with role")
 	}
@@ -106,16 +103,47 @@ func TestHomeHandlerRendersEmptyChatWithoutWelcome(t *testing.T) {
 	}
 }
 
+func TestHomeHandlerRendersEndpointModels(t *testing.T) {
+	database := openTestDatabase(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"model-b"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "model-a")
+	t.Setenv("LLM_ENDPOINT", server.URL+"/v1/chat/completions")
+
+	request := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
+	response := httptest.NewRecorder()
+	homeHandler(database)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	for _, model := range []string{"model-a", "model-b"} {
+		if !strings.Contains(response.Body.String(), `value="`+model+`"`) {
+			t.Errorf("response does not contain model option %q", model)
+		}
+	}
+}
+
 func TestMessageHandlerIncludesEarlierMessages(t *testing.T) {
 	database := openTestDatabase(t)
 	requests := make(chan []llm.Message, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
+			Model    string        `json:"model"`
 			Messages []llm.Message `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
+		}
+		if request.Model != "selected-model" {
+			t.Errorf("model = %q, want selected-model", request.Model)
 		}
 		requests <- request.Messages
 		w.Header().Set("Content-Type", "application/json")
@@ -131,7 +159,7 @@ func TestMessageHandlerIncludesEarlierMessages(t *testing.T) {
 
 	handler := messageHandler(database)
 	for _, message := range []string{"My name is Cassian.", "What is my name?"} {
-		form := url.Values{"message": {message}}
+		form := url.Values{"message": {message}, "model": {"selected-model"}}
 		request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		response := httptest.NewRecorder()

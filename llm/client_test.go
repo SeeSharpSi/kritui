@@ -107,6 +107,34 @@ func TestCompleteRequiresMessages(t *testing.T) {
 	}
 }
 
+func TestModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if r.URL.RequestURI() != "/v1/models?api-version=1" {
+			t.Errorf("request URI = %q, want models endpoint", r.URL.RequestURI())
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer secret-key" {
+			t.Errorf("Authorization = %q, want Bearer secret-key", got)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"model-b"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := New("secret-key", "model-a", server.URL+"/v1/chat/completions?api-version=1")
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	models, err := client.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models() error: %v", err)
+	}
+	if len(models) != 2 || models[0] != "model-a" || models[1] != "model-b" {
+		t.Errorf("Models() = %#v, want model-a and model-b", models)
+	}
+}
+
 func TestCompleteReturnsAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

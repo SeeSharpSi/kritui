@@ -2,7 +2,7 @@ package templates
 
 import "seesharpsi/kritui/llm"
 
-templ Home(chatID string, messages []llm.Message) {
+templ Home(chatID string, messages []llm.Message, models []string, selectedModel string) {
 	@Layout("Kritui") {
 		<main>
 			<section class="chat">
@@ -12,15 +12,29 @@ templ Home(chatID string, messages []llm.Message) {
 				<details class="chat-options">
 					<summary style="outline: none;">
 						<span class="visually-hidden">Toggle chat options</span>
-					</summary>
-					<div class="chat-options-list">
-						<button type="button">Model <strong>deepseek-v4-flash</strong></button>
-						<button type="button">Mode <strong>Chat</strong></button>
-						<button type="button">Tools <strong>Off</strong></button>
-					</div>
-				</details>
-			</section>
-			<form hx-post={ "/messages?chat=" + chatID } hx-target="#messages" hx-swap="beforeend" hx-on::after-request="if (event.detail.successful) this.reset()">
+				</summary>
+				<div class="chat-options-list">
+					<details class="model-picker">
+						<summary style="display: flex; align-items: center; font-size: small;">Model <strong>{ selectedModel }</strong></summary>
+						<div class="model-options">
+							for _, model := range models {
+								<label>
+									if model == selectedModel {
+										<input type="radio" name="model" value={ model } form="message-form" checked onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"/>
+									} else {
+										<input type="radio" name="model" value={ model } form="message-form" onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"/>
+									}
+									<span>{ model }</span>
+								</label>
+							}
+						</div>
+					</details>
+					<button type="button">Mode <strong>Chat</strong></button>
+					<button type="button">Tools <strong>Off</strong></button>
+				</div>
+			</details>
+		</section>
+		<form id="message-form" hx-post={ "/messages?chat=" + chatID } hx-target="#messages" hx-swap="beforeend" hx-on::after-request="if (event.detail.successful) { this.querySelector('#message').value = ''; this.querySelector('#message').focus() }">
 				<label for="message" class="visually-hidden">Message</label>
 				<input id="message" name="message" placeholder="Write a message..." required autofocus/>
 				<button type="submit">Send</button>

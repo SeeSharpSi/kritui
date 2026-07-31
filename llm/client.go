@@ -111,6 +111,51 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (Completion, 
 	return c.complete(ctx, messages, nil)
 }
 
+// Models returns model identifiers advertised by the endpoint.
+func (c *Client) Models(ctx context.Context) ([]string, error) {
+	modelsURL, err := url.Parse(c.endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("llm: parse models endpoint: %w", err)
+	}
+	path := strings.TrimRight(modelsURL.Path, "/")
+	path = strings.TrimSuffix(path, "/chat/completions")
+	modelsURL.Path = strings.TrimRight(path, "/") + "/models"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("llm: create models request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("llm: send models request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, endpointError(resp)
+	}
+
+	var response struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, fmt.Errorf("llm: decode models response: %w", err)
+	}
+
+	models := make([]string, 0, len(response.Data))
+	for _, model := range response.Data {
+		if model.ID != "" {
+			models = append(models, model.ID)
+		}
+	}
+	return models, nil
+}
+
 func (c *Client) complete(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
 	if len(messages) == 0 {
 		return Completion{}, errors.New("llm: at least one message is required")
@@ -152,29 +197,7 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
-		if readErr != nil {
-			return Completion{}, fmt.Errorf("llm: read error response: %w", readErr)
-		}
-
-		message := strings.TrimSpace(string(body))
-		var errorResponse struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(body, &errorResponse) == nil && errorResponse.Error.Message != "" {
-			message = errorResponse.Error.Message
-		}
-		if message == "" {
-			message = http.StatusText(resp.StatusCode)
-		}
-
-		return Completion{}, &APIError{
-			StatusCode: resp.StatusCode,
-			Message:    message,
-			Body:       string(body),
-		}
+		return Completion{}, endpointError(resp)
 	}
 
 	var response struct {
@@ -203,6 +226,32 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 		FinishReason: response.Choices[0].FinishReason,
 		Usage:        response.Usage,
 	}, nil
+}
+
+func endpointError(resp *http.Response) error {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySize))
+	if err != nil {
+		return fmt.Errorf("llm: read error response: %w", err)
+	}
+
+	message := strings.TrimSpace(string(body))
+	var errorResponse struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &errorResponse) == nil && errorResponse.Error.Message != "" {
+		message = errorResponse.Error.Message
+	}
+	if message == "" {
+		message = http.StatusText(resp.StatusCode)
+	}
+
+	return &APIError{
+		StatusCode: resp.StatusCode,
+		Message:    message,
+		Body:       string(body),
+	}
 }
 
 type completionTool struct {
