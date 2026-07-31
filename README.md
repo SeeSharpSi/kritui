@@ -22,6 +22,22 @@ go run .
 
 Open <http://localhost:8080>.
 
+## Docker
+
+Configure the LLM connection in `.env`, then build and run the image:
+
+```sh
+docker build -t kritui .
+docker run --rm \
+  --name kritui \
+  --publish 8080:8080 \
+  --env-file .env \
+  --volume kritui-data:/data \
+  kritui
+```
+
+The named volume persists the SQLite database. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`.
+
 ## Development
 
 With [Air](https://github.com/air-verse/air) installed and `.env` configured:
