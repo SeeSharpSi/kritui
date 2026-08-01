@@ -76,7 +76,15 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	if location := response.Header().Get("Location"); location != "" {
 		t.Errorf("unexpected Location header %q", location)
 	}
-	for _, content := range []string{"Earlier question", "Earlier answer", `/static/htmx-ext-sse.min.js`} {
+	for _, content := range []string{
+		"Earlier question",
+		"Earlier answer",
+		`/static/htmx-ext-sse.min.js`,
+		`/static/app.js`,
+		`reportValidityOfForms`,
+		`hx-history="false"`,
+		`hx-sync="#messages:drop"`,
+	} {
 		if !strings.Contains(response.Body.String(), content) {
 			t.Errorf("response does not contain %q", content)
 		}
@@ -168,31 +176,20 @@ func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
 	}
 }
 
-func TestMessageCompletionHandlerPersistsChatTools(t *testing.T) {
+func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 	database := openTestDatabase(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"model":"response-model",
-			"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]
-		}`))
-	}))
-	defer server.Close()
-	t.Setenv("LLM_KEY", "test-key")
 	t.Setenv("LLM_MODEL", "test-model")
-	t.Setenv("LLM_ENDPOINT", server.URL)
 
 	toolCalls := newToolCallStore()
 	form := url.Values{
 		"message": {"Hello"},
 		"model":   {"selected-model"},
-		"request": {newToolCallRequest(t, toolCalls)},
 		"tool":    {"webfetch", "websearch"},
 	}
-	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=3", strings.NewReader(form.Encode()))
+	request := httptest.NewRequest(http.MethodPost, "/messages?chat=3", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
-	messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)(response, request)
+	messageHandler(database, newTestToolRegistry(t), toolCalls)(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -208,6 +205,14 @@ func TestMessageCompletionHandlerPersistsChatTools(t *testing.T) {
 	}
 	if len(names) != 2 || names[0] != "webfetch" || names[1] != "websearch" {
 		t.Fatalf("tools = %#v, want [webfetch websearch]", names)
+	}
+
+	var role, content string
+	if err := database.QueryRow(`SELECT role, content FROM messages WHERE chat_id = 3`).Scan(&role, &content); err != nil {
+		t.Fatalf("query accepted message: %v", err)
+	}
+	if role != "user" || content != "Hello" {
+		t.Errorf("accepted message = %q %q, want user Hello", role, content)
 	}
 }
 
@@ -234,10 +239,17 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		`aria-label="Delete Project notes"`,
 		`name="title"`,
 		`value="Project notes"`,
+		`hx-boost="true"`,
+		`hx-target="main"`,
+		`hx-select="main"`,
+		`hx-swap="outerHTML show:none"`,
 	} {
 		if !strings.Contains(response.Body.String(), content) {
 			t.Errorf("response does not contain %q", content)
 		}
+	}
+	if strings.Contains(response.Body.String(), "<style>") {
+		t.Error("history fragment contains inline style")
 	}
 }
 
@@ -345,6 +357,9 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		"selected-model",
 		`hx-post="/messages/complete?chat=1"`,
 		`hx-trigger="load"`,
+		`data-swap-errors`,
+		`hx-sync="#messages:queue last"`,
+		`hx-disabled-elt="#message-form button[type='submit']"`,
 		`hx-ext="sse"`,
 		`sse-connect="/messages/tools?request=`,
 		`sse-close="close"`,
@@ -360,12 +375,57 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	if strings.Contains(response.Body.String(), "every 200ms") {
 		t.Errorf("response still contains interval polling: %s", response.Body.String())
 	}
+	if strings.Contains(response.Body.String(), `type="hidden" name="message"`) {
+		t.Errorf("pending response duplicates persisted message state: %s", response.Body.String())
+	}
+}
+
+func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
+	database := openTestDatabase(t)
+	registry := newTestToolRegistry(t)
+	toolCalls := newToolCallStore()
+	handler := messageHandler(database, registry, toolCalls)
+
+	submit := func(chatID int, message string) *httptest.ResponseRecorder {
+		t.Helper()
+		form := url.Values{"message": {message}, "model": {"selected-model"}}
+		request := httptest.NewRequest(http.MethodPost, "/messages?chat="+strconv.Itoa(chatID), strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		handler(response, request)
+		return response
+	}
+
+	if response := submit(1, "First"); response.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	response := submit(1, "Second")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("concurrent status = %d, want %d; body = %q", response.Code, http.StatusConflict, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "response is already in progress") {
+		t.Errorf("concurrent response has no useful error: %s", response.Body.String())
+	}
+	if response := submit(2, "Other chat"); response.Code != http.StatusOK {
+		t.Fatalf("other chat status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	var firstChatMessages, secondChatMessages int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 1`).Scan(&firstChatMessages); err != nil {
+		t.Fatalf("count first chat messages: %v", err)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 2`).Scan(&secondChatMessages); err != nil {
+		t.Fatalf("count second chat messages: %v", err)
+	}
+	if firstChatMessages != 1 || secondChatMessages != 1 {
+		t.Errorf("message counts = %d, %d; want 1, 1", firstChatMessages, secondChatMessages)
+	}
 }
 
 func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 	toolCalls := newToolCallStore()
-	requestID := newToolCallRequest(t, toolCalls)
-	tracker, ok := toolCalls.claim(requestID)
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	tracker, ok := toolCalls.claim(requestID, 1)
 	if !ok {
 		t.Fatal("claim tool-call tracker failed")
 	}
@@ -472,13 +532,13 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	toolCalls := newToolCallStore()
 	handler := messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)
 	for _, message := range []string{"My name is Cassian.", "What is my name?"} {
+		insertAcceptedUser(t, database, 1, message)
 		form := url.Values{
-			"message": {message},
 			"model":   {"selected-model"},
-			"request": {newToolCallRequest(t, toolCalls)},
+			"request": {newToolCallRequest(t, toolCalls, 1)},
 			"tool":    {"webfetch"},
 		}
-		request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
+		request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		response := httptest.NewRecorder()
 
@@ -537,12 +597,12 @@ func TestMessageCompletionHandlerStoresRawMarkdown(t *testing.T) {
 	t.Setenv("LLM_ENDPOINT", server.URL)
 
 	toolCalls := newToolCallStore()
+	insertAcceptedUser(t, database, 1, "Question")
 	form := url.Values{
-		"message": {"Question"},
 		"model":   {"selected-model"},
-		"request": {newToolCallRequest(t, toolCalls)},
+		"request": {newToolCallRequest(t, toolCalls, 1)},
 	}
-	request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
+	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 
@@ -564,6 +624,94 @@ func TestMessageCompletionHandlerStoresRawMarkdown(t *testing.T) {
 	}
 	if stored != want {
 		t.Errorf("stored content = %q, want raw Markdown %q", stored, want)
+	}
+}
+
+func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
+	database := openTestDatabase(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream failed", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	insertAcceptedUser(t, database, 1, "Question")
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	form := url.Values{
+		"model":   {"selected-model"},
+		"request": {requestID},
+		"tool":    {"webfetch"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	registry := newTestToolRegistry(t)
+
+	messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
+
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadGateway, response.Body.String())
+	}
+	for _, content := range []string{
+		"Failed to complete message.",
+		`role="alert"`,
+		`hx-post="/messages/retry?chat=1"`,
+		`name="model" value="selected-model"`,
+		`name="tool" value="webfetch"`,
+		`>Retry</button>`,
+	} {
+		if !strings.Contains(response.Body.String(), content) {
+			t.Errorf("error response does not contain %q: %s", content, response.Body.String())
+		}
+	}
+	if _, ok := toolCalls.get(requestID); ok {
+		t.Error("failed completion kept old tracker active")
+	}
+
+	retryRequest := httptest.NewRequest(http.MethodPost, "/messages/retry?chat=1", strings.NewReader("model=selected-model&tool=webfetch"))
+	retryRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	retryResponse := httptest.NewRecorder()
+	messageRetryHandler(database, registry, toolCalls)(retryResponse, retryRequest)
+
+	if retryResponse.Code != http.StatusOK {
+		t.Fatalf("retry status = %d, want %d; body = %q", retryResponse.Code, http.StatusOK, retryResponse.Body.String())
+	}
+	for _, content := range []string{`hx-post="/messages/complete?chat=1"`, `sse-connect="/messages/tools?request=`, `hx-trigger="load"`} {
+		if !strings.Contains(retryResponse.Body.String(), content) {
+			t.Errorf("retry response does not contain %q: %s", content, retryResponse.Body.String())
+		}
+	}
+
+	var messages int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 1`).Scan(&messages); err != nil {
+		t.Fatalf("count messages after retry: %v", err)
+	}
+	if messages != 1 {
+		t.Errorf("message count after retry = %d, want persisted user only", messages)
+	}
+}
+
+func TestMessageCompletionHandlerRejectsTrackerFromAnotherChat(t *testing.T) {
+	database := openTestDatabase(t)
+	insertAcceptedUser(t, database, 1, "First chat")
+	insertAcceptedUser(t, database, 2, "Second chat")
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	form := url.Values{"model": {"selected-model"}, "request": {requestID}}
+	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=2", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+
+	messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	if _, ok := toolCalls.claim(requestID, 1); !ok {
+		t.Error("cross-chat request consumed valid tracker")
 	}
 }
 
@@ -609,9 +757,9 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	t.Setenv("LLM_ENDPOINT", server.URL)
 
 	toolCalls := newToolCallStore()
-	requestID := newToolCallRequest(t, toolCalls)
+	insertAcceptedUser(t, database, 1, "Use a tool")
+	requestID := newToolCallRequest(t, toolCalls, 1)
 	form := url.Values{
-		"message": {"Use a tool"},
 		"model":   {"selected-model"},
 		"request": {requestID},
 		"tool":    {"webfetch"},
@@ -682,9 +830,10 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 		t.Errorf("stored message count = %d, want 4", storedMessages)
 	}
 
-	reloadRequest := httptest.NewRequest(http.MethodGet, "/chat?chat=1", nil)
+	t.Setenv("LLM_ENDPOINT", "")
+	reloadRequest := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
 	reloadResponse := httptest.NewRecorder()
-	chatHandler(database)(reloadResponse, reloadRequest)
+	homeHandler(database, newTestToolRegistry(t))(reloadResponse, reloadRequest)
 	if reloadResponse.Code != http.StatusOK {
 		t.Fatalf("reload status = %d, want %d; body = %q", reloadResponse.Code, http.StatusOK, reloadResponse.Body.String())
 	}
@@ -741,14 +890,36 @@ func waitForTestSignal(t *testing.T, signal <-chan struct{}, name string) {
 	}
 }
 
-func newToolCallRequest(t *testing.T, toolCalls *toolCallStore) string {
+func newToolCallRequest(t *testing.T, toolCalls *toolCallStore, chatID int64) string {
 	t.Helper()
 
-	requestID, err := toolCalls.create()
+	requestID, err := toolCalls.create(chatID)
 	if err != nil {
 		t.Fatalf("create tool-call tracker: %v", err)
 	}
 	return requestID
+}
+
+func insertAcceptedUser(t *testing.T, database *sql.DB, chatID int64, content string) {
+	t.Helper()
+
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (?) ON CONFLICT (id) DO NOTHING`, chatID); err != nil {
+		t.Fatalf("insert accepted chat: %v", err)
+	}
+	var position int
+	if err := database.QueryRow(`
+		SELECT COALESCE(MAX(position) + 1, 0)
+		FROM messages
+		WHERE chat_id = ?
+	`, chatID).Scan(&position); err != nil {
+		t.Fatalf("get accepted message position: %v", err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO messages (chat_id, position, role, content)
+		VALUES (?, ?, 'user', ?)
+	`, chatID, position, content); err != nil {
+		t.Fatalf("insert accepted message: %v", err)
+	}
 }
 
 func openTestDatabase(t *testing.T) *sql.DB {

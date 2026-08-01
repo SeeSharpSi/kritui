@@ -65,6 +65,10 @@ main {
             border-radius: inherit;
         }
 
+        &:has(.history-list) > .chat-options {
+            display: none;
+        }
+
         .message-list {
             min-height: 0;
             flex: 1;

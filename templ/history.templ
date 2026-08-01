@@ -22,11 +22,6 @@ templ MessageList(messages []llm.Message) {
 
 templ HistoryList(chatID string, chats []kritui_db.Chat) {
 	<div class="history-list">
-		<style>
-        .chat-options {
-            display: none;
-        }
-    </style>
 		if len(chats) == 0 {
 			<p class="history-empty">No saved chats yet.</p>
 		} else {
@@ -58,6 +53,10 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 				<a
 					class="history-title-link"
 					href={ templ.URL("/?chat=" + strconv.FormatInt(chat.ID, 10)) }
+					hx-boost="true"
+					hx-target="main"
+					hx-select="main"
+					hx-swap="outerHTML show:none"
 				>
 					<strong>{ historyTitle(chat) }</strong>
 				</a>
@@ -151,11 +150,6 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 			</svg>
 		</button>
 	</div>
-}
-
-templ ChatMessageList(chatID string, messages []llm.Message) {
-	@MessageList(messages)
-	@HistoryButton(chatID, false, true)
 }
 
 templ HistoryButton(chatID string, active bool, outOfBand bool) {

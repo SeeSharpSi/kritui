@@ -13,7 +13,7 @@ func toolEnabled(enabled []string, name string) bool {
 
 templ Home(chatID string, messages []llm.Message, models []string, selectedModel string, tools []string, enabledTools []string) {
 	@Layout("Kritui") {
-		<main>
+		<main hx-history="false">
 			<section class="chat">
 				<div class="message-panel">
 					@MessageList(messages)
@@ -80,27 +80,19 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 			</section>
 			<form
 				id="message-form"
+				data-swap-errors
 				hx-post={ "/messages?chat=" + chatID }
 				hx-target="#messages"
 				hx-swap="beforeend scroll:.message-list:bottom"
+				hx-trigger="submit queue:none"
+				hx-sync="#messages:drop"
+				hx-disabled-elt="find button[type='submit']"
 			>
 				<label for="message" class="visually-hidden">Message</label>
 				@MessageInput(false)
 				@HistoryButton(chatID, false, false)
 				<button type="submit">Send</button>
 			</form>
-			<script>
-				const messageList = document.querySelector('.message-list');
-				messageList.scrollTop = messageList.scrollHeight;
-
-				document.addEventListener('click', (event) => {
-					document.querySelectorAll('.model-picker[open], .tool-picker[open]').forEach((picker) => {
-						if (!picker.contains(event.target)) {
-							picker.removeAttribute('open');
-						}
-					});
-				});
-			</script>
 		</main>
 	}
 }

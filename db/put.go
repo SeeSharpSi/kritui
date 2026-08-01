@@ -9,6 +9,10 @@ import (
 	"seesharpsi/kritui/llm"
 )
 
+type databaseExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 // InsertChat creates a chat and returns its database ID.
 func InsertChat(ctx context.Context, db *sql.DB, title string, tools []string) (int64, error) {
 	if tools == nil {
@@ -61,7 +65,7 @@ func SetChatTools(ctx context.Context, db *sql.DB, chatID int64, tools []string)
 }
 
 // InsertMessage adds a message at its position in a chat and returns its database ID.
-func InsertMessage(ctx context.Context, db *sql.DB, chatID int64, position int, message llm.Message) (int64, error) {
+func InsertMessage(ctx context.Context, db databaseExecutor, chatID int64, position int, message llm.Message) (int64, error) {
 	var toolCalls any
 	if len(message.ToolCalls) > 0 {
 		encoded, err := json.Marshal(message.ToolCalls)

@@ -132,13 +132,21 @@ templ CompletedMessage(calls []llm.ToolCall, message llm.Message) {
 
 templ PendingSubmission(chatID string, requestID string, message llm.Message, model string, tools []string) {
 	@Messages(message)
+	@PendingCompletion(chatID, requestID, model, tools)
+	@MessageInput(true)
+}
+
+templ PendingCompletion(chatID string, requestID string, model string, tools []string) {
 	<article
 		class="message loading-message"
+		data-swap-errors
 		hx-post={ "/messages/complete?chat=" + chatID }
 		hx-trigger="load"
 		hx-target="this"
 		hx-swap="outerHTML show:bottom"
 		hx-include="this"
+		hx-sync="#messages:queue last"
+		hx-disabled-elt="#message-form button[type='submit']"
 		hx-ext="sse"
 		sse-connect={ "/messages/tools?request=" + requestID }
 		sse-close="close"
@@ -153,14 +161,38 @@ templ PendingSubmission(chatID string, requestID string, message llm.Message, mo
 			hx-swap="innerHTML"
 		></div>
 		<strong class="thinking-indicator"><span class="braille-spinner" aria-hidden="true"></span>{ model }</strong>
-		<input type="hidden" name="message" value={ message.Content }/>
 		<input type="hidden" name="model" value={ model }/>
 		<input type="hidden" name="request" value={ requestID }/>
 		for _, tool := range tools {
 			<input type="hidden" name="tool" value={ tool }/>
 		}
 	</article>
-	@MessageInput(true)
+}
+
+templ MessageError(message string) {
+	<article class="message" role="alert">
+		<div class="message-content plain-text">{ message }</div>
+	</article>
+}
+
+templ CompletionError(chatID string, message string, model string, tools []string) {
+	<article class="message" role="alert">
+		<div class="message-content plain-text">{ message }</div>
+		<form
+			data-swap-errors
+			hx-post={ "/messages/retry?chat=" + chatID }
+			hx-target="closest article"
+			hx-swap="outerHTML"
+			hx-sync="#messages:drop"
+			hx-disabled-elt="find button[type='submit']"
+		>
+			<input type="hidden" name="model" value={ model }/>
+			for _, tool := range tools {
+				<input type="hidden" name="tool" value={ tool }/>
+			}
+			<button type="submit">Retry</button>
+		</form>
+	</article>
 }
 
 templ MessageInput(outOfBand bool) {
