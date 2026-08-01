@@ -499,7 +499,7 @@ main {
                 display: grid;
                 grid-template-columns: 1.1em auto minmax(0, 1fr);
                 align-items: baseline;
-                column-gap: .2rem;
+                column-gap: .55rem;
 
                 .tool-call-complete::before {
                     content: "·";
@@ -509,12 +509,33 @@ main {
 
                 strong {
                     color: var(--color-text);
+
+                    &[role="button"] {
+                        cursor: pointer;
+                    }
                 }
 
                 code {
+                    display: flex;
                     min-width: 0;
-                    overflow-wrap: anywhere;
+                    white-space: nowrap;
+
+                    >span {
+                        min-width: 0;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                    }
+                }
+
+                &.expanded code {
+                    display: block;
                     white-space: normal;
+                    overflow-wrap: anywhere;
+
+                    >span {
+                        overflow: visible;
+                        text-overflow: clip;
+                    }
                 }
             }
         }
