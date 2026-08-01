@@ -65,7 +65,7 @@ main {
             border-radius: inherit;
         }
 
-        &:has(.history-list) > .chat-options {
+        &:has(.history-list)>.chat-options {
             display: none;
         }
 

@@ -593,12 +593,12 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadGateway, response.Body.String())
 	}
 	requireContains(t, response.Body.String(),
-		"Failed to complete message.",
+		"upstream failed",
 		`role="alert"`,
 		`hx-post="/messages/retry?chat=1"`,
 		`name="model" value="selected-model"`,
 		`name="tool" value="webfetch"`,
-		`>Retry</button>`,
+		`aria-label="Retry completion"`,
 	)
 	if _, ok := toolCalls.get(requestID); ok {
 		t.Error("failed completion kept old tracker active")

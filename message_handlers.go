@@ -107,7 +107,12 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		completion, err := conversation.Complete(r.Context())
 		if err != nil {
 			log.Printf("complete message: %v", err)
-			renderCompletionError(w, r, http.StatusBadGateway, request.chat, "Failed to complete message.", request.model, request.selected.Names())
+			message := "Failed to complete message."
+			var apiError *llm.APIError
+			if errors.As(err, &apiError) {
+				message = apiError.Message
+			}
+			renderCompletionError(w, r, http.StatusBadGateway, request.chat, message, request.model, request.selected.Names())
 			return
 		}
 		completedMessages := conversation.Messages()[len(messages)+1:]
