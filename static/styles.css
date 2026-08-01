@@ -755,6 +755,7 @@ main {
                         cursor: pointer;
                         text-overflow: ellipsis;
                         white-space: nowrap;
+                        user-select: none;
 
                         &:hover,
                         &:has(input:focus-visible) {
@@ -878,7 +879,7 @@ main {
     content: "⠋";
     display: inline-block;
     width: 1.1em;
-    animation: braille-spinner 800ms steps(1, end) infinite;
+    animation: braille-spinner 820ms steps(1, end) infinite;
 }
 
 .visually-hidden {
