@@ -589,8 +589,8 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 	registry := newTestToolRegistry(t)
 	response := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil), "/messages/complete?chat=1", form)
 
-	if response.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadGateway, response.Body.String())
+	if response.Code != http.StatusFailedDependency {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusFailedDependency, response.Body.String())
 	}
 	requireContains(t, response.Body.String(),
 		"upstream failed",
