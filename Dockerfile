@@ -2,10 +2,13 @@
 
 FROM golang:1.25.3-alpine AS build
 
+LABEL io.github.seesharpsi.kritui="true"
+
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY *.go ./
 COPY db/ ./db/
@@ -15,16 +18,23 @@ COPY static/ ./static/
 COPY templ/ ./templ/
 COPY tools/ ./tools/
 
-RUN go run github.com/a-h/templ/cmd/templ@v0.3.1020 generate \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go run github.com/a-h/templ/cmd/templ@v0.3.1020 generate \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/kritui .
 
 FROM searxng/searxng:2026.7.31-057a77168
 
+LABEL io.github.seesharpsi.kritui="true" \
+    org.opencontainers.image.title="Kritui" \
+    org.opencontainers.image.description="Server-rendered LLM chat UI bundled with SearXNG" \
+    org.opencontainers.image.source="https://github.com/SeeSharpSi/kritui"
+
 USER root
 
-COPY --from=build --chown=977:977 /out/kritui /usr/local/bin/kritui
+COPY --from=build --chown=0:0 --chmod=0555 /out/kritui /usr/local/bin/kritui
 
-COPY --chown=977:977 <<'EOF' /usr/local/searxng/kritui-settings.yml
+COPY --chown=0:0 --chmod=0444 <<'EOF' /usr/local/searxng/kritui-settings.yml
 use_default_settings:
   engines:
     keep_only:
@@ -62,7 +72,7 @@ outgoing:
   enable_http2: false
 EOF
 
-COPY --chmod=755 --chown=977:977 <<'EOF' /usr/local/bin/start-kritui
+COPY --chmod=0555 --chown=0:0 <<'EOF' /usr/local/bin/start-kritui
 #!/bin/sh
 set -u
 

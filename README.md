@@ -27,16 +27,37 @@ Open <http://localhost:8080>.
 Configure the LLM connection in `.env`, then build and run the image:
 
 ```sh
-docker build -t kritui .
+docker build --tag kritui:latest .
 docker run --rm \
   --name kritui \
   --publish 8080:8080 \
   --env-file .env \
   --volume kritui-data:/data \
-  kritui
+  kritui:latest
 ```
 
 The named volume persists the SQLite database. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`.
+
+Rebuilding the same tag can leave the previous image dangling. Kritui images carry a project label, so future dangling builds can be reviewed and removed without pruning images from other projects:
+
+```sh
+docker image ls --filter dangling=true --filter "label=io.github.seesharpsi.kritui=true"
+docker image prune --filter "label=io.github.seesharpsi.kritui=true"
+```
+
+Images built before this label was added need a one-time unscoped cleanup. Review them before pruning:
+
+```sh
+docker image ls --filter dangling=true
+docker image prune
+```
+
+BuildKit cache is separate from images. It speeds up rebuilds, but old cache can be inspected and pruned independently:
+
+```sh
+docker buildx du
+docker builder prune --filter "until=24h"
+```
 
 ## Development
 
