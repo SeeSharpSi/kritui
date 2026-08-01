@@ -139,14 +139,16 @@ templ PendingSubmission(chatID string, requestID string, message llm.Message, mo
 		hx-target="this"
 		hx-swap="outerHTML show:bottom"
 		hx-include="this"
+		hx-ext="sse"
+		sse-connect={ "/messages/tools?request=" + requestID }
+		sse-close="close"
 		role="status"
 		aria-label="Waiting for model response"
 	>
 		<div
 			class="tool-call-list"
 			role="list"
-			hx-get={ "/messages/tools?request=" + requestID }
-			hx-trigger="every 200ms"
+			sse-swap="tools"
 			hx-target="this"
 			hx-swap="innerHTML"
 		></div>

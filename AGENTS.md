@@ -15,9 +15,9 @@
 
 # Architecture
 
-- `server.go` is the HTTP entrypoint: `GET /` renders the page, `POST /messages` appends user and assistant HTML message fragments, and `GET /static/` serves embedded assets. It registers all user-facing tools once at startup.
+- `server.go` is the HTTP entrypoint: `GET /` renders the page, `POST /messages` appends a pending submission, `POST /messages/complete` returns the final message, `GET /messages/tools` streams tool-call HTML over SSE, and `GET /static/` serves embedded assets. It registers all user-facing tools once at startup.
 - `templ/*.templ` contains source components despite using package name `templates`. Edit these source files, then regenerate.
-- `static/` is embedded into the executable. Restart `go run .` after asset changes. htmx is vendored as `static/htmx.min.js`; there is no npm build pipeline.
+- `static/` is embedded into the executable. Restart `go run .` after asset changes. htmx and `htmx-ext-sse` v2.2.4 are vendored there; there is no npm build pipeline.
 - `db/schema.sql` defines SQLite `chats` and position-ordered `messages`. Callers provide `*sql.DB`; the project does not yet configure a database driver or connection.
 - `db.InsertChat` and `db.InsertMessage` persist chats and `llm.Message` values, including optional `total_tokens` and `cost` on messages. Chats store enabled tool names as a JSON string array in `chats.tools` for `tools.Registry.Select`. `db.GetChatTools` / `db.SetChatTools` read and replace that list; `db.GetChats` includes it on each chat. `db.GetMessages` restores conversation order and decodes tool-call fields plus usage. Existing DBs get additive column migrations in `migrateDatabase` on startup.
 - `llm.Client` is non-streaming and constructor-configured. Its endpoint argument must be the full chat-completions URL; no path is appended. The server reads `LLM_KEY`, `LLM_MODEL`, `LLM_ENDPOINT`, and `SEARXNG_URL` directly and does not load a `.env` file.

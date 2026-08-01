@@ -66,7 +66,7 @@ func main() {
 	mux.HandleFunc("GET /chat", chatHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, toolCalls))
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
-	mux.HandleFunc("GET /messages/tools", messageToolStatusHandler(toolCalls))
+	mux.HandleFunc("GET /messages/tools", messageToolStreamHandler(toolCalls))
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
 
 	log.Println("listening on http://localhost:8080")

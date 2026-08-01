@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -21,10 +23,25 @@ import (
 
 const toolCallTrackerTTL = 10 * time.Minute
 
+const (
+	toolCallUpdateEvent = "tools"
+	toolCallCloseEvent  = "close"
+)
+
 type toolCallTracker struct {
-	mu      sync.RWMutex
-	calls   []llm.ToolCall
-	running string
+	mu        sync.RWMutex
+	calls     []llm.ToolCall
+	running   string
+	updates   chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func newToolCallTracker() *toolCallTracker {
+	return &toolCallTracker{
+		updates: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
 }
 
 func (t *toolCallTracker) observe(call llm.ToolCall, running bool) {
@@ -34,11 +51,11 @@ func (t *toolCallTracker) observe(call llm.ToolCall, running bool) {
 	if running {
 		t.calls = append(t.calls, call)
 		t.running = call.ID
-		return
-	}
-	if t.running == call.ID {
+	} else if t.running == call.ID {
 		t.running = ""
 	}
+	close(t.updates)
+	t.updates = make(chan struct{})
 }
 
 func (t *toolCallTracker) snapshot() ([]llm.ToolCall, string) {
@@ -46,6 +63,19 @@ func (t *toolCallTracker) snapshot() ([]llm.ToolCall, string) {
 	defer t.mu.RUnlock()
 
 	return append([]llm.ToolCall(nil), t.calls...), t.running
+}
+
+func (t *toolCallTracker) streamSnapshot() ([]llm.ToolCall, string, <-chan struct{}) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	return append([]llm.ToolCall(nil), t.calls...), t.running, t.updates
+}
+
+func (t *toolCallTracker) close() {
+	t.closeOnce.Do(func() {
+		close(t.done)
+	})
 }
 
 type toolCallTrackerEntry struct {
@@ -71,16 +101,22 @@ func (s *toolCallStore) create() (string, error) {
 	id := hex.EncodeToString(token[:])
 	now := time.Now()
 
+	var expired []*toolCallTracker
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for existingID, entry := range s.trackers {
 		if now.Sub(entry.created) >= toolCallTrackerTTL {
 			delete(s.trackers, existingID)
+			expired = append(expired, entry.tracker)
 		}
 	}
 	s.trackers[id] = &toolCallTrackerEntry{
-		tracker: &toolCallTracker{},
+		tracker: newToolCallTracker(),
 		created: now,
+	}
+	s.mu.Unlock()
+
+	for _, tracker := range expired {
+		tracker.close()
 	}
 	return id, nil
 }
@@ -110,8 +146,13 @@ func (s *toolCallStore) get(id string) (*toolCallTracker, bool) {
 
 func (s *toolCallStore) delete(id string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	entry, ok := s.trackers[id]
 	delete(s.trackers, id)
+	s.mu.Unlock()
+
+	if ok {
+		entry.tracker.close()
+	}
 }
 
 func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
@@ -445,7 +486,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 	}
 }
 
-func messageToolStatusHandler(toolCalls *toolCallStore) http.HandlerFunc {
+func messageToolStreamHandler(toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tracker, ok := toolCalls.get(r.URL.Query().Get("request"))
 		if !ok {
@@ -453,12 +494,64 @@ func messageToolStatusHandler(toolCalls *toolCallStore) http.HandlerFunc {
 			return
 		}
 
-		calls, running := tracker.snapshot()
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.ToolCalls(calls, running).Render(r.Context(), w); err != nil {
-			http.Error(w, "failed to render tool calls", http.StatusInternalServerError)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming is not supported", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Accel-Buffering", "no")
+
+		for {
+			select {
+			case <-tracker.done:
+				if err := writeServerSentEvent(w, toolCallCloseEvent, ""); err == nil {
+					flusher.Flush()
+				}
+				return
+			default:
+			}
+
+			calls, running, updates := tracker.streamSnapshot()
+			var content strings.Builder
+			if err := templates.ToolCalls(calls, running).Render(r.Context(), &content); err != nil {
+				log.Printf("render tool-call stream: %v", err)
+				return
+			}
+			if err := writeServerSentEvent(w, toolCallUpdateEvent, content.String()); err != nil {
+				return
+			}
+			flusher.Flush()
+
+			select {
+			case <-updates:
+			case <-tracker.done:
+				if err := writeServerSentEvent(w, toolCallCloseEvent, ""); err == nil {
+					flusher.Flush()
+				}
+				return
+			case <-r.Context().Done():
+				return
+			}
 		}
 	}
+}
+
+func writeServerSentEvent(w io.Writer, event string, data string) error {
+	if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
+		return err
+	}
+	data = strings.ReplaceAll(data, "\r\n", "\n")
+	data = strings.ReplaceAll(data, "\r", "\n")
+	for _, line := range strings.Split(data, "\n") {
+		if _, err := fmt.Fprintf(w, "data: %s\n", line); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(w, "\n")
+	return err
 }
 
 func availableModels(r *http.Request) ([]string, string) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -75,7 +76,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	if location := response.Header().Get("Location"); location != "" {
 		t.Errorf("unexpected Location header %q", location)
 	}
-	for _, content := range []string{"Earlier question", "Earlier answer"} {
+	for _, content := range []string{"Earlier question", "Earlier answer", `/static/htmx-ext-sse.min.js`} {
 		if !strings.Contains(response.Body.String(), content) {
 			t.Errorf("response does not contain %q", content)
 		}
@@ -344,7 +345,10 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		"selected-model",
 		`hx-post="/messages/complete?chat=1"`,
 		`hx-trigger="load"`,
-		`hx-get="/messages/tools?request=`,
+		`hx-ext="sse"`,
+		`sse-connect="/messages/tools?request=`,
+		`sse-close="close"`,
+		`sse-swap="tools"`,
 		`hx-swap-oob="outerHTML"`,
 		`name="request" value="`,
 		`name="tool" value="webfetch"`,
@@ -353,9 +357,12 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 			t.Errorf("response does not contain %q", content)
 		}
 	}
+	if strings.Contains(response.Body.String(), "every 200ms") {
+		t.Errorf("response still contains interval polling: %s", response.Body.String())
+	}
 }
 
-func TestMessageToolStatusHandlerRendersToolCallState(t *testing.T) {
+func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 	toolCalls := newToolCallStore()
 	requestID := newToolCallRequest(t, toolCalls)
 	tracker, ok := toolCalls.claim(requestID)
@@ -373,25 +380,56 @@ func TestMessageToolStatusHandlerRendersToolCallState(t *testing.T) {
 	tracker.observe(call, true)
 
 	request := httptest.NewRequest(http.MethodGet, "/messages/tools?request="+requestID, nil)
-	response := httptest.NewRecorder()
-	messageToolStatusHandler(toolCalls)(response, request)
-
-	for _, content := range []string{"websearch", "braille spinner", `class="braille-spinner"`, "Running tool:"} {
-		if !strings.Contains(response.Body.String(), content) {
-			t.Errorf("running response does not contain %q: %s", content, response.Body.String())
-		}
-	}
+	response := newFlushingResponseRecorder()
+	streamDone := make(chan struct{})
+	go func() {
+		messageToolStreamHandler(toolCalls)(response, request)
+		close(streamDone)
+	}()
+	waitForTestSignal(t, response.flushes, "running tool-call event")
 
 	tracker.observe(call, false)
-	response = httptest.NewRecorder()
-	messageToolStatusHandler(toolCalls)(response, request)
-	if strings.Contains(response.Body.String(), `class="braille-spinner"`) {
-		t.Errorf("completed response contains spinner: %s", response.Body.String())
+	waitForTestSignal(t, response.flushes, "completed tool-call event")
+	toolCalls.delete(requestID)
+	waitForTestSignal(t, response.flushes, "tool-call close event")
+	waitForTestSignal(t, streamDone, "tool-call stream completion")
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want %q", contentType, "text/event-stream")
+	}
+	if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "no-cache" {
+		t.Errorf("Cache-Control = %q, want %q", cacheControl, "no-cache")
+	}
+
+	events := strings.Split(response.Body.String(), "event: tools\n")
+	if len(events) != 3 {
+		t.Fatalf("tool update event count = %d, want 2; body = %q", len(events)-1, response.Body.String())
+	}
+	runningEvent := events[1]
+	completedEvent, closeEvent, ok := strings.Cut(events[2], "event: close\n")
+	if !ok {
+		t.Fatalf("response does not contain close event: %s", response.Body.String())
+	}
+
+	for _, content := range []string{"websearch", "braille spinner", `class="braille-spinner"`, "Running tool:"} {
+		if !strings.Contains(runningEvent, content) {
+			t.Errorf("running event does not contain %q: %s", content, runningEvent)
+		}
+	}
+
+	if strings.Contains(completedEvent, `class="braille-spinner"`) {
+		t.Errorf("completed event contains spinner: %s", completedEvent)
 	}
 	for _, content := range []string{`class="tool-call-complete"`, "Completed tool:"} {
-		if !strings.Contains(response.Body.String(), content) {
-			t.Errorf("completed response does not contain %q: %s", content, response.Body.String())
+		if !strings.Contains(completedEvent, content) {
+			t.Errorf("completed event does not contain %q: %s", content, completedEvent)
 		}
+	}
+	if !strings.Contains(closeEvent, "data: \n") {
+		t.Errorf("close event has no data field: %s", closeEvent)
 	}
 }
 
@@ -596,8 +634,17 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	}
 
 	statusRequest := httptest.NewRequest(http.MethodGet, "/messages/tools?request="+requestID, nil)
-	statusResponse := httptest.NewRecorder()
-	messageToolStatusHandler(toolCalls)(statusResponse, statusRequest)
+	statusContext, cancelStatus := context.WithCancel(statusRequest.Context())
+	statusRequest = statusRequest.WithContext(statusContext)
+	statusResponse := newFlushingResponseRecorder()
+	statusDone := make(chan struct{})
+	go func() {
+		messageToolStreamHandler(toolCalls)(statusResponse, statusRequest)
+		close(statusDone)
+	}()
+	waitForTestSignal(t, statusResponse.flushes, "running tool-call stream event")
+	cancelStatus()
+	waitForTestSignal(t, statusDone, "tool-call stream cancellation")
 	for _, content := range []string{"webfetch", `class="braille-spinner"`} {
 		if !strings.Contains(statusResponse.Body.String(), content) {
 			t.Errorf("running tool response does not contain %q: %s", content, statusResponse.Body.String())
@@ -666,6 +713,32 @@ func newTestToolRegistry(t *testing.T) *tools.Registry {
 		t.Fatalf("NewRegistry() error: %v", err)
 	}
 	return registry
+}
+
+type flushingResponseRecorder struct {
+	*httptest.ResponseRecorder
+	flushes chan struct{}
+}
+
+func newFlushingResponseRecorder() *flushingResponseRecorder {
+	return &flushingResponseRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		flushes:          make(chan struct{}, 4),
+	}
+}
+
+func (r *flushingResponseRecorder) Flush() {
+	r.ResponseRecorder.Flush()
+	r.flushes <- struct{}{}
+}
+
+func waitForTestSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
 }
 
 func newToolCallRequest(t *testing.T, toolCalls *toolCallStore) string {
