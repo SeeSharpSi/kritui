@@ -101,23 +101,18 @@ func (t WebFetchTool) Execute(ctx context.Context, arguments json.RawMessage) (s
 		client = http.DefaultClient
 	}
 
+	operation := "send request"
 	response, err := fetchWebResponse(requestContext, client, params.url, webFetchBrowserUserAgent)
+	if err == nil && response.StatusCode == http.StatusForbidden && response.Header.Get("cf-mitigated") == "challenge" {
+		response.Body.Close()
+		operation = "send retry"
+		response, err = fetchWebResponse(requestContext, client, params.url, "opencode")
+	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(requestContext.Err(), context.DeadlineExceeded) {
 			return "", errors.New("webfetch: request timed out")
 		}
-		return "", fmt.Errorf("webfetch: send request: %w", err)
-	}
-
-	if response.StatusCode == http.StatusForbidden && response.Header.Get("cf-mitigated") == "challenge" {
-		response.Body.Close()
-		response, err = fetchWebResponse(requestContext, client, params.url, "opencode")
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(requestContext.Err(), context.DeadlineExceeded) {
-				return "", errors.New("webfetch: request timed out")
-			}
-			return "", fmt.Errorf("webfetch: send retry: %w", err)
-		}
+		return "", fmt.Errorf("webfetch: %s: %w", operation, err)
 	}
 	defer response.Body.Close()
 

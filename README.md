@@ -57,7 +57,7 @@ go vet ./...
 
 ## Structure
 
-- `server.go`, `handlers.go`: HTTP server, chat flow, and persistence wiring
+- `server.go`, `*_handlers.go`, `tool_stream.go`: HTTP server, chat flow, and persistence wiring
 - `templ/`, `static/`: server-rendered components and embedded browser assets
 - `llm/`: non-streaming API client and tool-capable conversation loop
 - `tools/`: validated tool registry and web-fetch tool

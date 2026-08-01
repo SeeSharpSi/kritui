@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -83,9 +84,7 @@ func NewRegistry(toolList ...Tool) (*Registry, error) {
 
 // Names returns registered tool names in registration order.
 func (r *Registry) Names() []string {
-	names := make([]string, len(r.order))
-	copy(names, r.order)
-	return names
+	return slices.Clone(r.order)
 }
 
 // Definitions returns tool definitions in registration order. Returned values

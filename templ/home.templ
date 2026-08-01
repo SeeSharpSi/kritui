@@ -1,15 +1,10 @@
 package templates
 
-import "seesharpsi/kritui/llm"
+import (
+	"slices"
 
-func toolEnabled(enabled []string, name string) bool {
-	for _, tool := range enabled {
-		if tool == name {
-			return true
-		}
-	}
-	return false
-}
+	"seesharpsi/kritui/llm"
+)
 
 templ Home(chatID string, messages []llm.Message, models []string, selectedModel string, tools []string, enabledTools []string) {
 	@Layout("Kritui") {
@@ -22,7 +17,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 				<details class="chat-options">
 					<div class="chat-options-list">
 						<details class="model-picker">
-							<summary style="display: flex; align-items: center; font-size: small;">
+							<summary>
 								Model
 								<strong>
 									{ selectedModel }
@@ -31,41 +26,29 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 							<div class="model-options">
 								for _, model := range models {
 									<label>
-										if model == selectedModel {
-											<input
-												type="radio"
-												name="model"
-												value={ model }
-												form="message-form"
+										<input
+											type="radio"
+											name="model"
+											value={ model }
+											form="message-form"
+											if model == selectedModel {
 												checked
-												onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
-											/>
-										} else {
-											<input
-												type="radio"
-												name="model"
-												value={ model }
-												form="message-form"
-												onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
-											/>
-										}
+											}
+											onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
+										/>
 										<span>{ model }</span>
 									</label>
 								}
 							</div>
 						</details>
 						<details class="tool-picker">
-							<summary style="display: flex; align-items: center; font-size: small;">
+							<summary>
 								Tools
 							</summary>
 							<div class="tool-options">
 								for _, tool := range tools {
 									<label>
-										if toolEnabled(enabledTools, tool) {
-											<input type="checkbox" name="tool" value={ tool } form="message-form" checked/>
-										} else {
-											<input type="checkbox" name="tool" value={ tool } form="message-form"/>
-										}
+										<input type="checkbox" name="tool" value={ tool } form="message-form" if slices.Contains(enabledTools, tool) { checked }/>
 										<span>{ tool }</span>
 										<span class="tool-state" aria-hidden="true"></span>
 									</label>

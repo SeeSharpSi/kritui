@@ -73,11 +73,12 @@ func (e *APIError) Error() string {
 
 // Client sends requests to one OpenAI-compatible chat completion endpoint.
 type Client struct {
-	apiKey     string
-	model      string
-	endpoint   string
-	responses  bool
-	httpClient *http.Client
+	apiKey         string
+	model          string
+	endpoint       string
+	modelsEndpoint string
+	responses      bool
+	httpClient     *http.Client
 }
 
 // New creates a client. Endpoint must be the full Chat Completions or Responses
@@ -105,12 +106,19 @@ func New(apiKey, model, endpoint string) (*Client, error) {
 		return nil, errors.New("llm: endpoint must not contain a fragment")
 	}
 
+	path := strings.TrimRight(parsedEndpoint.Path, "/")
+	responses := path != "" && strings.HasSuffix(path, "/responses")
+	path = strings.TrimSuffix(path, "/chat/completions")
+	path = strings.TrimSuffix(path, "/responses")
+	parsedEndpoint.Path = strings.TrimRight(path, "/") + "/models"
+
 	return &Client{
-		apiKey:     apiKey,
-		model:      model,
-		endpoint:   endpoint,
-		responses:  strings.TrimRight(parsedEndpoint.Path, "/") != "" && strings.HasSuffix(strings.TrimRight(parsedEndpoint.Path, "/"), "/responses"),
-		httpClient: &http.Client{},
+		apiKey:         apiKey,
+		model:          model,
+		endpoint:       endpoint,
+		modelsEndpoint: parsedEndpoint.String(),
+		responses:      responses,
+		httpClient:     &http.Client{},
 	}, nil
 }
 
@@ -121,16 +129,7 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (Completion, 
 
 // Models returns model identifiers advertised by the endpoint.
 func (c *Client) Models(ctx context.Context) ([]string, error) {
-	modelsURL, err := url.Parse(c.endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("llm: parse models endpoint: %w", err)
-	}
-	path := strings.TrimRight(modelsURL.Path, "/")
-	path = strings.TrimSuffix(path, "/chat/completions")
-	path = strings.TrimSuffix(path, "/responses")
-	modelsURL.Path = strings.TrimRight(path, "/") + "/models"
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.modelsEndpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("llm: create models request: %w", err)
 	}
@@ -175,225 +174,20 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 	return c.completeChat(ctx, messages, definitions)
 }
 
-func (c *Client) completeChat(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
-	requestTools := make([]completionTool, len(definitions))
-	for index, definition := range definitions {
-		requestTools[index] = completionTool{
-			Type:     "function",
-			Function: definition,
-		}
-	}
-
-	payload, err := json.Marshal(struct {
-		Model    string           `json:"model"`
-		Messages []Message        `json:"messages"`
-		Tools    []completionTool `json:"tools,omitempty"`
-	}{
-		Model:    c.model,
-		Messages: messages,
-		Tools:    requestTools,
-	})
+func (c *Client) postJSON(ctx context.Context, payload any, target any) error {
+	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return Completion{}, fmt.Errorf("llm: encode request: %w", err)
+		return fmt.Errorf("llm: encode request: %w", err)
 	}
-
-	resp, err := c.post(ctx, payload)
+	resp, err := c.post(ctx, encoded)
 	if err != nil {
-		return Completion{}, err
+		return err
 	}
 	defer resp.Body.Close()
-
-	var response struct {
-		ID      string `json:"id"`
-		Model   string `json:"model"`
-		Choices []struct {
-			Message      Message `json:"message"`
-			FinishReason string  `json:"finish_reason"`
-		} `json:"choices"`
-		Usage Usage `json:"usage"`
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return fmt.Errorf("llm: decode response: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return Completion{}, fmt.Errorf("llm: decode response: %w", err)
-	}
-	if len(response.Choices) == 0 {
-		return Completion{}, errors.New("llm: response contained no choices")
-	}
-
-	message := response.Choices[0].Message
-	message.Model = response.Model
-	applyUsage(&message, response.Usage)
-
-	return Completion{
-		ID:           response.ID,
-		Model:        response.Model,
-		Message:      message,
-		FinishReason: response.Choices[0].FinishReason,
-		Usage:        response.Usage,
-	}, nil
-}
-
-func (c *Client) completeResponse(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
-	input := make([]any, 0, len(messages))
-	for _, message := range messages {
-		if len(message.responseItems) > 0 {
-			for _, item := range message.responseItems {
-				input = append(input, item)
-			}
-			continue
-		}
-		switch message.Role {
-		case "tool":
-			input = append(input, responseInput{
-				Type:   "function_call_output",
-				CallID: message.ToolCallID,
-				Output: message.Content,
-			})
-		default:
-			if message.Content != "" || len(message.ToolCalls) == 0 {
-				input = append(input, responseInput{Role: message.Role, Content: message.Content})
-			}
-			for _, call := range message.ToolCalls {
-				input = append(input, responseInput{
-					Type:      "function_call",
-					CallID:    call.ID,
-					Name:      call.Function.Name,
-					Arguments: call.Function.Arguments,
-				})
-			}
-		}
-	}
-
-	requestTools := make([]responseTool, len(definitions))
-	for index, definition := range definitions {
-		requestTools[index] = responseTool{
-			Type:        "function",
-			Name:        definition.Name,
-			Description: definition.Description,
-			Parameters:  definition.Parameters,
-		}
-	}
-
-	payload, err := json.Marshal(struct {
-		Model string         `json:"model"`
-		Input []any          `json:"input"`
-		Tools []responseTool `json:"tools,omitempty"`
-	}{
-		Model: c.model,
-		Input: input,
-		Tools: requestTools,
-	})
-	if err != nil {
-		return Completion{}, fmt.Errorf("llm: encode request: %w", err)
-	}
-
-	resp, err := c.post(ctx, payload)
-	if err != nil {
-		return Completion{}, err
-	}
-	defer resp.Body.Close()
-
-	var response struct {
-		ID                string `json:"id"`
-		Model             string `json:"model"`
-		Status            string `json:"status"`
-		IncompleteDetails struct {
-			Reason string `json:"reason"`
-		} `json:"incomplete_details"`
-		Output []json.RawMessage `json:"output"`
-		Usage struct {
-			InputTokens  int      `json:"input_tokens"`
-			OutputTokens int      `json:"output_tokens"`
-			TotalTokens  int      `json:"total_tokens"`
-			Cost         *float64 `json:"cost,omitempty"`
-		} `json:"usage"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return Completion{}, fmt.Errorf("llm: decode response: %w", err)
-	}
-
-	usage := Usage{
-		PromptTokens:     response.Usage.InputTokens,
-		CompletionTokens: response.Usage.OutputTokens,
-		TotalTokens:      response.Usage.TotalTokens,
-		Cost:             response.Usage.Cost,
-	}
-	message := Message{
-		Role:          "assistant",
-		Model:         response.Model,
-		responseItems: cloneRawMessages(response.Output),
-	}
-	applyUsage(&message, usage)
-	for _, rawOutput := range response.Output {
-		var output struct {
-			Type      string `json:"type"`
-			Role      string `json:"role"`
-			CallID    string `json:"call_id"`
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-			Content   []struct {
-				Type    string `json:"type"`
-				Text    string `json:"text"`
-				Refusal string `json:"refusal"`
-			} `json:"content"`
-		}
-		if err := json.Unmarshal(rawOutput, &output); err != nil {
-			return Completion{}, fmt.Errorf("llm: decode response output: %w", err)
-		}
-		switch output.Type {
-		case "message":
-			if output.Role != "" {
-				message.Role = output.Role
-			}
-			for _, content := range output.Content {
-				switch content.Type {
-				case "output_text":
-					message.Content += content.Text
-				case "refusal":
-					message.Content += content.Refusal
-				}
-			}
-		case "function_call":
-			message.ToolCalls = append(message.ToolCalls, ToolCall{
-				ID:   output.CallID,
-				Type: "function",
-				Function: FunctionCall{
-					Name:      output.Name,
-					Arguments: output.Arguments,
-				},
-			})
-		}
-	}
-	if message.Content == "" && len(message.ToolCalls) == 0 {
-		return Completion{}, errors.New("llm: response contained no assistant output")
-	}
-
-	finishReason := "stop"
-	if len(message.ToolCalls) > 0 {
-		finishReason = "tool_calls"
-	} else if response.IncompleteDetails.Reason != "" {
-		finishReason = response.IncompleteDetails.Reason
-	} else if response.Status != "" && response.Status != "completed" {
-		finishReason = response.Status
-	}
-
-	return Completion{
-		ID:           response.ID,
-		Model:        response.Model,
-		Message:      message,
-		FinishReason: finishReason,
-		Usage:        usage,
-	}, nil
-}
-
-func applyUsage(message *Message, usage Usage) {
-	if usage.TotalTokens != 0 || usage.PromptTokens != 0 || usage.CompletionTokens != 0 {
-		total := usage.TotalTokens
-		message.TotalTokens = &total
-	}
-	if usage.Cost != nil {
-		cost := *usage.Cost
-		message.Cost = &cost
-	}
+	return nil
 }
 
 func (c *Client) post(ctx context.Context, payload []byte) (*http.Response, error) {
@@ -442,26 +236,15 @@ func endpointError(resp *http.Response) error {
 	}
 }
 
-type completionTool struct {
-	Type     string           `json:"type"`
-	Function tools.Definition `json:"function"`
-}
-
-type responseInput struct {
-	Type      string `json:"type,omitempty"`
-	Role      string `json:"role,omitempty"`
-	Content   string `json:"content,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Output    string `json:"output,omitempty"`
-}
-
-type responseTool struct {
-	Type        string          `json:"type"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
+func applyUsage(message *Message, usage Usage) {
+	if usage.TotalTokens != 0 || usage.PromptTokens != 0 || usage.CompletionTokens != 0 {
+		total := usage.TotalTokens
+		message.TotalTokens = &total
+	}
+	if usage.Cost != nil {
+		cost := *usage.Cost
+		message.Cost = &cost
+	}
 }
 
 func cloneRawMessages(messages []json.RawMessage) []json.RawMessage {

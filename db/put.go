@@ -15,15 +15,12 @@ type databaseExecutor interface {
 
 // InsertChat creates a chat and returns its database ID.
 func InsertChat(ctx context.Context, db *sql.DB, title string, tools []string) (int64, error) {
-	if tools == nil {
-		tools = []string{}
-	}
-	encoded, err := json.Marshal(tools)
+	encoded, err := encodeToolNames(tools)
 	if err != nil {
 		return 0, fmt.Errorf("encode chat tools: %w", err)
 	}
 
-	result, err := db.ExecContext(ctx, `INSERT INTO chats (title, tools) VALUES (?, ?)`, title, string(encoded))
+	result, err := db.ExecContext(ctx, `INSERT INTO chats (title, tools) VALUES (?, ?)`, title, encoded)
 	if err != nil {
 		return 0, fmt.Errorf("insert chat: %w", err)
 	}
@@ -38,10 +35,7 @@ func InsertChat(ctx context.Context, db *sql.DB, title string, tools []string) (
 
 // SetChatTools replaces the enabled tool names stored for a chat.
 func SetChatTools(ctx context.Context, db *sql.DB, chatID int64, tools []string) error {
-	if tools == nil {
-		tools = []string{}
-	}
-	encoded, err := json.Marshal(tools)
+	encoded, err := encodeToolNames(tools)
 	if err != nil {
 		return fmt.Errorf("encode chat tools: %w", err)
 	}
@@ -50,7 +44,7 @@ func SetChatTools(ctx context.Context, db *sql.DB, chatID int64, tools []string)
 		UPDATE chats
 		SET tools = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		WHERE id = ?
-	`, string(encoded), chatID)
+	`, encoded, chatID)
 	if err != nil {
 		return fmt.Errorf("set chat tools: %w", err)
 	}

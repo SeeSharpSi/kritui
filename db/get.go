@@ -37,11 +37,9 @@ func GetChats(ctx context.Context, db *sql.DB) ([]Chat, error) {
 		if err := rows.Scan(&chat.ID, &chat.Title, &tools, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan chat: %w", err)
 		}
-		if err := json.Unmarshal([]byte(tools), &chat.Tools); err != nil {
+		chat.Tools, err = decodeToolNames(tools)
+		if err != nil {
 			return nil, fmt.Errorf("decode chat tools: %w", err)
-		}
-		if chat.Tools == nil {
-			chat.Tools = []string{}
 		}
 		chats = append(chats, chat)
 	}
@@ -64,12 +62,9 @@ func GetChatTools(ctx context.Context, db *sql.DB, chatID int64) ([]string, erro
 		return nil, fmt.Errorf("get chat tools: %w", err)
 	}
 
-	var names []string
-	if err := json.Unmarshal([]byte(tools), &names); err != nil {
+	names, err := decodeToolNames(tools)
+	if err != nil {
 		return nil, fmt.Errorf("decode chat tools: %w", err)
-	}
-	if names == nil {
-		names = []string{}
 	}
 	return names, nil
 }

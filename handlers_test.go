@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -76,7 +77,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	if location := response.Header().Get("Location"); location != "" {
 		t.Errorf("unexpected Location header %q", location)
 	}
-	for _, content := range []string{
+	requireContains(t, response.Body.String(),
 		"Earlier question",
 		"Earlier answer",
 		`/static/htmx-ext-sse.min.js`,
@@ -84,23 +85,9 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`reportValidityOfForms`,
 		`hx-history="false"`,
 		`hx-sync="#messages:drop"`,
-	} {
-		if !strings.Contains(response.Body.String(), content) {
-			t.Errorf("response does not contain %q", content)
-		}
-	}
-	if strings.Contains(response.Body.String(), "What would you like to discuss?") {
-		t.Error("response contains welcome prompt for stored chat")
-	}
-	if strings.Contains(response.Body.String(), "begin a convo...") {
-		t.Error("response contains empty-chat prompt for stored chat")
-	}
-	if !strings.Contains(response.Body.String(), "<strong>stored-model</strong>") {
-		t.Error("response does not label assistant message with model")
-	}
-	if strings.Contains(response.Body.String(), "<strong>assistant</strong>") {
-		t.Error("response labels assistant message with role")
-	}
+		"<strong>stored-model</strong>",
+	)
+	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>")
 }
 
 func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
@@ -113,12 +100,8 @@ func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if strings.Contains(response.Body.String(), "What would you like to discuss?") {
-		t.Error("response contains welcome prompt")
-	}
-	if !strings.Contains(response.Body.String(), "begin a convo...") {
-		t.Error("response does not contain empty-chat prompt")
-	}
+	requireContains(t, response.Body.String(), "begin a convo...")
+	requireNotContains(t, response.Body.String(), "What would you like to discuss?")
 }
 
 func TestHomeHandlerRendersEndpointModels(t *testing.T) {
@@ -141,16 +124,10 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	for _, model := range []string{"model-a", "model-b"} {
-		if !strings.Contains(response.Body.String(), `value="`+model+`"`) {
-			t.Errorf("response does not contain model option %q", model)
-		}
-	}
-	for _, tool := range []string{"webfetch", "websearch"} {
-		if !strings.Contains(response.Body.String(), `name="tool" value="`+tool+`"`) {
-			t.Errorf("response does not contain tool option %q", tool)
-		}
-	}
+	requireContains(t, response.Body.String(),
+		`value="model-a"`, `value="model-b"`,
+		`name="tool" value="webfetch"`, `name="tool" value="websearch"`,
+	)
 }
 
 func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
@@ -168,12 +145,8 @@ func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, `name="tool" value="websearch" form="message-form" checked`) {
-		t.Errorf("websearch not checked: %s", body)
-	}
-	if strings.Contains(body, `name="tool" value="webfetch" form="message-form" checked`) {
-		t.Errorf("webfetch unexpectedly checked: %s", body)
-	}
+	requireContains(t, body, `name="tool" value="websearch" form="message-form" checked`)
+	requireNotContains(t, body, `name="tool" value="webfetch" form="message-form" checked`)
 }
 
 func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
@@ -186,10 +159,7 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 		"model":   {"selected-model"},
 		"tool":    {"webfetch", "websearch"},
 	}
-	request := httptest.NewRequest(http.MethodPost, "/messages?chat=3", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response := httptest.NewRecorder()
-	messageHandler(database, newTestToolRegistry(t), toolCalls)(response, request)
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), toolCalls), "/messages?chat=3", form)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -229,7 +199,7 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	for _, content := range []string{
+	requireContains(t, response.Body.String(),
 		`class="history-action history-edit"`,
 		`class="history-action history-cancel"`,
 		`class="history-action history-delete"`,
@@ -243,14 +213,8 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		`hx-target="main"`,
 		`hx-select="main"`,
 		`hx-swap="outerHTML show:none"`,
-	} {
-		if !strings.Contains(response.Body.String(), content) {
-			t.Errorf("response does not contain %q", content)
-		}
-	}
-	if strings.Contains(response.Body.String(), "<style>") {
-		t.Error("history fragment contains inline style")
-	}
+	)
+	requireNotContains(t, response.Body.String(), "<style>")
 }
 
 func TestRenameChatHandlerUpdatesTitle(t *testing.T) {
@@ -269,12 +233,8 @@ func TestRenameChatHandlerUpdatesTitle(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "New title") {
-		t.Error("response does not contain renamed chat")
-	}
-	if strings.Contains(response.Body.String(), "Old title") {
-		t.Error("response still contains old title")
-	}
+	requireContains(t, response.Body.String(), "New title")
+	requireNotContains(t, response.Body.String(), "Old title")
 	var title string
 	if err := database.QueryRow(`SELECT title FROM chats WHERE id = 8`).Scan(&title); err != nil {
 		t.Fatalf("query title: %v", err)
@@ -304,12 +264,8 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	if strings.Contains(response.Body.String(), "Delete me") {
-		t.Error("response still contains deleted chat")
-	}
-	if !strings.Contains(response.Body.String(), "Keep me") {
-		t.Error("response does not contain remaining chat")
-	}
+	requireContains(t, response.Body.String(), "Keep me")
+	requireNotContains(t, response.Body.String(), "Delete me")
 	var chats, deletedMessages, keptMessages int
 	if err := database.QueryRow(`
 		SELECT
@@ -342,17 +298,13 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "default-model")
 	form := url.Values{"message": {"Hello"}, "model": {"selected-model"}, "tool": {"webfetch"}}
-	request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response := httptest.NewRecorder()
-
 	toolCalls := newToolCallStore()
-	messageHandler(database, newTestToolRegistry(t), toolCalls)(response, request)
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), toolCalls), "/messages?chat=1", form)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	for _, content := range []string{
+	requireContains(t, response.Body.String(),
 		"Hello",
 		"selected-model",
 		`hx-post="/messages/complete?chat=1"`,
@@ -367,17 +319,8 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`hx-swap-oob="outerHTML"`,
 		`name="request" value="`,
 		`name="tool" value="webfetch"`,
-	} {
-		if !strings.Contains(response.Body.String(), content) {
-			t.Errorf("response does not contain %q", content)
-		}
-	}
-	if strings.Contains(response.Body.String(), "every 200ms") {
-		t.Errorf("response still contains interval polling: %s", response.Body.String())
-	}
-	if strings.Contains(response.Body.String(), `type="hidden" name="message"`) {
-		t.Errorf("pending response duplicates persisted message state: %s", response.Body.String())
-	}
+	)
+	requireNotContains(t, response.Body.String(), "every 200ms", `type="hidden" name="message"`)
 }
 
 func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
@@ -389,11 +332,7 @@ func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
 	submit := func(chatID int, message string) *httptest.ResponseRecorder {
 		t.Helper()
 		form := url.Values{"message": {message}, "model": {"selected-model"}}
-		request := httptest.NewRequest(http.MethodPost, "/messages?chat="+strconv.Itoa(chatID), strings.NewReader(form.Encode()))
-		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		response := httptest.NewRecorder()
-		handler(response, request)
-		return response
+		return postForm(t, handler, "/messages?chat="+strconv.Itoa(chatID), form)
 	}
 
 	if response := submit(1, "First"); response.Code != http.StatusOK {
@@ -403,9 +342,7 @@ func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
 	if response.Code != http.StatusConflict {
 		t.Fatalf("concurrent status = %d, want %d; body = %q", response.Code, http.StatusConflict, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "response is already in progress") {
-		t.Errorf("concurrent response has no useful error: %s", response.Body.String())
-	}
+	requireContains(t, response.Body.String(), "response is already in progress")
 	if response := submit(2, "Other chat"); response.Code != http.StatusOK {
 		t.Fatalf("other chat status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
@@ -420,6 +357,42 @@ func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
 	if firstChatMessages != 1 || secondChatMessages != 1 {
 		t.Errorf("message counts = %d, %d; want 1, 1", firstChatMessages, secondChatMessages)
 	}
+}
+
+func TestToolCallStoreCreateRemovesExpiredTrackers(t *testing.T) {
+	toolCalls := newToolCallStore()
+	startedID := newToolCallRequest(t, toolCalls, 1)
+	started, ok := toolCalls.claim(startedID, 1)
+	if !ok {
+		t.Fatal("claim started tracker failed")
+	}
+	unclaimedID := newToolCallRequest(t, toolCalls, 2)
+	unclaimed, ok := toolCalls.get(unclaimedID)
+	if !ok {
+		t.Fatal("get unclaimed tracker failed")
+	}
+	activeID := newToolCallRequest(t, toolCalls, 3)
+
+	toolCalls.mu.Lock()
+	toolCalls.trackers[startedID].created = time.Now().Add(-toolCallTrackerTTL)
+	toolCalls.trackers[unclaimedID].created = time.Now().Add(-toolCallUnclaimedTrackerTTL)
+	toolCalls.mu.Unlock()
+
+	if _, err := toolCalls.create(3); !errors.Is(err, errChatCompletionActive) {
+		t.Fatalf("create active chat error = %v, want %v", err, errChatCompletionActive)
+	}
+	if _, ok := toolCalls.get(startedID); ok {
+		t.Error("expired started tracker remains stored")
+	}
+	if _, ok := toolCalls.get(unclaimedID); ok {
+		t.Error("expired unclaimed tracker remains stored")
+	}
+	waitForTestSignal(t, started.done, "expired started tracker close")
+	waitForTestSignal(t, unclaimed.done, "expired unclaimed tracker close")
+	if _, err := toolCalls.create(1); err != nil {
+		t.Fatalf("reuse expired chat: %v", err)
+	}
+	toolCalls.delete(activeID)
 }
 
 func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
@@ -474,23 +447,10 @@ func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 		t.Fatalf("response does not contain close event: %s", response.Body.String())
 	}
 
-	for _, content := range []string{"websearch", "braille spinner", `class="braille-spinner"`, "Running tool:"} {
-		if !strings.Contains(runningEvent, content) {
-			t.Errorf("running event does not contain %q: %s", content, runningEvent)
-		}
-	}
-
-	if strings.Contains(completedEvent, `class="braille-spinner"`) {
-		t.Errorf("completed event contains spinner: %s", completedEvent)
-	}
-	for _, content := range []string{`class="tool-call-complete"`, "Completed tool:"} {
-		if !strings.Contains(completedEvent, content) {
-			t.Errorf("completed event does not contain %q: %s", content, completedEvent)
-		}
-	}
-	if !strings.Contains(closeEvent, "data: \n") {
-		t.Errorf("close event has no data field: %s", closeEvent)
-	}
+	requireContains(t, runningEvent, "websearch", "braille spinner", `class="braille-spinner"`, "Running tool:")
+	requireContains(t, completedEvent, `class="tool-call-complete"`, "Completed tool:")
+	requireNotContains(t, completedEvent, `class="braille-spinner"`)
+	requireContains(t, closeEvent, "data: \n")
 }
 
 func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
@@ -538,24 +498,13 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 			"request": {newToolCallRequest(t, toolCalls, 1)},
 			"tool":    {"webfetch"},
 		}
-		request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
-		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		response := httptest.NewRecorder()
-
-		handler(response, request)
+		response := postForm(t, handler, "/messages/complete?chat=1", form)
 
 		if response.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 		}
-		if !strings.Contains(response.Body.String(), "<strong>response-model</strong>") {
-			t.Error("response does not label assistant message with model")
-		}
-		if strings.Contains(response.Body.String(), "<strong>test-model</strong>") {
-			t.Error("response labels assistant message with environment model")
-		}
-		if strings.Contains(response.Body.String(), "<strong>assistant</strong>") {
-			t.Error("response labels assistant message with role")
-		}
+		requireContains(t, response.Body.String(), "<strong>response-model</strong>")
+		requireNotContains(t, response.Body.String(), "<strong>test-model</strong>", "<strong>assistant</strong>")
 	}
 
 	firstRequest := <-requests
@@ -602,20 +551,12 @@ func TestMessageCompletionHandlerStoresRawMarkdown(t *testing.T) {
 		"model":   {"selected-model"},
 		"request": {newToolCallRequest(t, toolCalls, 1)},
 	}
-	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response := httptest.NewRecorder()
-
-	messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)(response, request)
+	response := postForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), "/messages/complete?chat=1", form)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	for _, rendered := range []string{"<strong>Answer</strong>", "<li>one</li>", "<li>two</li>"} {
-		if !strings.Contains(response.Body.String(), rendered) {
-			t.Errorf("response does not contain rendered Markdown %q: %s", rendered, response.Body.String())
-		}
-	}
+	requireContains(t, response.Body.String(), "<strong>Answer</strong>", "<li>one</li>", "<li>two</li>")
 
 	const want = "**Answer**\n\n- one\n- two"
 	var stored string
@@ -645,45 +586,33 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 		"request": {requestID},
 		"tool":    {"webfetch"},
 	}
-	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response := httptest.NewRecorder()
 	registry := newTestToolRegistry(t)
-
-	messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
+	response := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil), "/messages/complete?chat=1", form)
 
 	if response.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadGateway, response.Body.String())
 	}
-	for _, content := range []string{
+	requireContains(t, response.Body.String(),
 		"Failed to complete message.",
 		`role="alert"`,
 		`hx-post="/messages/retry?chat=1"`,
 		`name="model" value="selected-model"`,
 		`name="tool" value="webfetch"`,
 		`>Retry</button>`,
-	} {
-		if !strings.Contains(response.Body.String(), content) {
-			t.Errorf("error response does not contain %q: %s", content, response.Body.String())
-		}
-	}
+	)
 	if _, ok := toolCalls.get(requestID); ok {
 		t.Error("failed completion kept old tracker active")
 	}
 
-	retryRequest := httptest.NewRequest(http.MethodPost, "/messages/retry?chat=1", strings.NewReader("model=selected-model&tool=webfetch"))
-	retryRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	retryResponse := httptest.NewRecorder()
-	messageRetryHandler(database, registry, toolCalls)(retryResponse, retryRequest)
+	retryResponse := postForm(t, messageRetryHandler(database, registry, toolCalls), "/messages/retry?chat=1", url.Values{
+		"model": {"selected-model"},
+		"tool":  {"webfetch"},
+	})
 
 	if retryResponse.Code != http.StatusOK {
 		t.Fatalf("retry status = %d, want %d; body = %q", retryResponse.Code, http.StatusOK, retryResponse.Body.String())
 	}
-	for _, content := range []string{`hx-post="/messages/complete?chat=1"`, `sse-connect="/messages/tools?request=`, `hx-trigger="load"`} {
-		if !strings.Contains(retryResponse.Body.String(), content) {
-			t.Errorf("retry response does not contain %q: %s", content, retryResponse.Body.String())
-		}
-	}
+	requireContains(t, retryResponse.Body.String(), `hx-post="/messages/complete?chat=1"`, `sse-connect="/messages/tools?request=`, `hx-trigger="load"`)
 
 	var messages int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 1`).Scan(&messages); err != nil {
@@ -701,11 +630,7 @@ func TestMessageCompletionHandlerRejectsTrackerFromAnotherChat(t *testing.T) {
 	toolCalls := newToolCallStore()
 	requestID := newToolCallRequest(t, toolCalls, 1)
 	form := url.Values{"model": {"selected-model"}, "request": {requestID}}
-	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=2", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response := httptest.NewRecorder()
-
-	messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)(response, request)
+	response := postForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), "/messages/complete?chat=2", form)
 
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
@@ -793,11 +718,7 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	waitForTestSignal(t, statusResponse.flushes, "running tool-call stream event")
 	cancelStatus()
 	waitForTestSignal(t, statusDone, "tool-call stream cancellation")
-	for _, content := range []string{"webfetch", `class="braille-spinner"`} {
-		if !strings.Contains(statusResponse.Body.String(), content) {
-			t.Errorf("running tool response does not contain %q: %s", content, statusResponse.Body.String())
-		}
-	}
+	requireContains(t, statusResponse.Body.String(), "webfetch", `class="braille-spinner"`)
 
 	close(releaseFetch)
 	select {
@@ -810,14 +731,8 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, content := range []string{"webfetch", fetched.URL, "Final answer.", `class="tool-call-complete"`} {
-		if !strings.Contains(body, content) {
-			t.Errorf("response does not contain %q: %s", content, body)
-		}
-	}
-	if strings.Contains(body, `class="braille-spinner"`) {
-		t.Errorf("completed response contains spinner: %s", body)
-	}
+	requireContains(t, body, "webfetch", fetched.URL, "Final answer.", `class="tool-call-complete"`)
+	requireNotContains(t, body, `class="braille-spinner"`)
 	if strings.Index(body, "webfetch") > strings.Index(body, "Final answer.") {
 		t.Errorf("tool call does not precede answer: %s", body)
 	}
@@ -838,14 +753,8 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 		t.Fatalf("reload status = %d, want %d; body = %q", reloadResponse.Code, http.StatusOK, reloadResponse.Body.String())
 	}
 	reloaded := reloadResponse.Body.String()
-	for _, content := range []string{"webfetch", fetched.URL, "Final answer.", `class="tool-call-complete"`} {
-		if !strings.Contains(reloaded, content) {
-			t.Errorf("reloaded chat does not contain %q: %s", content, reloaded)
-		}
-	}
-	if strings.Contains(reloaded, "fetched content") {
-		t.Errorf("reloaded chat exposes tool result: %s", reloaded)
-	}
+	requireContains(t, reloaded, "webfetch", fetched.URL, "Final answer.", `class="tool-call-complete"`)
+	requireNotContains(t, reloaded, "fetched content")
 	if strings.Index(reloaded, "webfetch") > strings.Index(reloaded, "Final answer.") {
 		t.Errorf("reloaded tool call does not precede answer: %s", reloaded)
 	}
@@ -862,6 +771,33 @@ func newTestToolRegistry(t *testing.T) *tools.Registry {
 		t.Fatalf("NewRegistry() error: %v", err)
 	}
 	return registry
+}
+
+func postForm(t *testing.T, handler http.Handler, target string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func requireContains(t *testing.T, content string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if !strings.Contains(content, value) {
+			t.Errorf("content does not contain %q: %s", value, content)
+		}
+	}
+}
+
+func requireNotContains(t *testing.T, content string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if strings.Contains(content, value) {
+			t.Errorf("content unexpectedly contains %q: %s", value, content)
+		}
+	}
 }
 
 type flushingResponseRecorder struct {

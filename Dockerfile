@@ -7,7 +7,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY server.go handlers.go ./
+COPY *.go ./
 COPY db/ ./db/
 COPY llm/ ./llm/
 COPY markdown/ ./markdown/
