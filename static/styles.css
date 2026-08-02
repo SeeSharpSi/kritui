@@ -761,6 +761,10 @@ main {
             background: var(--color-surface);
             color: var(--color-text);
             z-index: 1000;
+
+            &#message {
+                font-size: max(1rem, 16px);
+            }
         }
 
         button {
