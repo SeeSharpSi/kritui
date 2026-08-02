@@ -176,6 +176,33 @@ func TestHomeHandlerUsesStoredDefaultModel(t *testing.T) {
 	requireNotContains(t, response.Body.String(), "env-model")
 }
 
+func TestHomeHandlerUsesMostRecentResponseModel(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "default-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (8);
+		INSERT INTO messages (chat_id, position, role, content, model) VALUES
+			(8, 0, 'user', 'First question', NULL),
+			(8, 1, 'assistant', 'First answer', 'earlier-model'),
+			(8, 2, 'user', 'Second question', NULL),
+			(8, 3, 'assistant', 'Second answer', 'latest-model'),
+			(8, 4, 'user', 'Unanswered question', NULL);
+	`); err != nil {
+		t.Fatalf("insert chat history: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
+	response := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	requireContains(t, response.Body.String(), "<strong>latest-model</strong>", `value="latest-model" form="message-form" checked`)
+	requireNotContains(t, response.Body.String(), "<strong>default-model</strong>", `value="earlier-model" form="message-form" checked`)
+}
+
 func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
 	database := openTestDatabase(t)
 	if _, err := database.Exec(`INSERT INTO chats (id, tools) VALUES (8, ?)`, `["websearch"]`); err != nil {

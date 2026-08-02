@@ -65,6 +65,12 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			http.Error(w, "failed to get settings", http.StatusInternalServerError)
 			return
 		}
+		for index := len(messages) - 1; index >= 0; index-- {
+			if messages[index].Role == "assistant" && strings.TrimSpace(messages[index].Model) != "" {
+				selectedModel = messages[index].Model
+				break
+			}
+		}
 		models, selectedModel := availableModels(r, selectedModel)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
