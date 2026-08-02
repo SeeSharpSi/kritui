@@ -139,6 +139,7 @@ templ HistoryButton(chatID string, active bool, outOfBand bool) {
 		hx-get={ historyToggleURL(chatID, active) }
 		hx-target="#history-panel"
 		hx-swap="innerHTML"
+		hx-sync="this:replace"
 		aria-pressed={ strconv.FormatBool(active) }
 		if outOfBand {
 			hx-swap-oob="outerHTML"

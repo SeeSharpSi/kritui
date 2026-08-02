@@ -85,6 +85,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`reportValidityOfForms`,
 		`hx-history="false"`,
 		`hx-sync="#messages:drop"`,
+		`hx-sync="this:replace"`,
 		"<strong>stored-model</strong>",
 	)
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>")
