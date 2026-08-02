@@ -17,6 +17,13 @@ document.addEventListener('htmx:beforeSwap', (event) => {
     }
 });
 
+document.addEventListener('htmx:confirm', (event) => {
+    if (event.target.matches('.history-delete') && event.detail.triggeringEvent?.shiftKey) {
+        event.preventDefault();
+        event.detail.issueRequest(true);
+    }
+});
+
 document.addEventListener('click', (event) => {
     document.querySelectorAll('.model-picker[open], .tool-picker[open]').forEach((picker) => {
         if (!picker.contains(event.target)) {
