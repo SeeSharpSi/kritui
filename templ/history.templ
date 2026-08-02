@@ -38,10 +38,12 @@ templ HistoryList(chatID string, chats []kritui_db.Chat) {
 		<a class="history-action history-new" href="/" aria-label="Start a new chat" title="Start a new chat">+</a>
 	</div>
 	@HistoryButton(chatID, true, true)
+	@SendButton(true, true)
 }
 
 templ HistoryClose(chatID string) {
 	@HistoryButton(chatID, false, true)
+	@SendButton(false, true)
 }
 
 templ HistoryEntry(chatID string, chat kritui_db.Chat) {

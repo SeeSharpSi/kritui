@@ -74,8 +74,21 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 				<label for="message" class="visually-hidden">Message</label>
 				@MessageInput(false)
 				@HistoryButton(chatID, false, false)
-				<button type="submit">Send</button>
+				@SendButton(false, false)
 			</form>
 		</main>
 	}
+}
+
+templ SendButton(disabled bool, outOfBand bool) {
+	<button
+		id="send-button"
+		type="submit"
+		if disabled {
+			disabled
+		}
+		if outOfBand {
+			hx-swap-oob="outerHTML"
+		}
+	>Send</button>
 }
