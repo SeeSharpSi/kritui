@@ -217,6 +217,21 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 	requireNotContains(t, response.Body.String(), "<style>")
 }
 
+func TestHistoryHandlerClosesDeletedChatIntoBlankChat(t *testing.T) {
+	database := openTestDatabase(t)
+	request := httptest.NewRequest(http.MethodGet, "/history?chat=8&close=1", nil)
+	response := httptest.NewRecorder()
+
+	historyHandler(database)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if redirect := response.Header().Get("HX-Redirect"); redirect != "/?chat=8" {
+		t.Errorf("HX-Redirect = %q, want %q", redirect, "/?chat=8")
+	}
+}
+
 func TestRenameChatHandlerUpdatesTitle(t *testing.T) {
 	database := openTestDatabase(t)
 	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (8, 'Old title'), (9, 'Other')`); err != nil {
@@ -283,9 +298,13 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 	response = httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 
-	if redirect := response.Header().Get("HX-Redirect"); redirect != "/" {
-		t.Errorf("HX-Redirect = %q, want /", redirect)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
+	if redirect := response.Header().Get("HX-Redirect"); redirect != "" {
+		t.Errorf("unexpected HX-Redirect %q", redirect)
+	}
+	requireContains(t, response.Body.String(), "No saved chats yet.")
 	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&chats); err != nil {
 		t.Fatalf("count chats: %v", err)
 	}
