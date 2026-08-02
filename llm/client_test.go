@@ -211,6 +211,47 @@ func TestCompleteRejectsResponseWithoutChoices(t *testing.T) {
 	}
 }
 
+func TestCompleteUsesRequestedModelWhenResponseOmitsModel(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		response string
+	}{
+		{
+			name:     "Chat Completions",
+			path:     "/v1/chat/completions",
+			response: `{"id":"completion-1","choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}]}`,
+		},
+		{
+			name:     "Responses",
+			path:     "/v1/responses",
+			response: `{"id":"response-1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(test.response))
+			}))
+			defer server.Close()
+
+			client, err := New("key", "requested-model", server.URL+test.path)
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
+			completion, err := client.Complete(context.Background(), []Message{{Role: "user", Content: "Hello"}})
+			if err != nil {
+				t.Fatalf("Complete() error: %v", err)
+			}
+			if completion.Model != "requested-model" || completion.Message.Model != "requested-model" {
+				t.Errorf("completion model = %q, message model = %q; want requested-model", completion.Model, completion.Message.Model)
+			}
+		})
+	}
+}
+
 func TestResponsesConversationWithToolCall(t *testing.T) {
 	promptContext := PromptContext{
 		CurrentTime:    time.Date(2026, time.August, 2, 18, 30, 0, 0, time.UTC),

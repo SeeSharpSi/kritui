@@ -101,9 +101,10 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 		TotalTokens:      response.Usage.TotalTokens,
 		Cost:             response.Usage.Cost,
 	}
+	model := c.completionModel(response.Model)
 	message := Message{
 		Role:          "assistant",
-		Model:         response.Model,
+		Model:         model,
 		responseItems: cloneRawMessages(response.Output),
 	}
 	applyUsage(&message, usage)
@@ -162,7 +163,7 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 
 	return Completion{
 		ID:           response.ID,
-		Model:        response.Model,
+		Model:        model,
 		Message:      message,
 		FinishReason: finishReason,
 		Usage:        usage,

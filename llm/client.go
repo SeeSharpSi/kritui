@@ -247,6 +247,13 @@ func applyUsage(message *Message, usage Usage) {
 	}
 }
 
+func (c *Client) completionModel(model string) string {
+	if strings.TrimSpace(model) == "" {
+		return c.model
+	}
+	return model
+}
+
 func cloneRawMessages(messages []json.RawMessage) []json.RawMessage {
 	cloned := make([]json.RawMessage, len(messages))
 	for index, message := range messages {

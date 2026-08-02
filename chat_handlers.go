@@ -90,16 +90,6 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if r.URL.Query().Has("close") {
-			var chatExists bool
-			if err := database.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM chats WHERE id = ?)`, chat).Scan(&chatExists); err != nil {
-				log.Printf("check chat: %v", err)
-				http.Error(w, "failed to close chat history", http.StatusInternalServerError)
-				return
-			}
-			if !chatExists {
-				w.Header().Set("HX-Redirect", "/?chat="+chat)
-				return
-			}
 			if err := templates.HistoryClose(chat).Render(r.Context(), w); err != nil {
 				http.Error(w, "failed to close chat history", http.StatusInternalServerError)
 			}
@@ -120,16 +110,6 @@ func settingsHandler(database *sql.DB) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if r.URL.Query().Has("close") {
-			var chatExists bool
-			if err := database.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM chats WHERE id = ?)`, chat).Scan(&chatExists); err != nil {
-				log.Printf("check chat: %v", err)
-				http.Error(w, "failed to close settings", http.StatusInternalServerError)
-				return
-			}
-			if !chatExists {
-				w.Header().Set("HX-Redirect", "/?chat="+chat)
-				return
-			}
 			if err := templates.SettingsClose(chat).Render(r.Context(), w); err != nil {
 				http.Error(w, "failed to close settings", http.StatusInternalServerError)
 			}
@@ -176,7 +156,8 @@ func deleteChatHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 		current := r.URL.Query().Get("current")
-		if _, ok := positiveID(current); !ok {
+		currentChatID, ok := positiveID(current)
+		if !ok {
 			http.Error(w, "valid current chat is required", http.StatusBadRequest)
 			return
 		}
@@ -187,6 +168,11 @@ func deleteChatHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 		renderHistoryList(r.Context(), w, database, current)
+		if chatID == currentChatID {
+			if err := templates.MessageList(nil, true).Render(r.Context(), w); err != nil {
+				log.Printf("clear deleted chat: %v", err)
+			}
+		}
 	}
 }
 

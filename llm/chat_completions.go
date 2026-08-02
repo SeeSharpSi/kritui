@@ -46,13 +46,14 @@ func (c *Client) completeChat(ctx context.Context, messages []Message, definitio
 		return Completion{}, errors.New("llm: response contained no choices")
 	}
 
+	model := c.completionModel(response.Model)
 	message := response.Choices[0].Message
-	message.Model = response.Model
+	message.Model = model
 	applyUsage(&message, response.Usage)
 
 	return Completion{
 		ID:           response.ID,
-		Model:        response.Model,
+		Model:        model,
 		Message:      message,
 		FinishReason: response.Choices[0].FinishReason,
 		Usage:        response.Usage,

@@ -32,13 +32,11 @@ templ SettingsPage(chatID string, models []string, selectedModel string, saved b
 	</section>
 	@SettingsButton(chatID, true, true)
 	@HistoryButton(chatID, false, true)
-	@SendButton(true, true)
 }
 
 templ SettingsClose(chatID string) {
 	@SettingsButton(chatID, false, true)
 	@HistoryButton(chatID, false, true)
-	@SendButton(false, true)
 }
 
 templ SettingsButton(chatID string, active bool, outOfBand bool) {

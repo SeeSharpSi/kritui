@@ -8,6 +8,7 @@ function scrollMessages(root) {
 }
 
 const messageListStates = new WeakMap();
+const messageBlockSelector = '.message, .completed-tool-calls, .chat-empty';
 
 function messageListFor(root) {
     return root?.matches?.('.message-list')
@@ -19,14 +20,28 @@ function isMessageListAtBottom(messageList) {
     return messageList.scrollHeight - messageList.clientHeight - messageList.scrollTop <= 2;
 }
 
-function observeMessageBlocks(messageList, state) {
-    const blocks = messageList.querySelectorAll('.message, .completed-tool-calls, .chat-empty');
-    for (const block of blocks) {
+function forEachMessageBlock(root, callback) {
+    if (root.matches?.(messageBlockSelector)) {
+        callback(root);
+    }
+    root.querySelectorAll?.(messageBlockSelector).forEach(callback);
+}
+
+function observeMessageBlocks(root, state) {
+    forEachMessageBlock(root, (block) => {
         if (!state.observedBlocks.has(block)) {
             state.observedBlocks.add(block);
             state.resizeObserver.observe(block);
         }
-    }
+    });
+}
+
+function unobserveMessageBlocks(root, state) {
+    forEachMessageBlock(root, (block) => {
+        if (state.observedBlocks.delete(block)) {
+            state.resizeObserver.unobserve(block);
+        }
+    });
 }
 
 function messageListState(messageList) {
@@ -40,13 +55,14 @@ function messageListState(messageList) {
         restoreAfterSwap: false,
         forcing: false,
         frame: 0,
-        userScrolling: false,
-        userScrollTimer: 0,
         observedBlocks: new WeakSet(),
     };
     state.resizeObserver = new ResizeObserver(() => pinMessageList(messageList));
-    state.mutationObserver = new MutationObserver(() => {
-        observeMessageBlocks(messageList, state);
+    state.mutationObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            mutation.removedNodes.forEach((node) => unobserveMessageBlocks(node, state));
+            mutation.addedNodes.forEach((node) => observeMessageBlocks(node, state));
+        }
         pinMessageList(messageList);
     });
     state.mutationObserver.observe(messageList, {
@@ -59,30 +75,25 @@ function messageListState(messageList) {
             return;
         }
 
-        if (isMessageListAtBottom(messageList)) {
-            state.pinned = true;
-        } else if (state.userScrolling) {
-            state.pinned = false;
-        }
-    });
-    const markUserScrolling = () => {
-        state.userScrolling = true;
-        clearTimeout(state.userScrollTimer);
-        state.userScrollTimer = setTimeout(() => {
-            state.userScrolling = false;
-        }, 200);
-    };
-    messageList.addEventListener('wheel', markUserScrolling, { passive: true });
-    messageList.addEventListener('touchmove', markUserScrolling, { passive: true });
-    messageList.addEventListener('pointerdown', markUserScrolling);
-    messageList.addEventListener('pointermove', (event) => {
-        if (event.buttons) {
-            markUserScrolling();
-        }
+        state.pinned = isMessageListAtBottom(messageList);
     });
     observeMessageBlocks(messageList, state);
     messageListStates.set(messageList, state);
     return state;
+}
+
+function destroyMessageListState(messageList) {
+    const state = messageListStates.get(messageList);
+    if (!state) {
+        return;
+    }
+
+    state.resizeObserver.disconnect();
+    state.mutationObserver.disconnect();
+    if (state.frame) {
+        cancelAnimationFrame(state.frame);
+    }
+    messageListStates.delete(messageList);
 }
 
 function pinMessageList(messageList, force = false) {
@@ -137,11 +148,44 @@ function restoreMessageScroll(root) {
     }
 }
 
+function syncPanelSendButton() {
+    const sendButton = document.querySelector('#send-button');
+    if (!sendButton) {
+        return;
+    }
+
+    if (document.querySelector('#page-panel > .panel-page')) {
+        sendButton.dataset.panelDisabled = '';
+        sendButton.disabled = true;
+        return;
+    }
+    if (!sendButton.hasAttribute('data-panel-disabled')) {
+        return;
+    }
+
+    sendButton.removeAttribute('data-panel-disabled');
+    const requestActive = document.querySelector('#message-form.htmx-request, .loading-message.htmx-request');
+    if (!requestActive) {
+        sendButton.disabled = false;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => scrollMessages(document));
 document.addEventListener('htmx:load', (event) => scrollMessages(event.detail.elt));
 document.addEventListener('htmx:beforeSwap', (event) => rememberMessageScroll(event.detail.target));
-document.addEventListener('htmx:afterSwap', (event) => restoreMessageScroll(event.detail.elt));
+document.addEventListener('htmx:afterSwap', (event) => {
+    restoreMessageScroll(event.detail.elt);
+    syncPanelSendButton();
+});
 document.addEventListener('htmx:afterSettle', (event) => restoreMessageScroll(event.detail.elt));
+document.addEventListener('htmx:afterRequest', syncPanelSendButton);
+document.addEventListener('htmx:beforeCleanupElement', (event) => {
+    const root = event.detail.elt;
+    if (root.matches?.('.message-list')) {
+        destroyMessageListState(root);
+    }
+    root.querySelectorAll?.('.message-list').forEach(destroyMessageListState);
+});
 document.addEventListener('htmx:sseBeforeMessage', (event) => rememberMessageScroll(event.target));
 document.addEventListener('htmx:sseMessage', (event) => restoreMessageScroll(event.target));
 

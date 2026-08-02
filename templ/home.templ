@@ -11,7 +11,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 		<main hx-history="false">
 			<section class="chat">
 				<div class="message-panel">
-					@MessageList(messages)
+					@MessageList(messages, false)
 					<div id="page-panel"></div>
 				</div>
 				<details class="chat-options">
@@ -75,21 +75,12 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 				@MessageInput(false)
 				@SettingsButton(chatID, false, false)
 				@HistoryButton(chatID, false, false)
-				@SendButton(false, false)
+				@SendButton()
 			</form>
 		</main>
 	}
 }
 
-templ SendButton(disabled bool, outOfBand bool) {
-	<button
-		id="send-button"
-		type="submit"
-		if disabled {
-			disabled
-		}
-		if outOfBand {
-			hx-swap-oob="outerHTML"
-		}
-	>Send</button>
+templ SendButton() {
+	<button id="send-button" type="submit">Send</button>
 }

@@ -287,10 +287,10 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		`hx-select="main"`,
 		`hx-swap="outerHTML show:none"`,
 	)
-	requireNotContains(t, response.Body.String(), "<style>")
+	requireNotContains(t, response.Body.String(), "<style>", `id="send-button"`)
 }
 
-func TestHistoryHandlerClosesDeletedChatIntoBlankChat(t *testing.T) {
+func TestHistoryHandlerClosesFreshChatWithoutRedirect(t *testing.T) {
 	database := openTestDatabase(t)
 	request := httptest.NewRequest(http.MethodGet, "/history?chat=8&close=1", nil)
 	response := httptest.NewRecorder()
@@ -300,9 +300,11 @@ func TestHistoryHandlerClosesDeletedChatIntoBlankChat(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if redirect := response.Header().Get("HX-Redirect"); redirect != "/?chat=8" {
-		t.Errorf("HX-Redirect = %q, want %q", redirect, "/?chat=8")
+	if redirect := response.Header().Get("HX-Redirect"); redirect != "" {
+		t.Errorf("unexpected HX-Redirect %q", redirect)
 	}
+	requireContains(t, response.Body.String(), `id="history-button"`, `aria-pressed="false"`)
+	requireNotContains(t, response.Body.String(), `id="send-button"`)
 }
 
 func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
@@ -323,8 +325,8 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 		`aria-pressed="true"`,
 		`id="history-button"`,
 		`aria-pressed="false"`,
-		`id="send-button" type="submit" disabled`,
 	)
+	requireNotContains(t, response.Body.String(), `id="send-button"`)
 }
 
 func TestSettingsHandlerStoresDefaultModel(t *testing.T) {
@@ -346,7 +348,7 @@ func TestSettingsHandlerStoresDefaultModel(t *testing.T) {
 	requireContains(t, response.Body.String(), `value="saved-model" selected`, "Default model saved.")
 }
 
-func TestSettingsHandlerClosesDeletedChatIntoBlankChat(t *testing.T) {
+func TestSettingsHandlerClosesFreshChatWithoutRedirect(t *testing.T) {
 	database := openTestDatabase(t)
 	request := httptest.NewRequest(http.MethodGet, "/settings?chat=8&close=1", nil)
 	response := httptest.NewRecorder()
@@ -356,9 +358,10 @@ func TestSettingsHandlerClosesDeletedChatIntoBlankChat(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if redirect := response.Header().Get("HX-Redirect"); redirect != "/?chat=8" {
-		t.Errorf("HX-Redirect = %q, want %q", redirect, "/?chat=8")
+	if redirect := response.Header().Get("HX-Redirect"); redirect != "" {
+		t.Errorf("unexpected HX-Redirect %q", redirect)
 	}
+	requireContains(t, response.Body.String(), `id="settings-button"`, `aria-pressed="false"`)
 }
 
 func TestSettingsHandlerClosesSettingsPage(t *testing.T) {
@@ -378,8 +381,8 @@ func TestSettingsHandlerClosesSettingsPage(t *testing.T) {
 		`id="settings-button"`,
 		`aria-pressed="false"`,
 		`hx-swap-oob="outerHTML"`,
-		`id="send-button" type="submit" hx-swap-oob="outerHTML"`,
 	)
+	requireNotContains(t, response.Body.String(), `id="send-button"`)
 }
 
 func TestRenameChatHandlerUpdatesTitle(t *testing.T) {
@@ -454,7 +457,12 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 	if redirect := response.Header().Get("HX-Redirect"); redirect != "" {
 		t.Errorf("unexpected HX-Redirect %q", redirect)
 	}
-	requireContains(t, response.Body.String(), "No saved chats yet.")
+	requireContains(t, response.Body.String(),
+		"No saved chats yet.",
+		`id="message-list"`,
+		`hx-swap-oob="outerHTML"`,
+		"begin a convo...",
+	)
 	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&chats); err != nil {
 		t.Fatalf("count chats: %v", err)
 	}
