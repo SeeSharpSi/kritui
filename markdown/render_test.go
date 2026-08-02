@@ -46,3 +46,18 @@ func TestRenderSanitizesHTML(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderOpensExternalLinksInNewTab(t *testing.T) {
+	var output bytes.Buffer
+
+	if err := Render("[example](https://example.com)").Render(context.Background(), &output); err != nil {
+		t.Fatalf("render Markdown: %v", err)
+	}
+
+	rendered := output.String()
+	for _, want := range []string{`target="_blank"`, `rel="nofollow noopener"`} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered Markdown does not contain %q: %s", want, rendered)
+		}
+	}
+}

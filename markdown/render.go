@@ -19,6 +19,7 @@ var renderer = goldmark.New(
 var policy = func() *bluemonday.Policy {
 	policy := bluemonday.UGCPolicy()
 	policy.AllowAttrs("class").Matching(regexp.MustCompile(`^language-[A-Za-z0-9_+-]+$`)).OnElements("code")
+	policy.AddTargetBlankToFullyQualifiedLinks(true)
 	return policy
 }()
 
