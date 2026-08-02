@@ -66,7 +66,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 				data-swap-errors
 				hx-post={ "/messages?chat=" + chatID }
 				hx-target="#messages"
-				hx-swap="beforeend scroll:.message-list:bottom"
+				hx-swap="beforeend"
 				hx-trigger="submit queue:none"
 				hx-sync="#messages:drop"
 				hx-disabled-elt="find button[type='submit']"

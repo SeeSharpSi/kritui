@@ -143,7 +143,7 @@ templ PendingCompletion(chatID string, requestID string, model string, tools []s
 		hx-post={ "/messages/complete?chat=" + chatID }
 		hx-trigger="load"
 		hx-target="this"
-		hx-swap="outerHTML show:bottom"
+		hx-swap="outerHTML"
 		hx-include="this"
 		hx-sync="#messages:queue last"
 		hx-disabled-elt="#message-form button[type='submit']"
