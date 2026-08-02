@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/tools"
 
 	_ "modernc.org/sqlite"
@@ -41,6 +43,9 @@ func main() {
 	} else if err := migrateDatabase(database); err != nil {
 		log.Fatalf("migrate database: %v", err)
 	}
+	if err := kritui_db.EnsureDefaultModel(context.Background(), database, os.Getenv("LLM_MODEL")); err != nil {
+		log.Fatalf("initialize settings: %v", err)
+	}
 	toolRegistry, err := tools.NewRegistry(
 		tools.NewWebFetchTool(),
 		tools.NewWebSearchTool(os.Getenv("SEARXNG_URL")),
@@ -62,6 +67,8 @@ func main() {
 	toolCalls := newToolCallStore()
 	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry))
 	mux.HandleFunc("GET /history", historyHandler(database))
+	mux.HandleFunc("GET /settings", settingsHandler(database))
+	mux.HandleFunc("POST /settings", settingsHandler(database))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, toolCalls))
@@ -80,6 +87,10 @@ func migrateDatabase(database *sql.DB) error {
 	for _, statement := range []string{
 		`ALTER TABLE messages ADD COLUMN total_tokens INTEGER`,
 		`ALTER TABLE messages ADD COLUMN cost REAL`,
+		`CREATE TABLE IF NOT EXISTS settings (
+			name TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		) STRICT`,
 	} {
 		if _, err := database.Exec(statement); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err

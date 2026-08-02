@@ -12,7 +12,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 			<section class="chat">
 				<div class="message-panel">
 					@MessageList(messages)
-					<div id="history-panel"></div>
+					<div id="page-panel"></div>
 				</div>
 				<details class="chat-options">
 					<div class="chat-options-list">
@@ -73,6 +73,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 			>
 				<label for="message" class="visually-hidden">Message</label>
 				@MessageInput(false)
+				@SettingsButton(chatID, false, false)
 				@HistoryButton(chatID, false, false)
 				@SendButton(false, false)
 			</form>

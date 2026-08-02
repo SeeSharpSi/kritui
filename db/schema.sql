@@ -1,5 +1,10 @@
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS settings (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',

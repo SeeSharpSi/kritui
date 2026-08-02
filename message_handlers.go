@@ -34,7 +34,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 			return
 		}
 
-		request, ok := parseMessageRequest(w, r, registry)
+		request, ok := parseMessageRequest(w, r, database, registry)
 		if !ok {
 			return
 		}
@@ -66,7 +66,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 
 func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore, toolCallLogger *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		request, ok := parseMessageRequest(w, r, registry)
+		request, ok := parseMessageRequest(w, r, database, registry)
 		if !ok {
 			return
 		}
@@ -145,7 +145,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 
 func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		request, ok := parseMessageRequest(w, r, registry)
+		request, ok := parseMessageRequest(w, r, database, registry)
 		if !ok {
 			return
 		}
@@ -203,7 +203,7 @@ func clientLocation(name string) *time.Location {
 	return location
 }
 
-func parseMessageRequest(w http.ResponseWriter, r *http.Request, registry *tools.Registry) (messageRequest, bool) {
+func parseMessageRequest(w http.ResponseWriter, r *http.Request, database *sql.DB, registry *tools.Registry) (messageRequest, bool) {
 	chat := r.URL.Query().Get("chat")
 	chatID, ok := positiveID(chat)
 	if !ok {
@@ -212,7 +212,13 @@ func parseMessageRequest(w http.ResponseWriter, r *http.Request, registry *tools
 	}
 	model := strings.TrimSpace(r.FormValue("model"))
 	if model == "" {
-		model = os.Getenv("LLM_MODEL")
+		var err error
+		model, err = kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
+		if err != nil {
+			log.Printf("get default model: %v", err)
+			renderMessageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
+			return messageRequest{}, false
+		}
 	}
 	selected, err := registry.Select(r.Form["tool"]...)
 	if err != nil {

@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/tools"
 )
@@ -105,6 +107,30 @@ func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?")
 }
 
+func TestHomeHandlerRendersSettingsButtonBeforeHistory(t *testing.T) {
+	database := openTestDatabase(t)
+	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
+	response := httptest.NewRecorder()
+
+	homeHandler(database, newTestToolRegistry(t))(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	body := response.Body.String()
+	settings := strings.Index(body, `id="settings-button"`)
+	history := strings.Index(body, `id="history-button"`)
+	if settings == -1 || history == -1 || settings > history {
+		t.Fatalf("settings button index = %d, history button index = %d; want settings before history", settings, history)
+	}
+	requireContains(t, body,
+		`class="settings-button"`,
+		`hx-get="/settings?chat=8"`,
+		`aria-label="Settings"`,
+		`<svg`,
+	)
+}
+
 func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 	database := openTestDatabase(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +155,25 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 		`value="model-a"`, `value="model-b"`,
 		`name="tool" value="webfetch"`, `name="tool" value="websearch"`,
 	)
+}
+
+func TestHomeHandlerUsesStoredDefaultModel(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	if err := kritui_db.SetDefaultModel(context.Background(), database, "stored-default"); err != nil {
+		t.Fatalf("set default model: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
+	response := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	requireContains(t, response.Body.String(), "<strong>stored-default</strong>", `value="stored-default"`)
+	requireNotContains(t, response.Body.String(), "env-model")
 }
 
 func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
@@ -231,6 +276,83 @@ func TestHistoryHandlerClosesDeletedChatIntoBlankChat(t *testing.T) {
 	if redirect := response.Header().Get("HX-Redirect"); redirect != "/?chat=8" {
 		t.Errorf("HX-Redirect = %q, want %q", redirect, "/?chat=8")
 	}
+}
+
+func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
+	database := openTestDatabase(t)
+	request := httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil)
+	response := httptest.NewRecorder()
+
+	settingsHandler(database)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	requireContains(t, response.Body.String(),
+		`class="panel-page settings-page"`,
+		`<h1 id="settings-heading">Settings</h1>`,
+		`id="settings-button"`,
+		`hx-get="/settings?chat=8&amp;close=1"`,
+		`aria-pressed="true"`,
+		`id="history-button"`,
+		`aria-pressed="false"`,
+		`id="send-button" type="submit" disabled`,
+	)
+}
+
+func TestSettingsHandlerStoresDefaultModel(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database), "/settings?chat=8", url.Values{"model": {"saved-model"}})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	model, err := kritui_db.GetDefaultModel(context.Background(), database, "fallback-model")
+	if err != nil {
+		t.Fatalf("get default model: %v", err)
+	}
+	if model != "saved-model" {
+		t.Errorf("default model = %q, want saved-model", model)
+	}
+	requireContains(t, response.Body.String(), `value="saved-model" selected`, "Default model saved.")
+}
+
+func TestSettingsHandlerClosesDeletedChatIntoBlankChat(t *testing.T) {
+	database := openTestDatabase(t)
+	request := httptest.NewRequest(http.MethodGet, "/settings?chat=8&close=1", nil)
+	response := httptest.NewRecorder()
+
+	settingsHandler(database)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if redirect := response.Header().Get("HX-Redirect"); redirect != "/?chat=8" {
+		t.Errorf("HX-Redirect = %q, want %q", redirect, "/?chat=8")
+	}
+}
+
+func TestSettingsHandlerClosesSettingsPage(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (8)`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/settings?chat=8&close=1", nil)
+	response := httptest.NewRecorder()
+
+	settingsHandler(database)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	requireContains(t, response.Body.String(),
+		`id="settings-button"`,
+		`aria-pressed="false"`,
+		`hx-swap-oob="outerHTML"`,
+		`id="send-button" type="submit" hx-swap-oob="outerHTML"`,
+	)
 }
 
 func TestRenameChatHandlerUpdatesTitle(t *testing.T) {
@@ -341,6 +463,20 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`name="tool" value="webfetch"`,
 	)
 	requireNotContains(t, response.Body.String(), "every 200ms", `type="hidden" name="message"`)
+}
+
+func TestMessageHandlerUsesStoredDefaultWhenModelIsMissing(t *testing.T) {
+	database := openTestDatabase(t)
+	if err := kritui_db.SetDefaultModel(context.Background(), database, "stored-default"); err != nil {
+		t.Fatalf("set default model: %v", err)
+	}
+	toolCalls := newToolCallStore()
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), toolCalls), "/messages?chat=1", url.Values{"message": {"Hello"}})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "stored-default", `name="model" value="stored-default"`)
 }
 
 func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
@@ -890,6 +1026,60 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	requireNotContains(t, reloaded, "fetched content")
 	if strings.Index(reloaded, "webfetch") > strings.Index(reloaded, "Final answer.") {
 		t.Errorf("reloaded tool call does not precede answer: %s", reloaded)
+	}
+}
+
+func TestMigrateDatabaseAddsSettingsTable(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	if _, err := database.Exec(`CREATE TABLE messages (id INTEGER PRIMARY KEY, total_tokens INTEGER, cost REAL) STRICT`); err != nil {
+		t.Fatalf("create legacy messages table: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	if err := kritui_db.SetDefaultModel(context.Background(), database, "migrated-model"); err != nil {
+		t.Fatalf("store migrated setting: %v", err)
+	}
+}
+
+func TestDefaultModelPersistsAfterDatabaseReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.db")
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if _, err := database.Exec(schema); err != nil {
+		database.Close()
+		t.Fatalf("initialize database: %v", err)
+	}
+	if err := kritui_db.EnsureDefaultModel(context.Background(), database, "first-model"); err != nil {
+		database.Close()
+		t.Fatalf("initialize default model: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	database, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	defer database.Close()
+	if err := kritui_db.EnsureDefaultModel(context.Background(), database, "second-model"); err != nil {
+		t.Fatalf("reinitialize default model: %v", err)
+	}
+	model, err := kritui_db.GetDefaultModel(context.Background(), database, "fallback-model")
+	if err != nil {
+		t.Fatalf("get default model: %v", err)
+	}
+	if model != "first-model" {
+		t.Errorf("default model = %q, want first-model", model)
 	}
 }
 

@@ -61,11 +61,11 @@ main {
         }
 
         &:has(.chat-options:not([open])) .message-panel,
-        &:has(.history-list) .message-panel {
+        &:has(.panel-page) .message-panel {
             border-radius: inherit;
         }
 
-        &:has(.history-list)>.chat-options {
+        &:has(.panel-page)>.chat-options {
             display: none;
         }
 
@@ -79,7 +79,7 @@ main {
             box-sizing: border-box;
         }
 
-        .history-list {
+        .panel-page {
             position: absolute;
             inset: 0;
             z-index: 2;
@@ -94,7 +94,7 @@ main {
             background: var(--color-surface);
             margin-bottom: 2px;
 
-            .history-heading {
+            .panel-heading {
                 padding: .5rem .25rem 1rem;
                 border-bottom: 1px solid var(--color-border);
 
@@ -106,6 +106,45 @@ main {
                 p {
                     margin: .35rem 0 0;
                     color: var(--color-border-strong);
+                }
+            }
+
+            .settings-form {
+                display: grid;
+                gap: .6rem;
+                width: min(100%, 42rem);
+                margin: 0;
+
+                >label {
+                    font-weight: 600;
+                }
+
+                .settings-control {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: .75rem;
+
+                    select {
+                        min-width: min(100%, 18rem);
+                        flex: 1;
+                        padding: .75rem;
+                        border: 2px solid var(--color-border-strong);
+                        border-radius: .5rem;
+                        background: var(--color-surface);
+                        color: var(--color-text);
+                        font: inherit;
+                    }
+                }
+
+                .settings-help,
+                .settings-status {
+                    margin: 0;
+                    color: var(--color-border-strong);
+                    font-size: small;
+                }
+
+                .settings-status {
+                    color: var(--color-accent);
                 }
             }
 
@@ -780,7 +819,15 @@ main {
                 background: color-mix(in srgb, var(--color-accent) 88%, white);
             }
 
-            &.history-button.active {
+            &.settings-button {
+                display: grid;
+                width: 2.75rem;
+                padding: 0;
+                place-items: center;
+            }
+
+            &.history-button.active,
+            &.settings-button.active {
                 background: var(--color-surface-muted);
                 color: var(--color-text);
 

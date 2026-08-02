@@ -1,0 +1,72 @@
+package templates
+
+import "strconv"
+
+templ SettingsPage(chatID string, models []string, selectedModel string, saved bool) {
+	<section class="panel-page settings-page" aria-labelledby="settings-heading">
+		<header class="panel-heading">
+			<h1 id="settings-heading">Settings</h1>
+			<p>Defaults applied when starting a new chat.</p>
+		</header>
+		<form
+			class="settings-form"
+			data-swap-errors
+			hx-post={ "/settings?chat=" + chatID }
+			hx-target="#page-panel"
+			hx-swap="innerHTML"
+		>
+			<label for="default-model">Default model</label>
+			<div class="settings-control">
+				<select id="default-model" name="model" required>
+					for _, model := range models {
+						<option value={ model } if model == selectedModel { selected }>{ model }</option>
+					}
+				</select>
+				<button type="submit">Save</button>
+			</div>
+			<p class="settings-help">Preselected for each new chat.</p>
+			if saved {
+				<p class="settings-status" role="status">Default model saved.</p>
+			}
+		</form>
+	</section>
+	@SettingsButton(chatID, true, true)
+	@HistoryButton(chatID, false, true)
+	@SendButton(true, true)
+}
+
+templ SettingsClose(chatID string) {
+	@SettingsButton(chatID, false, true)
+	@HistoryButton(chatID, false, true)
+	@SendButton(false, true)
+}
+
+templ SettingsButton(chatID string, active bool, outOfBand bool) {
+	<button
+		id="settings-button"
+		type="button"
+		class={ "settings-button", templ.KV("active", active) }
+		hx-get={ settingsToggleURL(chatID, active) }
+		hx-target="#page-panel"
+		hx-swap="innerHTML"
+		hx-sync="this:replace"
+		aria-label="Settings"
+		title="Settings"
+		aria-pressed={ strconv.FormatBool(active) }
+		if outOfBand {
+			hx-swap-oob="outerHTML"
+		}
+	>
+		@Icon(
+			"M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37a1.724 1.724 0 0 0 2.572-1.065z",
+			"M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+		)
+	</button>
+}
+
+func settingsToggleURL(chatID string, active bool) string {
+	if active {
+		return "/settings?chat=" + chatID + "&close=1"
+	}
+	return "/settings?chat=" + chatID
+}

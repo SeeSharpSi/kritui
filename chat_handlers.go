@@ -59,7 +59,13 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			http.Error(w, "failed to get chat tools", http.StatusInternalServerError)
 			return
 		}
-		models, selectedModel := availableModels(r)
+		selectedModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
+		if err != nil {
+			log.Printf("get default model: %v", err)
+			http.Error(w, "failed to get settings", http.StatusInternalServerError)
+			return
+		}
+		models, selectedModel := availableModels(r, selectedModel)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := templates.Home(chat, messages, models, selectedModel, registry.Names(), enabledTools).Render(r.Context(), w); err != nil {
@@ -95,6 +101,64 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 		}
 
 		renderHistoryList(r.Context(), w, database, chat)
+	}
+}
+
+func settingsHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chat := r.URL.Query().Get("chat")
+		if _, ok := positiveID(chat); !ok {
+			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.URL.Query().Has("close") {
+			var chatExists bool
+			if err := database.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM chats WHERE id = ?)`, chat).Scan(&chatExists); err != nil {
+				log.Printf("check chat: %v", err)
+				http.Error(w, "failed to close settings", http.StatusInternalServerError)
+				return
+			}
+			if !chatExists {
+				w.Header().Set("HX-Redirect", "/?chat="+chat)
+				return
+			}
+			if err := templates.SettingsClose(chat).Render(r.Context(), w); err != nil {
+				http.Error(w, "failed to close settings", http.StatusInternalServerError)
+			}
+			return
+		}
+
+		selectedModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
+		if err != nil {
+			log.Printf("get default model: %v", err)
+			http.Error(w, "failed to get settings", http.StatusInternalServerError)
+			return
+		}
+		saved := false
+		if r.Method == http.MethodPost {
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "invalid form", http.StatusBadRequest)
+				return
+			}
+			selectedModel = strings.TrimSpace(r.FormValue("model"))
+			if selectedModel == "" {
+				http.Error(w, "model is required", http.StatusBadRequest)
+				return
+			}
+			if err := kritui_db.SetDefaultModel(r.Context(), database, selectedModel); err != nil {
+				log.Printf("set default model: %v", err)
+				http.Error(w, "failed to save settings", http.StatusInternalServerError)
+				return
+			}
+			saved = true
+		}
+
+		models, selectedModel := availableModels(r, selectedModel)
+		if err := templates.SettingsPage(chat, models, selectedModel, saved).Render(r.Context(), w); err != nil {
+			http.Error(w, "failed to render settings", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -187,8 +251,8 @@ func positiveID(value string) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-func availableModels(r *http.Request) ([]string, string) {
-	selected := strings.TrimSpace(os.Getenv("LLM_MODEL"))
+func availableModels(r *http.Request, selected string) ([]string, string) {
+	selected = strings.TrimSpace(selected)
 	client, err := llm.New(os.Getenv("LLM_KEY"), selected, os.Getenv("LLM_ENDPOINT"))
 	if err != nil {
 		if selected == "" {
@@ -203,6 +267,9 @@ func availableModels(r *http.Request) ([]string, string) {
 		return []string{selected}, selected
 	}
 	if slices.Contains(models, selected) {
+		return models, selected
+	}
+	if selected == "" {
 		return models, selected
 	}
 	return append([]string{selected}, models...), selected
