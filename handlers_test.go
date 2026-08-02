@@ -593,13 +593,14 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusFailedDependency, response.Body.String())
 	}
 	requireContains(t, response.Body.String(),
-		"upstream failed",
+		"Model endpoint returned HTTP 500: Internal Server Error.",
 		`role="alert"`,
 		`hx-post="/messages/retry?chat=1"`,
 		`name="model" value="selected-model"`,
 		`name="tool" value="webfetch"`,
 		`aria-label="Retry completion"`,
 	)
+	requireNotContains(t, response.Body.String(), "upstream failed")
 	if _, ok := toolCalls.get(requestID); ok {
 		t.Error("failed completion kept old tracker active")
 	}
@@ -620,6 +621,92 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 	}
 	if messages != 1 {
 		t.Errorf("message count after retry = %d, want persisted user only", messages)
+	}
+}
+
+func TestMessageCompletionHandlerRendersToolCallLimitError(t *testing.T) {
+	database := openTestDatabase(t)
+	fetched := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("fetched content"))
+	}))
+	defer fetched.Close()
+
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestNumber++
+		arguments, _ := json.Marshal(map[string]string{"url": fetched.URL})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","tool_calls":[{
+				"id":"call-` + strconv.Itoa(requestNumber) + `",
+				"type":"function",
+				"function":{"name":"webfetch","arguments":` + strconv.Quote(string(arguments)) + `}
+			}]},"finish_reason":"tool_calls"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	toolCalls := newToolCallStore()
+	insertAcceptedUser(t, database, 1, "Keep using tools")
+	form := url.Values{
+		"model":   {"selected-model"},
+		"request": {newToolCallRequest(t, toolCalls, 1)},
+		"tool":    {"webfetch"},
+	}
+	response := postForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), "/messages/complete?chat=1", form)
+
+	if response.Code != http.StatusFailedDependency {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusFailedDependency, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "llm: exceeded 16 consecutive tool-call rounds")
+	requireNotContains(t, response.Body.String(), "Failed to complete message.")
+}
+
+func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "transport error",
+			err:  errors.New(`llm: send request: Post "https://secret-token@internal.example/v1": connection refused`),
+			want: "Failed to complete message.",
+		},
+		{
+			name: "provider error",
+			err: &llm.APIError{
+				StatusCode: http.StatusBadGateway,
+				Message:    "provider secret detail",
+				Body:       `{"secret":"provider credential"}`,
+			},
+			want: "Model endpoint returned HTTP 502: Bad Gateway.",
+		},
+		{
+			name: "unknown provider status",
+			err: &llm.APIError{
+				StatusCode: 700,
+				Message:    "provider secret detail",
+			},
+			want: "Model endpoint returned an error.",
+		},
+		{
+			name: "tool call limit",
+			err:  errors.New("llm: exceeded 16 consecutive tool-call rounds"),
+			want: "llm: exceeded 16 consecutive tool-call rounds",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := completionErrorMessage(test.err); got != test.want {
+				t.Errorf("completionErrorMessage() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

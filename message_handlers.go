@@ -107,11 +107,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		completion, err := conversation.Complete(r.Context())
 		if err != nil {
 			log.Printf("complete message: %v", err)
-			message := "Failed to complete message."
-			var apiError *llm.APIError
-			if errors.As(err, &apiError) {
-				message = apiError.Message
-			}
+			message := completionErrorMessage(err)
 			renderCompletionError(w, r, http.StatusFailedDependency, request.chat, message, request.model, request.selected.Names())
 			return
 		}
@@ -253,6 +249,33 @@ func renderMessageError(w http.ResponseWriter, r *http.Request, status int, mess
 	if err := templates.MessageError(message).Render(r.Context(), w); err != nil {
 		log.Printf("render message error: %v", err)
 	}
+}
+
+func completionErrorMessage(err error) string {
+	const fallback = "Failed to complete message."
+	const toolCallLimit = "llm: exceeded 16 consecutive tool-call rounds"
+
+	if err == nil {
+		return fallback
+	}
+	if errors.Is(err, context.Canceled) {
+		return "Completion request was canceled."
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "Completion request timed out."
+	}
+	var apiError *llm.APIError
+	if errors.As(err, &apiError) && apiError != nil {
+		status := http.StatusText(apiError.StatusCode)
+		if status == "" {
+			return "Model endpoint returned an error."
+		}
+		return fmt.Sprintf("Model endpoint returned HTTP %d: %s.", apiError.StatusCode, status)
+	}
+	if err.Error() == toolCallLimit {
+		return toolCallLimit
+	}
+	return fallback
 }
 
 func renderCompletionError(w http.ResponseWriter, r *http.Request, status int, chatID string, message string, model string, tools []string) {
