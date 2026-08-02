@@ -510,12 +510,14 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 
 	toolCalls := newToolCallStore()
 	handler := messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)
-	for _, message := range []string{"My name is Cassian.", "What is my name?"} {
+	timezones := []string{"America/New_York", "Invalid/Timezone"}
+	for index, message := range []string{"My name is Cassian.", "What is my name?"} {
 		insertAcceptedUser(t, database, 1, message)
 		form := url.Values{
-			"model":   {"selected-model"},
-			"request": {newToolCallRequest(t, toolCalls, 1)},
-			"tool":    {"webfetch"},
+			"client_timezone": {timezones[index]},
+			"model":           {"selected-model"},
+			"request":         {newToolCallRequest(t, toolCalls, 1)},
+			"tool":            {"webfetch"},
 		}
 		response := postForm(t, handler, "/messages/complete?chat=1", form)
 
@@ -530,13 +532,24 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	if len(firstRequest.Messages) != 2 || firstRequest.Messages[0].Role != "system" || firstRequest.Messages[0].Content == "" || firstRequest.Messages[1].Content != "My name is Cassian." {
 		t.Fatalf("first request messages = %#v, want system prompt and first user message", firstRequest.Messages)
 	}
+	requireContains(t, firstRequest.Messages[0].Content,
+		"Current UTC datetime:",
+		"Client datetime:",
+		"Client timezone: America/New_York",
+	)
+	requireNotContains(t, firstRequest.Messages[0].Content, "Client may be in different timezone")
 	secondRequest := <-requests
 	if len(secondRequest.Messages) != 4 {
 		t.Fatalf("second request message count = %d, want 4", len(secondRequest.Messages))
 	}
-	if secondRequest.Messages[0].Role != "system" || secondRequest.Messages[0].Content != firstRequest.Messages[0].Content {
-		t.Errorf("second request system message = %#v, want %#v", secondRequest.Messages[0], firstRequest.Messages[0])
+	if secondRequest.Messages[0].Role != "system" {
+		t.Errorf("second request system role = %q, want system", secondRequest.Messages[0].Role)
 	}
+	requireContains(t, secondRequest.Messages[0].Content,
+		"Current UTC datetime:",
+		"Client may be in different timezone; if giving times, specify that they're in UTC.",
+	)
+	requireNotContains(t, secondRequest.Messages[0].Content, "Client datetime:", "Client timezone:")
 	want := []llm.Message{
 		{Role: "user", Content: "My name is Cassian."},
 		{Role: "assistant", Content: "Remembered."},
@@ -547,6 +560,19 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 		if message.Role != want[index].Role || message.Content != want[index].Content {
 			t.Errorf("second request message %d = %#v, want %#v", index+1, message, want[index])
 		}
+	}
+}
+
+func TestClientLocation(t *testing.T) {
+	location := clientLocation(" America/New_York ")
+	if location == nil || location.String() != "America/New_York" {
+		t.Fatalf("clientLocation() = %v, want America/New_York", location)
+	}
+	if location := clientLocation(""); location != nil {
+		t.Errorf("clientLocation(empty) = %v, want nil", location)
+	}
+	if location := clientLocation("Invalid/Timezone"); location != nil {
+		t.Errorf("clientLocation(invalid) = %v, want nil", location)
 	}
 }
 

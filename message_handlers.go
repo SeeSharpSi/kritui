@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
@@ -96,7 +97,10 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		}
 
 		position := len(messages)
-		conversation, err := llm.NewConversation(client, request.selected, messages...)
+		conversation, err := llm.NewConversation(client, request.selected, llm.PromptContext{
+			CurrentTime:    time.Now(),
+			ClientLocation: clientLocation(r.FormValue("client_timezone")),
+		}, messages...)
 		if err != nil {
 			log.Printf("configure conversation: %v", err)
 			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to configure conversation.", request.model, request.selected.Names())
@@ -185,6 +189,18 @@ func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *
 			log.Printf("render retry: %v", err)
 		}
 	}
+}
+
+func clientLocation(name string) *time.Location {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		return nil
+	}
+	return location
 }
 
 func parseMessageRequest(w http.ResponseWriter, r *http.Request, registry *tools.Registry) (messageRequest, bool) {

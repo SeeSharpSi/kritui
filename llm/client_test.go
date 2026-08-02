@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"seesharpsi/kritui/tools"
 )
@@ -111,6 +112,35 @@ func TestCompleteRequiresMessages(t *testing.T) {
 	}
 }
 
+func TestSystemPromptWithContext(t *testing.T) {
+	currentTime := time.Date(2026, time.August, 2, 18, 30, 0, 0, time.UTC)
+	clientLocation := time.FixedZone("America/New_York", -4*60*60)
+
+	got := systemPromptWithContext(PromptContext{
+		CurrentTime:    currentTime,
+		ClientLocation: clientLocation,
+	})
+	want := strings.TrimSpace(systemPrompt) + `
+
+## Current date and time
+Current UTC datetime: 2026-08-02T18:30:00Z
+Client datetime: 2026-08-02T14:30:00-04:00
+Client timezone: America/New_York`
+	if got != want {
+		t.Errorf("systemPromptWithContext() = %q, want %q", got, want)
+	}
+
+	got = systemPromptWithContext(PromptContext{CurrentTime: currentTime})
+	want = strings.TrimSpace(systemPrompt) + `
+
+## Current date and time
+Current UTC datetime: 2026-08-02T18:30:00Z
+Client may be in different timezone; if giving times, specify that they're in UTC.`
+	if got != want {
+		t.Errorf("fallback systemPromptWithContext() = %q, want %q", got, want)
+	}
+}
+
 func TestModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -182,6 +212,11 @@ func TestCompleteRejectsResponseWithoutChoices(t *testing.T) {
 }
 
 func TestResponsesConversationWithToolCall(t *testing.T) {
+	promptContext := PromptContext{
+		CurrentTime:    time.Date(2026, time.August, 2, 18, 30, 0, 0, time.UTC),
+		ClientLocation: time.FixedZone("America/New_York", -4*60*60),
+	}
+	wantSystemPrompt := systemPromptWithContext(promptContext)
 	requestNumber := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestNumber++
@@ -220,7 +255,7 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch requestNumber {
 		case 1:
-			if len(request.Input) != 2 || request.Input[0].Role != "system" || request.Input[0].Content != systemPrompt || request.Input[1].Role != "user" || request.Input[1].Content != "question" {
+			if len(request.Input) != 2 || request.Input[0].Role != "system" || request.Input[0].Content != wantSystemPrompt || request.Input[1].Role != "user" || request.Input[1].Content != "question" {
 				t.Errorf("first input = %#v, want system prompt and user question", request.Input)
 			}
 			_, _ = w.Write([]byte(`{
@@ -237,7 +272,7 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 			if len(request.Input) != 5 {
 				t.Fatalf("second input length = %d, want 5", len(request.Input))
 			}
-			if request.Input[0].Role != "system" || request.Input[0].Content != systemPrompt {
+			if request.Input[0].Role != "system" || request.Input[0].Content != wantSystemPrompt {
 				t.Errorf("system input = %#v", request.Input[0])
 			}
 			if reasoning := request.Input[2]; reasoning.Type != "reasoning" {
@@ -270,7 +305,7 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistry() error: %v", err)
 	}
-	conversation, err := NewConversation(client, registry)
+	conversation, err := NewConversation(client, registry, promptContext)
 	if err != nil {
 		t.Fatalf("NewConversation() error: %v", err)
 	}

@@ -40,16 +40,19 @@ func (c *Conversation) SetToolCallObserver(observer func(ToolCall, bool)) {
 
 // NewConversation creates a conversation with optional existing history. A
 // nil registry disables tools.
-func NewConversation(client *Client, registry *tools.Registry, messages ...Message) (*Conversation, error) {
+func NewConversation(client *Client, registry *tools.Registry, promptContext PromptContext, messages ...Message) (*Conversation, error) {
 	if client == nil {
 		return nil, errors.New("llm: conversation client is required")
+	}
+	if promptContext.CurrentTime.IsZero() {
+		return nil, errors.New("llm: prompt current time is required")
 	}
 
 	return &Conversation{
 		client:   client,
 		registry: registry,
 		messages: append(
-			[]Message{{Role: "system", Content: systemPrompt}},
+			[]Message{{Role: "system", Content: systemPromptWithContext(promptContext)}},
 			cloneMessages(messages)...,
 		),
 	}, nil

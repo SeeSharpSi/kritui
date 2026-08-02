@@ -10,6 +10,12 @@ function scrollMessages(root) {
 document.addEventListener('DOMContentLoaded', () => scrollMessages(document));
 document.addEventListener('htmx:load', (event) => scrollMessages(event.detail.elt));
 
+document.addEventListener('htmx:configRequest', (event) => {
+    if (event.detail.elt.matches('.loading-message')) {
+        event.detail.parameters.client_timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    }
+});
+
 document.addEventListener('htmx:beforeSwap', (event) => {
     const source = event.detail.requestConfig.elt;
     if (event.detail.isError && source?.closest('[data-swap-errors]')) {
