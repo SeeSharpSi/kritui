@@ -44,6 +44,7 @@ func main() {
 	toolRegistry, err := tools.NewRegistry(
 		tools.NewWebFetchTool(),
 		tools.NewWebSearchTool(os.Getenv("SEARXNG_URL")),
+		tools.NewGitTool(),
 	)
 	if err != nil {
 		log.Fatalf("register tools: %v", err)
