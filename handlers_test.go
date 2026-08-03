@@ -1884,7 +1884,8 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 func TestMessageCompletionHandlerMarksFailedToolCalls(t *testing.T) {
 	database := openTestDatabase(t)
 	searxng := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"query":"current events","results":[]}`))
 	}))
 	defer searxng.Close()
 
@@ -1963,7 +1964,7 @@ func TestMessageCompletionHandlerMarksFailedToolCalls(t *testing.T) {
 	requireContains(t, statusResponse.Body.String(),
 		`class="tool-call tool-error"`,
 		`class="tool-call-error"`,
-		"websearch: request returned HTTP 429 Too Many Requests",
+		"websearch: SearXNG returned no results",
 	)
 	requireNotContains(t, statusResponse.Body.String(), `class="braille-spinner"`)
 
@@ -1978,7 +1979,7 @@ func TestMessageCompletionHandlerMarksFailedToolCalls(t *testing.T) {
 		`class="tool-call tool-error"`,
 		`class="tool-call-error"`,
 		"current events",
-		"websearch: request returned HTTP 429 Too Many Requests",
+		"websearch: SearXNG returned no results",
 		"Search unavailable.",
 	)
 
@@ -1991,7 +1992,7 @@ func TestMessageCompletionHandlerMarksFailedToolCalls(t *testing.T) {
 	requireContains(t, reloadResponse.Body.String(),
 		`class="tool-call tool-error"`,
 		`class="tool-call-error"`,
-		"websearch: request returned HTTP 429 Too Many Requests",
+		"websearch: SearXNG returned no results",
 	)
 }
 

@@ -117,6 +117,9 @@ func (t WebSearchTool) Execute(ctx context.Context, arguments json.RawMessage) (
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", fmt.Errorf("websearch: decode SearXNG response: %w", err)
 	}
+	if len(payload.Results) == 0 {
+		return "", errors.New("websearch: SearXNG returned no results")
+	}
 	if len(payload.Results) > params.maxResults {
 		payload.Results = payload.Results[:params.maxResults]
 	}

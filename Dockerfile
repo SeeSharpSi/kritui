@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go run github.com/a-h/templ/cmd/templ@v0.3.1020 generate \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/kritui .
 
-FROM searxng/searxng:2026.7.31-057a77168
+FROM searxng/searxng:2026.8.3-aa059419f
 
 LABEL io.github.seesharpsi.kritui="true" \
     org.opencontainers.image.title="Kritui" \
@@ -38,10 +38,9 @@ COPY --chown=0:0 --chmod=0444 <<'EOF' /usr/local/searxng/kritui-settings.yml
 use_default_settings:
   engines:
     keep_only:
-      - duckduckgo
+      - bing
+      - keenable
       - mojeek
-      - wikipedia
-      - github
 
 search:
   max_page: 0
@@ -62,6 +61,11 @@ server:
   image_proxy: false
 
 engines:
+  - name: bing
+    disabled: false
+  - name: keenable
+    disabled: false
+    inactive: false
   - name: mojeek
     disabled: false
 
