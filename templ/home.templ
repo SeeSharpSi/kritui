@@ -6,13 +6,16 @@ import (
 	"seesharpsi/kritui/llm"
 )
 
-templ Home(chatID string, messages []llm.Message, models []string, selectedModel string, tools []string, enabledTools []string) {
+templ Home(chatID string, messages []llm.Message, models []string, selectedModel string, defaultModel string, tools []string, enabledTools []string) {
 	@Layout("Kritui") {
 		<main hx-history="false">
 			<section class="chat">
 				<div class="message-panel">
 					@MessageList(messages, false)
-					<div id="page-panel"></div>
+					<div id="page-panel">
+						@SettingsPage(chatID, models, defaultModel, false, false)
+						@HistoryPage(chatID)
+					</div>
 				</div>
 				<details class="chat-options">
 					<div class="chat-options-list">
@@ -73,8 +76,8 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 			>
 				<label for="message" class="visually-hidden">Message</label>
 				@MessageInput(false)
-				@SettingsButton(chatID, false, false)
-				@HistoryButton(chatID, false, false)
+				@SettingsButton()
+				@HistoryButton()
 				@SendButton()
 			</form>
 		</main>

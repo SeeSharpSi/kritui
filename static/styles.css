@@ -61,11 +61,11 @@ main {
         }
 
         &:has(.chat-options:not([open])) .message-panel,
-        &:has(.panel-page) .message-panel {
+        &:has(.panel-page:not([hidden])) .message-panel {
             border-radius: inherit;
         }
 
-        &:has(.panel-page)>.chat-options {
+        &:has(.panel-page:not([hidden]))>.chat-options {
             display: none;
         }
 
@@ -93,6 +93,10 @@ main {
             border-radius: inherit;
             background: var(--color-surface);
             margin-bottom: 2px;
+
+            &[hidden] {
+                display: none;
+            }
 
             .panel-heading {
                 padding: .5rem .25rem 1rem;
@@ -149,13 +153,16 @@ main {
             }
 
             .history-empty {
-                margin: auto;
+                display: grid;
+                min-height: 8rem;
+                place-items: center;
                 color: var(--color-border-strong);
             }
 
             .history-nav {
                 min-width: 0;
                 width: 100%;
+                flex: 1;
 
                 ul {
                     display: grid;
@@ -170,6 +177,12 @@ main {
                         align-items: center;
                         gap: .65rem;
                         min-width: 0;
+                    }
+
+                    .history-loader {
+                        min-height: 3rem;
+                        justify-content: center;
+                        color: var(--color-border-strong);
                     }
                 }
             }

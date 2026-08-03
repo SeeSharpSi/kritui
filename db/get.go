@@ -28,6 +28,43 @@ func GetChats(ctx context.Context, db *sql.DB) ([]Chat, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get chats: %w", err)
 	}
+	return scanChats(rows)
+}
+
+// GetChatsPage returns chats after the supplied cursor, ordered from most to
+// least recently updated. An empty cursor returns the first page.
+func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, beforeID int64, limit int) ([]Chat, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("get chats page: limit must be positive")
+	}
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if beforeUpdatedAt == "" {
+		rows, err = db.QueryContext(ctx, `
+			SELECT id, title, tools, created_at, updated_at
+			FROM chats
+			ORDER BY updated_at DESC, id DESC
+			LIMIT ?
+		`, limit)
+	} else {
+		rows, err = db.QueryContext(ctx, `
+			SELECT id, title, tools, created_at, updated_at
+			FROM chats
+			WHERE updated_at < ? OR (updated_at = ? AND id < ?)
+			ORDER BY updated_at DESC, id DESC
+			LIMIT ?
+		`, beforeUpdatedAt, beforeUpdatedAt, beforeID, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get chats page: %w", err)
+	}
+	return scanChats(rows)
+}
+
+func scanChats(rows *sql.Rows) ([]Chat, error) {
 	defer rows.Close()
 
 	var chats []Chat
@@ -37,10 +74,11 @@ func GetChats(ctx context.Context, db *sql.DB) ([]Chat, error) {
 		if err := rows.Scan(&chat.ID, &chat.Title, &tools, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan chat: %w", err)
 		}
-		chat.Tools, err = decodeToolNames(tools)
+		names, err := decodeToolNames(tools)
 		if err != nil {
 			return nil, fmt.Errorf("decode chat tools: %w", err)
 		}
+		chat.Tools = names
 		chats = append(chats, chat)
 	}
 	if err := rows.Err(); err != nil {

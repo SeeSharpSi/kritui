@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -27,30 +28,46 @@ templ MessageList(messages []llm.Message, outOfBand bool) {
 	</div>
 }
 
-templ HistoryList(chatID string, chats []kritui_db.Chat) {
-	<div class="panel-page history-list">
-		if len(chats) == 0 {
-			<p class="history-empty">No saved chats yet.</p>
-		} else {
-			<nav class="history-nav" aria-label="Chat history">
-				<ul>
-					for _, chat := range chats {
-						<li>
-							@HistoryEntry(chatID, chat)
-						</li>
-					}
-				</ul>
-			</nav>
-		}
+templ HistoryPage(chatID string) {
+	<section id="history-page" class="panel-page history-page" aria-label="Chat history" hidden>
+		<nav class="history-nav" aria-label="Chat history">
+			<ul id="history-entries" data-swap-errors>
+				@HistoryLoader(chatID, "", 0)
+			</ul>
+		</nav>
 		<a class="history-action history-new" href="/" aria-label="Start a new chat" title="Start a new chat">+</a>
-	</div>
-	@SettingsButton(chatID, false, true)
-	@HistoryButton(chatID, true, true)
+	</section>
 }
 
-templ HistoryClose(chatID string) {
-	@SettingsButton(chatID, false, true)
-	@HistoryButton(chatID, false, true)
+templ HistoryEntries(chatID string, chats []kritui_db.Chat, firstPage bool, hasMore bool) {
+	if firstPage && len(chats) == 0 {
+		<li class="history-empty">No saved chats yet.</li>
+	}
+	for _, chat := range chats {
+		<li>
+			@HistoryEntry(chatID, chat)
+		</li>
+	}
+	if hasMore && len(chats) > 0 {
+		@HistoryLoader(chatID, chats[len(chats)-1].UpdatedAt, chats[len(chats)-1].ID)
+	}
+}
+
+templ HistoryLoader(chatID string, beforeUpdatedAt string, beforeID int64) {
+	<li
+		class="history-loader"
+		hx-get={ historyEntriesURL(chatID, beforeUpdatedAt, beforeID) }
+		if beforeUpdatedAt == "" {
+			hx-trigger="loadHistory"
+		} else {
+			hx-trigger="intersect once root:#history-page threshold:0.1"
+		}
+		hx-swap="outerHTML"
+		hx-sync="this:drop"
+		aria-label="Loading chat history"
+	>
+		<span class="braille-spinner" aria-hidden="true"></span>
+	</li>
 }
 
 templ HistoryEntry(chatID string, chat kritui_db.Chat) {
@@ -72,7 +89,7 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 				<form
 					class="history-rename"
 					hx-put={ chatURL(chat.ID, chatID) }
-					hx-target="#page-panel"
+					hx-target="#history-entries"
 					hx-swap="innerHTML"
 				>
 					<input
@@ -109,7 +126,7 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 			type="button"
 			class="history-action history-delete"
 			hx-delete={ chatURL(chat.ID, chatID) }
-			hx-target="#page-panel"
+			hx-target="#history-entries"
 			hx-swap="innerHTML"
 			hx-confirm={ "Permanently delete " + historyTitle(chat) + "?" }
 			aria-label={ "Delete " + historyTitle(chat) }
@@ -138,27 +155,24 @@ templ Icon(paths ...string) {
 	</svg>
 }
 
-templ HistoryButton(chatID string, active bool, outOfBand bool) {
+templ HistoryButton() {
 	<button
 		id="history-button"
 		type="button"
-		class={ "history-button" , templ.KV("active", active) }
-		hx-get={ historyToggleURL(chatID, active) }
-		hx-target="#page-panel"
-		hx-swap="innerHTML"
-		hx-sync="this:replace"
-		aria-pressed={ strconv.FormatBool(active) }
-		if outOfBand {
-			hx-swap-oob="outerHTML"
-		}
+		class="history-button"
+		data-panel-target="history-page"
+		aria-controls="history-page"
+		aria-pressed="false"
 	>History</button>
 }
 
-func historyToggleURL(chatID string, active bool) string {
-	if active {
-		return "/history?chat=" + chatID + "&close=1"
+func historyEntriesURL(chatID, beforeUpdatedAt string, beforeID int64) string {
+	query := url.Values{"chat": {chatID}}
+	if beforeUpdatedAt != "" {
+		query.Set("before", beforeUpdatedAt)
+		query.Set("before_id", strconv.FormatInt(beforeID, 10))
 	}
-	return "/history?chat=" + chatID
+	return "/history?" + query.Encode()
 }
 
 func chatURL(chatID int64, currentChatID string) string {

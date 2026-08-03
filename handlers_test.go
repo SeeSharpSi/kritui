@@ -87,7 +87,6 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`reportValidityOfForms`,
 		`hx-history="false"`,
 		`hx-sync="#messages:drop"`,
-		`hx-sync="this:replace"`,
 		"<strong>stored-model</strong>",
 	)
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>")
@@ -107,8 +106,11 @@ func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?")
 }
 
-func TestHomeHandlerRendersSettingsButtonBeforeHistory(t *testing.T) {
+func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	database := openTestDatabase(t)
+	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (7, 'Loaded lazily')`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
@@ -125,10 +127,19 @@ func TestHomeHandlerRendersSettingsButtonBeforeHistory(t *testing.T) {
 	}
 	requireContains(t, body,
 		`class="settings-button"`,
-		`hx-get="/settings?chat=8"`,
+		`data-panel-target="settings-page"`,
 		`aria-label="Settings"`,
+		`id="settings-page"`,
+		`class="panel-page settings-page"`,
+		`hx-post="/settings?chat=8"`,
+		`hx-target="#settings-page"`,
+		`id="history-page"`,
+		`class="panel-page history-page"`,
+		`hx-get="/history?chat=8"`,
+		`hx-trigger="loadHistory"`,
 		`<svg`,
 	)
+	requireNotContains(t, body, `hx-get="/settings?chat=8"`, "Loaded lazily")
 }
 
 func TestHomeHandlerRendersEndpointModels(t *testing.T) {
@@ -199,7 +210,11 @@ func TestHomeHandlerUsesMostRecentResponseModel(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	requireContains(t, response.Body.String(), "<strong>latest-model</strong>", `value="latest-model" form="message-form" checked`)
+	requireContains(t, response.Body.String(),
+		"<strong>latest-model</strong>",
+		`value="latest-model" form="message-form" checked`,
+		`<option value="default-model" selected>default-model</option>`,
+	)
 	requireNotContains(t, response.Body.String(), "<strong>default-model</strong>", `value="earlier-model" form="message-form" checked`)
 }
 
@@ -280,6 +295,7 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		`hx-delete="/chats/8?current=8"`,
 		`hx-confirm="Permanently delete Project notes?"`,
 		`aria-label="Delete Project notes"`,
+		`hx-target="#history-entries"`,
 		`name="title"`,
 		`value="Project notes"`,
 		`hx-boost="true"`,
@@ -290,9 +306,17 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 	requireNotContains(t, response.Body.String(), "<style>", `id="send-button"`)
 }
 
-func TestHistoryHandlerClosesFreshChatWithoutRedirect(t *testing.T) {
+func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 	database := openTestDatabase(t)
-	request := httptest.NewRequest(http.MethodGet, "/history?chat=8&close=1", nil)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, title, updated_at) VALUES
+			(1, 'Oldest', '2026-01-01T00:00:00.000Z'),
+			(2, 'Middle', '2026-01-02T00:00:00.000Z'),
+			(3, 'Newest', '2026-01-03T00:00:00.000Z')
+	`); err != nil {
+		t.Fatalf("insert chats: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/history?chat=8&limit=2", nil)
 	response := httptest.NewRecorder()
 
 	historyHandler(database)(response, request)
@@ -300,11 +324,20 @@ func TestHistoryHandlerClosesFreshChatWithoutRedirect(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if redirect := response.Header().Get("HX-Redirect"); redirect != "" {
-		t.Errorf("unexpected HX-Redirect %q", redirect)
+	body := response.Body.String()
+	requireContains(t, body, "Newest", "Middle", `before_id=2`, `class="history-loader"`)
+	requireNotContains(t, body, "Oldest")
+
+	request = httptest.NewRequest(http.MethodGet, "/history?chat=8&limit=2&before=2026-01-02T00:00:00.000Z&before_id=2", nil)
+	response = httptest.NewRecorder()
+	historyHandler(database)(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("second page status = %d, want %d", response.Code, http.StatusOK)
 	}
-	requireContains(t, response.Body.String(), `id="history-button"`, `aria-pressed="false"`)
-	requireNotContains(t, response.Body.String(), `id="send-button"`)
+	body = response.Body.String()
+	requireContains(t, body, "Oldest")
+	requireNotContains(t, body, "Newest", "Middle", `class="history-loader"`)
 }
 
 func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
@@ -318,15 +351,13 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 	requireContains(t, response.Body.String(),
+		`id="settings-page"`,
 		`class="panel-page settings-page"`,
 		`<h1 id="settings-heading">Settings</h1>`,
-		`id="settings-button"`,
-		`hx-get="/settings?chat=8&amp;close=1"`,
-		`aria-pressed="true"`,
-		`id="history-button"`,
-		`aria-pressed="false"`,
+		`hx-target="#settings-page"`,
+		`hx-swap="outerHTML"`,
 	)
-	requireNotContains(t, response.Body.String(), `id="send-button"`)
+	requireNotContains(t, response.Body.String(), `id="send-button"`, `id="settings-button"`, ` hidden`)
 }
 
 func TestSettingsHandlerStoresDefaultModel(t *testing.T) {
@@ -348,41 +379,21 @@ func TestSettingsHandlerStoresDefaultModel(t *testing.T) {
 	requireContains(t, response.Body.String(), `value="saved-model" selected`, "Default model saved.")
 }
 
-func TestSettingsHandlerClosesFreshChatWithoutRedirect(t *testing.T) {
+func TestHistoryHandlerRejectsInvalidPagination(t *testing.T) {
 	database := openTestDatabase(t)
-	request := httptest.NewRequest(http.MethodGet, "/settings?chat=8&close=1", nil)
-	response := httptest.NewRecorder()
-
-	settingsHandler(database)(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	for _, target := range []string{
+		"/history?chat=8&limit=0",
+		"/history?chat=8&limit=51",
+		"/history?chat=8&before=2026-01-01T00:00:00Z",
+		"/history?chat=8&before_id=2",
+	} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		response := httptest.NewRecorder()
+		historyHandler(database)(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want %d", target, response.Code, http.StatusBadRequest)
+		}
 	}
-	if redirect := response.Header().Get("HX-Redirect"); redirect != "" {
-		t.Errorf("unexpected HX-Redirect %q", redirect)
-	}
-	requireContains(t, response.Body.String(), `id="settings-button"`, `aria-pressed="false"`)
-}
-
-func TestSettingsHandlerClosesSettingsPage(t *testing.T) {
-	database := openTestDatabase(t)
-	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (8)`); err != nil {
-		t.Fatalf("insert chat: %v", err)
-	}
-	request := httptest.NewRequest(http.MethodGet, "/settings?chat=8&close=1", nil)
-	response := httptest.NewRecorder()
-
-	settingsHandler(database)(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
-	}
-	requireContains(t, response.Body.String(),
-		`id="settings-button"`,
-		`aria-pressed="false"`,
-		`hx-swap-oob="outerHTML"`,
-	)
-	requireNotContains(t, response.Body.String(), `id="send-button"`)
 }
 
 func TestRenameChatHandlerUpdatesTitle(t *testing.T) {

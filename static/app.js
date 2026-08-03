@@ -154,7 +154,7 @@ function syncPanelSendButton() {
         return;
     }
 
-    if (document.querySelector('#page-panel > .panel-page')) {
+    if (document.querySelector('#page-panel > .panel-page:not([hidden])')) {
         sendButton.dataset.panelDisabled = '';
         sendButton.disabled = true;
         return;
@@ -168,6 +168,30 @@ function syncPanelSendButton() {
     if (!requestActive) {
         sendButton.disabled = false;
     }
+}
+
+function togglePanel(panelID) {
+    const selectedPanel = document.getElementById(panelID);
+    if (!selectedPanel) {
+        return;
+    }
+
+    const opening = selectedPanel.hidden;
+    document.querySelectorAll('#page-panel > .panel-page').forEach((panel) => {
+        panel.hidden = !opening || panel !== selectedPanel;
+    });
+    document.querySelectorAll('[data-panel-target]').forEach((button) => {
+        const active = opening && button.dataset.panelTarget === panelID;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+    });
+    if (opening && panelID === 'history-page') {
+        const loader = selectedPanel.querySelector('.history-loader');
+        if (loader) {
+            htmx.trigger(loader, 'loadHistory');
+        }
+    }
+    syncPanelSendButton();
 }
 
 document.addEventListener('DOMContentLoaded', () => scrollMessages(document));
@@ -193,6 +217,10 @@ document.addEventListener('htmx:configRequest', (event) => {
     if (event.detail.elt.matches('.loading-message')) {
         event.detail.parameters.client_timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     }
+    if (event.detail.elt.matches('.history-loader')) {
+        const panelHeight = event.detail.elt.closest('.history-page')?.clientHeight ?? 0;
+        event.detail.parameters.limit = Math.min(50, Math.max(1, Math.ceil(panelHeight / 80)));
+    }
 });
 
 document.addEventListener('htmx:beforeSwap', (event) => {
@@ -210,6 +238,11 @@ document.addEventListener('htmx:confirm', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+    const panelButton = event.target.closest('[data-panel-target]');
+    if (panelButton) {
+        togglePanel(panelButton.dataset.panelTarget);
+    }
+
     document.querySelectorAll('.model-picker[open], .tool-picker[open]').forEach((picker) => {
         if (!picker.contains(event.target)) {
             picker.removeAttribute('open');

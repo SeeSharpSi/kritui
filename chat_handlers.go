@@ -16,6 +16,11 @@ import (
 	"seesharpsi/kritui/tools"
 )
 
+const (
+	defaultHistoryPageSize = 10
+	maxHistoryPageSize     = 50
+)
+
 func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
@@ -59,12 +64,13 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			http.Error(w, "failed to get chat tools", http.StatusInternalServerError)
 			return
 		}
-		selectedModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
+		defaultModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
 		if err != nil {
 			log.Printf("get default model: %v", err)
 			http.Error(w, "failed to get settings", http.StatusInternalServerError)
 			return
 		}
+		selectedModel := defaultModel
 		for index := len(messages) - 1; index >= 0; index-- {
 			if messages[index].Role == "assistant" && strings.TrimSpace(messages[index].Model) != "" {
 				selectedModel = messages[index].Model
@@ -72,9 +78,12 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			}
 		}
 		models, selectedModel := availableModels(r, selectedModel)
+		if defaultModel != "" && !slices.Contains(models, defaultModel) {
+			models = append([]string{defaultModel}, models...)
+		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.Home(chat, messages, models, selectedModel, registry.Names(), enabledTools).Render(r.Context(), w); err != nil {
+		if err := templates.Home(chat, messages, models, selectedModel, defaultModel, registry.Names(), enabledTools).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render page", http.StatusInternalServerError)
 		}
 	}
@@ -89,14 +98,18 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if r.URL.Query().Has("close") {
-			if err := templates.HistoryClose(chat).Render(r.Context(), w); err != nil {
-				http.Error(w, "failed to close chat history", http.StatusInternalServerError)
-			}
+		beforeUpdatedAt := r.URL.Query().Get("before")
+		beforeID, ok := historyCursorID(r, beforeUpdatedAt)
+		if !ok {
+			http.Error(w, "valid history cursor is required", http.StatusBadRequest)
 			return
 		}
-
-		renderHistoryList(r.Context(), w, database, chat)
+		limit, ok := historyPageLimit(r)
+		if !ok {
+			http.Error(w, "valid history limit is required", http.StatusBadRequest)
+			return
+		}
+		renderHistoryEntries(r.Context(), w, database, chat, beforeUpdatedAt, beforeID, limit)
 	}
 }
 
@@ -109,13 +122,6 @@ func settingsHandler(database *sql.DB) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if r.URL.Query().Has("close") {
-			if err := templates.SettingsClose(chat).Render(r.Context(), w); err != nil {
-				http.Error(w, "failed to close settings", http.StatusInternalServerError)
-			}
-			return
-		}
-
 		selectedModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
 		if err != nil {
 			log.Printf("get default model: %v", err)
@@ -142,7 +148,7 @@ func settingsHandler(database *sql.DB) http.HandlerFunc {
 		}
 
 		models, selectedModel := availableModels(r, selectedModel)
-		if err := templates.SettingsPage(chat, models, selectedModel, saved).Render(r.Context(), w); err != nil {
+		if err := templates.SettingsPage(chat, models, selectedModel, saved, true).Render(r.Context(), w); err != nil {
 			http.Error(w, "failed to render settings", http.StatusInternalServerError)
 		}
 	}
@@ -167,7 +173,7 @@ func deleteChatHandler(database *sql.DB) http.HandlerFunc {
 			http.Error(w, "failed to delete chat", http.StatusInternalServerError)
 			return
 		}
-		renderHistoryList(r.Context(), w, database, current)
+		renderHistoryEntries(r.Context(), w, database, current, "", 0, defaultHistoryPageSize)
 		if chatID == currentChatID {
 			if err := templates.MessageList(nil, true).Render(r.Context(), w); err != nil {
 				log.Printf("clear deleted chat: %v", err)
@@ -220,22 +226,43 @@ func renameChatHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		renderHistoryList(r.Context(), w, database, current)
+		renderHistoryEntries(r.Context(), w, database, current, "", 0, defaultHistoryPageSize)
 	}
 }
 
-func renderHistoryList(ctx context.Context, w http.ResponseWriter, database *sql.DB, current string) {
-	chats, err := kritui_db.GetChats(ctx, database)
+func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *sql.DB, current, beforeUpdatedAt string, beforeID int64, limit int) {
+	chats, err := kritui_db.GetChatsPage(ctx, database, beforeUpdatedAt, beforeID, limit+1)
 	if err != nil {
 		log.Printf("get chats: %v", err)
 		http.Error(w, "failed to get chats", http.StatusInternalServerError)
 		return
 	}
+	hasMore := len(chats) > limit
+	if hasMore {
+		chats = chats[:limit]
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := templates.HistoryList(current, chats).Render(ctx, w); err != nil {
+	if err := templates.HistoryEntries(current, chats, beforeUpdatedAt == "", hasMore).Render(ctx, w); err != nil {
 		http.Error(w, "failed to render chat history", http.StatusInternalServerError)
 	}
+}
+
+func historyCursorID(r *http.Request, beforeUpdatedAt string) (int64, bool) {
+	value := r.URL.Query().Get("before_id")
+	if beforeUpdatedAt == "" {
+		return 0, value == ""
+	}
+	return positiveID(value)
+}
+
+func historyPageLimit(r *http.Request) (int, bool) {
+	value := r.URL.Query().Get("limit")
+	if value == "" {
+		return defaultHistoryPageSize, true
+	}
+	limit, err := strconv.Atoi(value)
+	return limit, err == nil && limit > 0 && limit <= maxHistoryPageSize
 }
 
 func positiveID(value string) (int64, bool) {
