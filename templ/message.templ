@@ -25,8 +25,9 @@ func toolCallArgsBody(args string) string {
 
 // messageView is one UI block: combined tool-call rounds and/or a visible message.
 type messageView struct {
-	ToolCalls []llm.ToolCall
-	Message   *llm.Message
+	ToolCalls  []llm.ToolCall
+	ToolErrors map[string]string
+	Message    *llm.Message
 }
 
 // messagesForView merges consecutive assistant tool-call rounds into one group,
@@ -34,17 +35,26 @@ type messageView struct {
 func messagesForView(messages []llm.Message) []messageView {
 	var views []messageView
 	var pending []llm.ToolCall
+	var pendingErrors map[string]string
 	flush := func() {
 		if len(pending) == 0 {
+			pendingErrors = nil
 			return
 		}
-		views = append(views, messageView{ToolCalls: pending})
+		views = append(views, messageView{ToolCalls: pending, ToolErrors: pendingErrors})
 		pending = nil
+		pendingErrors = nil
 	}
 	for i := range messages {
 		message := &messages[i]
 		switch {
 		case message.Role == "tool":
+			if toolError := llm.ToolErrorMessage(message.Content); toolError != "" {
+				if pendingErrors == nil {
+					pendingErrors = make(map[string]string)
+				}
+				pendingErrors[message.ToolCallID] = toolError
+			}
 			continue
 		case message.Role == "assistant" && len(message.ToolCalls) > 0:
 			pending = append(pending, message.ToolCalls...)
@@ -59,7 +69,7 @@ func messagesForView(messages []llm.Message) []messageView {
 
 templ Messages(messages ...llm.Message) {
 	for _, view := range messagesForView(messages) {
-		@CompletedToolCalls(view.ToolCalls)
+		@CompletedToolCalls(view.ToolCalls, view.ToolErrors)
 		if view.Message != nil {
 			<article class={ "message" , templ.KV("user", view.Message.Role=="user" ) }>
 				if view.Message.Role == "assistant" {
@@ -78,26 +88,39 @@ templ Messages(messages ...llm.Message) {
 	}
 }
 
-templ ToolCalls(calls []llm.ToolCall, runningID string) {
+templ ToolCalls(calls []llm.ToolCall, runningID string, toolErrors map[string]string) {
+	@toolCalls(calls, runningID, toolErrors)
+}
+
+templ toolCalls(calls []llm.ToolCall, runningID string, toolErrors map[string]string) {
 	for _, call := range calls {
-		<div class={ "tool-call", templ.KV("loading", call.ID == runningID) } role="listitem">
+		<div class={ "tool-call", templ.KV("loading", call.ID == runningID), templ.KV("tool-error", toolErrors[call.ID] != "") } role="listitem">
 			if call.ID == runningID {
 				<span class="braille-spinner" aria-hidden="true"></span>
 				<span class="visually-hidden">Running tool: </span>
 			} else {
 				<span class="tool-call-complete" aria-hidden="true"></span>
-				<span class="visually-hidden">Completed tool: </span>
+				if toolErrors[call.ID] != "" {
+					<span class="visually-hidden">Failed tool: </span>
+				} else {
+					<span class="visually-hidden">Completed tool: </span>
+				}
 			}
-			if call.Function.Arguments != "" && call.Function.Arguments != "{}" {
+			if call.Function.Arguments != "" && call.Function.Arguments != "{}" || toolErrors[call.ID] != "" {
 				<button
 					type="button"
 					class="tool-call-toggle"
 					aria-expanded="false"
 				>{ call.Function.Name }</button>
-				if strings.HasSuffix(call.Function.Arguments, "}") {
+				if call.Function.Arguments == "{}" {
+					<code>{ call.Function.Arguments }</code>
+				} else if strings.HasSuffix(call.Function.Arguments, "}") {
 					<code><span>{ toolCallArgsBody(call.Function.Arguments) }</span>{ "}" }</code>
-				} else {
+				} else if call.Function.Arguments != "" {
 					<code><span>{ call.Function.Arguments }</span></code>
+				}
+				if toolErrors[call.ID] != "" {
+					<div class="tool-call-error" role="alert">{ toolErrors[call.ID] }</div>
 				}
 			} else {
 				<strong>{ call.Function.Name }</strong>
@@ -106,7 +129,7 @@ templ ToolCalls(calls []llm.ToolCall, runningID string) {
 	}
 }
 
-templ CompletedToolCalls(calls []llm.ToolCall) {
+templ CompletedToolCalls(calls []llm.ToolCall, toolErrors map[string]string) {
 	if len(calls) > 0 {
 		<details class="completed-tool-calls">
 			<summary>
@@ -117,15 +140,14 @@ templ CompletedToolCalls(calls []llm.ToolCall) {
 				}
 			</summary>
 			<div class="tool-call-list" role="list">
-				@ToolCalls(calls, "")
+				@toolCalls(calls, "", toolErrors)
 			</div>
 		</details>
 	}
 }
 
-templ CompletedMessage(calls []llm.ToolCall, message llm.Message) {
-	@CompletedToolCalls(calls)
-	@Messages(message)
+templ CompletedMessage(messages ...llm.Message) {
+	@Messages(messages...)
 }
 
 templ PendingSubmission(chatID string, requestID string, message llm.Message, model string, tools []string) {

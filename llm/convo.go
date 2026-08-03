@@ -11,7 +11,10 @@ import (
 	"seesharpsi/kritui/tools"
 )
 
-const maxToolCallRounds = 16
+const (
+	maxToolCallRounds = 16
+	toolErrorPrefix   = "Tool error: "
+)
 
 // Conversation retains message history and executes tool calls requested by
 // the model. A Conversation must not be used concurrently.
@@ -19,7 +22,7 @@ type Conversation struct {
 	client           *Client
 	registry         *tools.Registry
 	toolCallLogger   *log.Logger
-	toolCallObserver func(ToolCall, bool)
+	toolCallObserver func(ToolCall, bool, string)
 	messages         []Message
 }
 
@@ -32,11 +35,20 @@ func (c *Conversation) SetToolCallLogger(logger *log.Logger) {
 }
 
 // SetToolCallObserver configures a callback invoked when a tool call starts
-// and finishes. The boolean argument is true while the call is running.
-func (c *Conversation) SetToolCallObserver(observer func(ToolCall, bool)) {
+// and finishes. Result is empty while running and populated when finished.
+func (c *Conversation) SetToolCallObserver(observer func(ToolCall, bool, string)) {
 	if c != nil {
 		c.toolCallObserver = observer
 	}
+}
+
+// ToolErrorMessage returns error text from a tool result, or an empty string
+// when the result does not represent an error.
+func ToolErrorMessage(result string) string {
+	if !strings.HasPrefix(result, toolErrorPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(result, toolErrorPrefix))
 }
 
 // NewConversation creates a conversation with optional existing history. A
@@ -129,8 +141,10 @@ func (c *Conversation) Complete(ctx context.Context) (Completion, error) {
 
 func (c *Conversation) executeToolCall(ctx context.Context, call ToolCall) (result string, err error) {
 	if c.toolCallObserver != nil {
-		c.toolCallObserver(call, true)
-		defer c.toolCallObserver(call, false)
+		c.toolCallObserver(call, true, "")
+		defer func() {
+			c.toolCallObserver(call, false, result)
+		}()
 	}
 	defer func() {
 		if c.toolCallLogger == nil {
@@ -144,7 +158,7 @@ func (c *Conversation) executeToolCall(ctx context.Context, call ToolCall) (resu
 	}()
 
 	if c.registry == nil {
-		return fmt.Sprintf("Tool error: no tools are available; cannot execute %q", call.Function.Name), nil
+		return fmt.Sprintf("%sno tools are available; cannot execute %q", toolErrorPrefix, call.Function.Name), nil
 	}
 
 	result, err = c.registry.Execute(ctx, call.Function.Name, json.RawMessage(call.Function.Arguments))
@@ -154,7 +168,7 @@ func (c *Conversation) executeToolCall(ctx context.Context, call ToolCall) (resu
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", ctxErr
 	}
-	return "Tool error: " + err.Error(), nil
+	return toolErrorPrefix + err.Error(), nil
 }
 
 func validateToolCall(call ToolCall) error {

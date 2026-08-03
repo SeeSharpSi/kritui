@@ -28,6 +28,7 @@ type toolCallTracker struct {
 	mu        sync.RWMutex
 	calls     []llm.ToolCall
 	running   string
+	errors    map[string]string
 	updates   chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
@@ -37,10 +38,11 @@ func newToolCallTracker() *toolCallTracker {
 	return &toolCallTracker{
 		updates: make(chan struct{}),
 		done:    make(chan struct{}),
+		errors:  make(map[string]string),
 	}
 }
 
-func (t *toolCallTracker) observe(call llm.ToolCall, running bool) {
+func (t *toolCallTracker) observe(call llm.ToolCall, running bool, result string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -49,23 +51,23 @@ func (t *toolCallTracker) observe(call llm.ToolCall, running bool) {
 		t.running = call.ID
 	} else if t.running == call.ID {
 		t.running = ""
+		if message := llm.ToolErrorMessage(result); message != "" {
+			t.errors[call.ID] = message
+		}
 	}
 	close(t.updates)
 	t.updates = make(chan struct{})
 }
 
-func (t *toolCallTracker) snapshot() ([]llm.ToolCall, string) {
+func (t *toolCallTracker) streamSnapshot() ([]llm.ToolCall, string, map[string]string, <-chan struct{}) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	return append([]llm.ToolCall(nil), t.calls...), t.running
-}
-
-func (t *toolCallTracker) streamSnapshot() ([]llm.ToolCall, string, <-chan struct{}) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	return append([]llm.ToolCall(nil), t.calls...), t.running, t.updates
+	errors := make(map[string]string, len(t.errors))
+	for id, message := range t.errors {
+		errors[id] = message
+	}
+	return append([]llm.ToolCall(nil), t.calls...), t.running, errors, t.updates
 }
 
 func (t *toolCallTracker) close() {
@@ -210,9 +212,9 @@ func messageToolStreamHandler(toolCalls *toolCallStore) http.HandlerFunc {
 			default:
 			}
 
-			calls, running, updates := tracker.streamSnapshot()
+			calls, running, toolErrors, updates := tracker.streamSnapshot()
 			var content strings.Builder
-			if err := templates.ToolCalls(calls, running).Render(r.Context(), &content); err != nil {
+			if err := templates.ToolCalls(calls, running, toolErrors).Render(r.Context(), &content); err != nil {
 				log.Printf("render tool-call stream: %v", err)
 				return
 			}

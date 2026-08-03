@@ -1343,7 +1343,7 @@ func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 			Arguments: `{"query":"braille spinner"}`,
 		},
 	}
-	tracker.observe(call, true)
+	tracker.observe(call, true, "")
 
 	request := httptest.NewRequest(http.MethodGet, "/messages/tools?request="+requestID, nil)
 	response := newFlushingResponseRecorder()
@@ -1354,7 +1354,7 @@ func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 	}()
 	waitForTestSignal(t, response.flushes, "running tool-call event")
 
-	tracker.observe(call, false)
+	tracker.observe(call, false, "Tool error: upstream returned HTTP 429")
 	waitForTestSignal(t, response.flushes, "completed tool-call event")
 	toolCalls.delete(requestID)
 	waitForTestSignal(t, response.flushes, "tool-call close event")
@@ -1381,7 +1381,13 @@ func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 	}
 
 	requireContains(t, runningEvent, "websearch", "braille spinner", `class="braille-spinner"`, "Running tool:")
-	requireContains(t, completedEvent, `class="tool-call-complete"`, "Completed tool:")
+	requireContains(t, completedEvent,
+		`class="tool-call tool-error"`,
+		`class="tool-call-complete"`,
+		`class="tool-call-error"`,
+		"Failed tool:",
+		"upstream returned HTTP 429",
+	)
 	requireNotContains(t, completedEvent, `class="braille-spinner"`)
 	requireContains(t, closeEvent, "data: \n")
 }
@@ -1873,6 +1879,120 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	if strings.Index(reloaded, "webfetch") > strings.Index(reloaded, "Final answer.") {
 		t.Errorf("reloaded tool call does not precede answer: %s", reloaded)
 	}
+}
+
+func TestMessageCompletionHandlerMarksFailedToolCalls(t *testing.T) {
+	database := openTestDatabase(t)
+	searxng := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer searxng.Close()
+
+	requestNumber := 0
+	followupStarted := make(chan struct{}, 1)
+	releaseFollowup := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber++
+		w.Header().Set("Content-Type", "application/json")
+		if requestNumber == 1 {
+			_, _ = w.Write([]byte(`{
+				"model":"response-model",
+				"choices":[{"message":{"role":"assistant","tool_calls":[{
+					"id":"call-1",
+					"type":"function",
+					"function":{"name":"websearch","arguments":"{\"query\":\"current events\"}"}
+				}]},"finish_reason":"tool_calls"}]
+			}`))
+			return
+		}
+		followupStarted <- struct{}{}
+		select {
+		case <-releaseFollowup:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"Search unavailable."},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	registry, err := tools.NewRegistry(tools.NewWebSearchTool(searxng.URL))
+	if err != nil {
+		t.Fatalf("create test tool registry: %v", err)
+	}
+	toolCalls := newToolCallStore()
+	insertAcceptedUser(t, database, 1, "Search the web")
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	form := url.Values{
+		"model":   {"selected-model"},
+		"request": {requestID},
+		"tool":    {"websearch"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	completionDone := make(chan struct{})
+	go func() {
+		messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
+		close(completionDone)
+	}()
+	select {
+	case <-followupStarted:
+	case <-time.After(2 * time.Second):
+		close(releaseFollowup)
+		t.Fatal("model follow-up request did not start")
+	}
+
+	statusRequest := httptest.NewRequest(http.MethodGet, "/messages/tools?request="+requestID, nil)
+	statusContext, cancelStatus := context.WithCancel(statusRequest.Context())
+	statusRequest = statusRequest.WithContext(statusContext)
+	statusResponse := newFlushingResponseRecorder()
+	statusDone := make(chan struct{})
+	go func() {
+		messageToolStreamHandler(toolCalls)(statusResponse, statusRequest)
+		close(statusDone)
+	}()
+	waitForTestSignal(t, statusResponse.flushes, "failed tool-call stream event")
+	cancelStatus()
+	waitForTestSignal(t, statusDone, "failed tool-call stream cancellation")
+	requireContains(t, statusResponse.Body.String(),
+		`class="tool-call tool-error"`,
+		`class="tool-call-error"`,
+		"websearch: request returned HTTP 429 Too Many Requests",
+	)
+	requireNotContains(t, statusResponse.Body.String(), `class="braille-spinner"`)
+
+	close(releaseFollowup)
+	waitForTestSignal(t, completionDone, "failed tool-call completion")
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body := response.Body.String()
+	requireContains(t, body,
+		`class="tool-call tool-error"`,
+		`class="tool-call-error"`,
+		"current events",
+		"websearch: request returned HTTP 429 Too Many Requests",
+		"Search unavailable.",
+	)
+
+	t.Setenv("LLM_ENDPOINT", "")
+	reloadResponse := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(reloadResponse, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
+	if reloadResponse.Code != http.StatusOK {
+		t.Fatalf("reload status = %d, want %d; body = %q", reloadResponse.Code, http.StatusOK, reloadResponse.Body.String())
+	}
+	requireContains(t, reloadResponse.Body.String(),
+		`class="tool-call tool-error"`,
+		`class="tool-call-error"`,
+		"websearch: request returned HTTP 429 Too Many Requests",
+	)
 }
 
 func TestResponsesProviderMetadataPersistsAcrossDatabaseReload(t *testing.T) {

@@ -633,11 +633,13 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 	var toolCallLog bytes.Buffer
 	conversation.SetToolCallLogger(log.New(&toolCallLog, "", 0))
 	var toolCallStates []bool
-	conversation.SetToolCallObserver(func(call ToolCall, running bool) {
+	var toolCallResults []string
+	conversation.SetToolCallObserver(func(call ToolCall, running bool, result string) {
 		if call.Function.Name != "lookup" {
 			t.Errorf("observed tool = %q, want lookup", call.Function.Name)
 		}
 		toolCallStates = append(toolCallStates, running)
+		toolCallResults = append(toolCallResults, result)
 	})
 
 	completion, err := conversation.Send(context.Background(), "question")
@@ -659,6 +661,9 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 	}
 	if len(toolCallStates) != 2 || !toolCallStates[0] || toolCallStates[1] {
 		t.Errorf("tool call states = %v, want [true false]", toolCallStates)
+	}
+	if len(toolCallResults) != 2 || toolCallResults[0] != "" || toolCallResults[1] != "found value" {
+		t.Errorf("tool call results = %v, want empty running result then found value", toolCallResults)
 	}
 }
 

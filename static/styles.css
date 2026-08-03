@@ -10,6 +10,7 @@
     --color-accent: #dda0ab;
     --color-on-accent: #24191d;
     --color-gold: #f6c177;
+    --color-error: #ff8a80;
 }
 
 html {
@@ -642,6 +643,25 @@ main {
                     >span {
                         overflow: visible;
                         text-overflow: clip;
+                    }
+                }
+
+                &.tool-error {
+                    color: var(--color-error);
+
+                    .tool-call-toggle {
+                        color: var(--color-error);
+                    }
+
+                    .tool-call-error {
+                        display: none;
+                        grid-column: 3;
+                        white-space: pre-wrap;
+                        overflow-wrap: anywhere;
+                    }
+
+                    &.expanded .tool-call-error {
+                        display: block;
                     }
                 }
             }

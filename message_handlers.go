@@ -125,8 +125,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		}
 		conversation.SetToolCallLogger(toolCallLogger)
 		conversation.SetToolCallObserver(tracker.observe)
-		completion, err := conversation.Complete(r.Context())
-		if err != nil {
+		if _, err := conversation.Complete(r.Context()); err != nil {
 			log.Printf("complete message: %v", err)
 			message := completionErrorMessage(err)
 			renderCompletionError(w, r, http.StatusFailedDependency, request.chat, message, request.model, request.selected.Names())
@@ -145,9 +144,8 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			}
 			return
 		}
-		calls, _ := tracker.snapshot()
 		var fragment bytes.Buffer
-		if err := templates.CompletedMessage(calls, completion.Message).Render(r.Context(), &fragment); err != nil {
+		if err := templates.CompletedMessage(completedMessages...).Render(r.Context(), &fragment); err != nil {
 			log.Printf("render completed message: %v", err)
 			renderMessageError(w, r, http.StatusInternalServerError, "Response completed, but could not be displayed.")
 			return
