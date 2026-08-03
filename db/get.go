@@ -2,6 +2,7 @@ package kritui_db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,36 @@ type Chat struct {
 	Tools     []string
 	CreatedAt string
 	UpdatedAt string
+}
+
+// MessageSnapshot contains ordered messages and the storage version used for
+// optimistic completion persistence.
+type MessageSnapshot struct {
+	Messages []llm.Message
+	chatID   int64
+	version  messageVersion
+}
+
+type messageVersion struct {
+	count        int
+	lastID       int64
+	lastPosition int
+	digest       [sha256.Size]byte
+}
+
+type storedMessage struct {
+	id          int64
+	position    int
+	message     llm.Message
+	fingerprint string
+}
+
+type rowScanner interface {
+	Scan(...any) error
+}
+
+type messageQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 // GetChats returns chats from most recently updated to least recently updated.
@@ -124,63 +155,117 @@ func GetChatTools(ctx context.Context, db *sql.DB, chatID int64) ([]string, erro
 
 // GetMessages returns a chat's messages in conversation order.
 func GetMessages(ctx context.Context, db *sql.DB, chatID int64) ([]llm.Message, error) {
+	snapshot, err := GetMessageSnapshot(ctx, db, chatID)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot.Messages, nil
+}
+
+// GetMessageSnapshot returns messages and an optimistic storage version.
+func GetMessageSnapshot(ctx context.Context, db *sql.DB, chatID int64) (MessageSnapshot, error) {
+	return getMessageSnapshot(ctx, db, chatID)
+}
+
+func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (MessageSnapshot, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT role, content, model, total_tokens, cost, tool_calls, tool_call_id, provider_metadata
+		SELECT
+			id,
+			position,
+			role,
+			content,
+			model,
+			total_tokens,
+			cost,
+			tool_calls,
+			tool_call_id,
+			provider_metadata,
+			json_array(id, position, role, content, model, total_tokens, cost, tool_calls, tool_call_id, provider_metadata)
 		FROM messages
 		WHERE chat_id = ?
-		ORDER BY position
+		ORDER BY position, id
 	`, chatID)
 	if err != nil {
-		return nil, fmt.Errorf("get messages: %w", err)
+		return MessageSnapshot{}, fmt.Errorf("get messages: %w", err)
 	}
 	defer rows.Close()
 
-	var messages []llm.Message
+	snapshot := MessageSnapshot{
+		chatID:  chatID,
+		version: messageVersion{lastPosition: -1},
+	}
+	digest := sha256.New()
 	for rows.Next() {
-		var message llm.Message
-		var model sql.NullString
-		var totalTokens sql.NullInt64
-		var cost sql.NullFloat64
-		var toolCalls sql.NullString
-		var toolCallID sql.NullString
-		var providerMetadata sql.NullString
-		if err := rows.Scan(&message.Role, &message.Content, &model, &totalTokens, &cost, &toolCalls, &toolCallID, &providerMetadata); err != nil {
-			return nil, fmt.Errorf("scan message: %w", err)
+		stored, err := scanStoredMessage(rows)
+		if err != nil {
+			return MessageSnapshot{}, err
 		}
-
-		if model.Valid {
-			message.Model = model.String
-		}
-		if totalTokens.Valid {
-			tokens := int(totalTokens.Int64)
-			message.TotalTokens = &tokens
-		}
-		if cost.Valid {
-			value := cost.Float64
-			message.Cost = &value
-		}
-		if toolCalls.Valid {
-			if err := json.Unmarshal([]byte(toolCalls.String), &message.ToolCalls); err != nil {
-				return nil, fmt.Errorf("decode message tool calls: %w", err)
-			}
-		}
-		if toolCallID.Valid {
-			message.ToolCallID = toolCallID.String
-		}
-		if providerMetadata.Valid {
-			if message.Role != "assistant" {
-				return nil, fmt.Errorf("decode provider metadata: only assistant messages may contain provider metadata")
-			}
-			if err := json.Unmarshal([]byte(providerMetadata.String), &message.ProviderMetadata); err != nil {
-				return nil, fmt.Errorf("decode provider metadata: %w", err)
-			}
-		}
-
-		messages = append(messages, message)
+		snapshot.Messages = append(snapshot.Messages, stored.message)
+		snapshot.version.count++
+		snapshot.version.lastID = stored.id
+		snapshot.version.lastPosition = stored.position
+		_, _ = digest.Write([]byte(stored.fingerprint))
+		_, _ = digest.Write([]byte{'\n'})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate messages: %w", err)
+		return MessageSnapshot{}, fmt.Errorf("iterate messages: %w", err)
 	}
 
-	return messages, nil
+	copy(snapshot.version.digest[:], digest.Sum(nil))
+	return snapshot, nil
+}
+
+func scanStoredMessage(row rowScanner) (storedMessage, error) {
+	var stored storedMessage
+	var model sql.NullString
+	var totalTokens sql.NullInt64
+	var cost sql.NullFloat64
+	var toolCalls sql.NullString
+	var toolCallID sql.NullString
+	var providerMetadata sql.NullString
+	if err := row.Scan(
+		&stored.id,
+		&stored.position,
+		&stored.message.Role,
+		&stored.message.Content,
+		&model,
+		&totalTokens,
+		&cost,
+		&toolCalls,
+		&toolCallID,
+		&providerMetadata,
+		&stored.fingerprint,
+	); err != nil {
+		return storedMessage{}, fmt.Errorf("scan message: %w", err)
+	}
+
+	if model.Valid {
+		stored.message.Model = model.String
+	}
+	if totalTokens.Valid {
+		tokens := int(totalTokens.Int64)
+		stored.message.TotalTokens = &tokens
+	}
+	if cost.Valid {
+		value := cost.Float64
+		stored.message.Cost = &value
+	}
+	if toolCalls.Valid {
+		if err := json.Unmarshal([]byte(toolCalls.String), &stored.message.ToolCalls); err != nil {
+			return storedMessage{}, fmt.Errorf("decode message tool calls: %w", err)
+		}
+	}
+	if toolCallID.Valid {
+		stored.message.ToolCallID = toolCallID.String
+	}
+	if providerMetadata.Valid {
+		if stored.message.Role != "assistant" {
+			return storedMessage{}, fmt.Errorf("decode provider metadata: only assistant messages may contain provider metadata")
+		}
+		if err := json.Unmarshal([]byte(providerMetadata.String), &stored.message.ProviderMetadata); err != nil {
+			return storedMessage{}, fmt.Errorf("decode provider metadata: %w", err)
+		}
+	}
+
+	return stored, nil
 }

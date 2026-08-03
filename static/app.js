@@ -191,6 +191,30 @@ function togglePanel(panelID) {
     syncPanelSendButton();
 }
 
+function showCompletionNetworkError(event, message) {
+    const pending = event.detail.elt;
+    if (!pending?.matches?.('.loading-message') || pending.classList.contains('completion-failed')) {
+        return;
+    }
+
+    const progress = pending.querySelector('.completion-progress');
+    const failure = pending.querySelector('.completion-network-error');
+    if (!failure) {
+        return;
+    }
+
+    const errorMessage = failure.querySelector('[data-completion-error-message]');
+    if (errorMessage) {
+        errorMessage.textContent = message;
+    }
+    if (progress) {
+        progress.hidden = true;
+    }
+    failure.hidden = false;
+    pending.classList.add('completion-failed');
+    syncPanelSendButton();
+}
+
 document.addEventListener('DOMContentLoaded', () => scrollMessages(document));
 document.addEventListener('htmx:load', (event) => scrollMessages(event.detail.elt));
 document.addEventListener('htmx:beforeSwap', (event) => rememberMessageScroll(event.detail.target));
@@ -209,6 +233,12 @@ document.addEventListener('htmx:beforeCleanupElement', (event) => {
 });
 document.addEventListener('htmx:sseBeforeMessage', (event) => rememberMessageScroll(event.target));
 document.addEventListener('htmx:sseMessage', (event) => restoreMessageScroll(event.target));
+document.addEventListener('htmx:sendError', (event) => {
+    showCompletionNetworkError(event, 'Failed to complete message. Check your connection and retry.');
+});
+document.addEventListener('htmx:timeout', (event) => {
+    showCompletionNetworkError(event, 'Completion request timed out. Retry the completion.');
+});
 
 document.addEventListener('htmx:configRequest', (event) => {
     if (event.detail.elt.matches('.loading-message')) {

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -30,6 +32,50 @@ func TestHTTPServerConfiguresConnectionTimeouts(t *testing.T) {
 	}
 	if server.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout = %s, want zero so SSE can remain open", server.WriteTimeout)
+	}
+}
+
+func TestHealthHandlerChecksOnlyDatabase(t *testing.T) {
+	database := openTestDatabase(t)
+	providerCalls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		providerCalls++
+	}))
+	defer provider.Close()
+	t.Setenv("LLM_ENDPOINT", provider.URL)
+
+	response := httptest.NewRecorder()
+	healthHandler(database)(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want plain text", contentType)
+	}
+	if body := response.Body.String(); body != "ok\n" {
+		t.Errorf("body = %q, want ok", body)
+	}
+	if providerCalls != 0 {
+		t.Errorf("provider request count = %d, want 0", providerCalls)
+	}
+}
+
+func TestHealthHandlerReportsDatabaseFailure(t *testing.T) {
+	database := openTestDatabase(t)
+	if err := database.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	healthHandler(database)(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want plain text", contentType)
+	}
+	if body := response.Body.String(); body != "unhealthy\n" {
+		t.Errorf("body = %q, want unhealthy", body)
 	}
 }
 
@@ -461,6 +507,220 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 	}
 }
 
+func TestChatTitleNormalizationPreservesMessageContent(t *testing.T) {
+	database := openTestDatabase(t)
+	firstLine := strings.Repeat("界", maxChatTitleRunes+1)
+	message := "\n  " + firstLine + "  \nsecond line\n"
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages?chat=3", url.Values{
+		"message": {message},
+		"model":   {"selected-model"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	var title, content string
+	if err := database.QueryRow(`
+		SELECT chats.title, messages.content
+		FROM chats
+		JOIN messages ON messages.chat_id = chats.id
+		WHERE chats.id = 3
+	`).Scan(&title, &content); err != nil {
+		t.Fatalf("query stored title and message: %v", err)
+	}
+	if title != strings.Repeat("界", maxChatTitleRunes) {
+		t.Errorf("stored title = %q, want %d complete runes", title, maxChatTitleRunes)
+	}
+	if content != strings.TrimSpace(message) {
+		t.Errorf("stored message = %q, want untruncated %q", content, strings.TrimSpace(message))
+	}
+}
+
+func TestNormalizeChatTitle(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "trimmed first line", value: "  First line  \nSecond line", want: "First line"},
+		{name: "first useful line", value: "\n \t\nUseful\nLater", want: "Useful"},
+		{name: "empty", value: " \n\t ", want: ""},
+		{name: "exact Unicode limit", value: strings.Repeat("界", maxChatTitleRunes), want: strings.Repeat("界", maxChatTitleRunes)},
+		{name: "truncated Unicode", value: strings.Repeat("界", maxChatTitleRunes+1), want: strings.Repeat("界", maxChatTitleRunes)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeChatTitle(test.value); got != test.want {
+				t.Errorf("normalizeChatTitle() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestHandlersLimitURLFormBodies(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		base       string
+		limit      int64
+		newHandler func(*testing.T) http.Handler
+		wantHTML   string
+	}{
+		{
+			name:   "message",
+			method: http.MethodPost,
+			target: "/messages?chat=invalid",
+			base:   "message=hello&model=test-model",
+			limit:  maxMessageBodyBytes,
+			newHandler: func(t *testing.T) http.Handler {
+				return messageHandler(openTestDatabase(t), newTestToolRegistry(t), newToolCallStore())
+			},
+			wantHTML: `<article class="message" role="alert">`,
+		},
+		{
+			name:   "completion",
+			method: http.MethodPost,
+			target: "/messages/complete?chat=1",
+			base:   "model=test-model&request=invalid",
+			limit:  maxCompletionBodyBytes,
+			newHandler: func(t *testing.T) http.Handler {
+				return messageCompletionHandler(openTestDatabase(t), newTestToolRegistry(t), newToolCallStore(), nil)
+			},
+			wantHTML: `<article class="message" role="alert">`,
+		},
+		{
+			name:   "retry",
+			method: http.MethodPost,
+			target: "/messages/retry?chat=1",
+			base:   "model=test-model",
+			limit:  maxRetryBodyBytes,
+			newHandler: func(t *testing.T) http.Handler {
+				return messageRetryHandler(openTestDatabase(t), newTestToolRegistry(t), newToolCallStore())
+			},
+			wantHTML: `<article class="message" role="alert">`,
+		},
+		{
+			name:   "settings",
+			method: http.MethodPost,
+			target: "/settings?chat=1",
+			base:   "model=test-model",
+			limit:  maxSettingsBodyBytes,
+			newHandler: func(t *testing.T) http.Handler {
+				t.Setenv("LLM_MODEL", "test-model")
+				t.Setenv("LLM_ENDPOINT", "")
+				return settingsHandler(openTestDatabase(t))
+			},
+			wantHTML: `id="settings-page"`,
+		},
+		{
+			name:   "rename",
+			method: http.MethodPut,
+			target: "/chats/1?current=1",
+			base:   "title=Renamed",
+			limit:  maxRenameBodyBytes,
+			newHandler: func(t *testing.T) http.Handler {
+				database := openTestDatabase(t)
+				if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (1, 'Original')`); err != nil {
+					t.Fatalf("insert chat: %v", err)
+				}
+				mux := http.NewServeMux()
+				mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
+				return mux
+			},
+			wantHTML: `id="history-error"`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := test.newHandler(t)
+			atLimit := serveRawForm(handler, test.method, test.target, paddedFormBody(t, test.base, test.limit))
+			if atLimit.Code == http.StatusRequestEntityTooLarge {
+				t.Fatalf("body at limit returned 413: %s", atLimit.Body.String())
+			}
+
+			oversized := serveRawForm(handler, test.method, test.target, paddedFormBody(t, test.base, test.limit+1))
+			requireHTMLErrorResponse(t, oversized, http.StatusRequestEntityTooLarge, test.wantHTML, "Request body is too large.")
+		})
+	}
+}
+
+func TestMessageHandlerLimitsMultipartBody(t *testing.T) {
+	database := openTestDatabase(t)
+	handler := messageHandler(database, newTestToolRegistry(t), newToolCallStore())
+
+	body, contentType := multipartBodyOfSize(t, maxMessageBodyBytes)
+	request := httptest.NewRequest(http.MethodPost, "/messages?chat=invalid", bytes.NewReader(body))
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+	handler(response, request)
+	if response.Code == http.StatusRequestEntityTooLarge {
+		t.Fatalf("multipart body at limit returned 413: %s", response.Body.String())
+	}
+
+	body, contentType = multipartBodyOfSize(t, maxMessageBodyBytes+1)
+	request = httptest.NewRequest(http.MethodPost, "/messages?chat=invalid", bytes.NewReader(body))
+	request.Header.Set("Content-Type", contentType)
+	response = httptest.NewRecorder()
+	handler(response, request)
+	requireHTMLErrorResponse(t, response, http.StatusRequestEntityTooLarge, `<article class="message" role="alert">`, "Request body is too large.")
+}
+
+func TestOversizedMessageFormsDoNotChangeState(t *testing.T) {
+	t.Run("submission", func(t *testing.T) {
+		database := openTestDatabase(t)
+		toolCalls := newToolCallStore()
+		body := paddedFormBody(t, "message=hello&model=test-model", maxMessageBodyBytes+1)
+		response := serveRawForm(messageHandler(database, newTestToolRegistry(t), toolCalls), http.MethodPost, "/messages?chat=1", body)
+		if response.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", response.Code)
+		}
+		var messages int
+		if err := database.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&messages); err != nil {
+			t.Fatalf("count messages: %v", err)
+		}
+		if messages != 0 {
+			t.Errorf("stored message count = %d, want 0", messages)
+		}
+		requestID, err := toolCalls.create(1)
+		if err != nil {
+			t.Fatalf("oversized submission retained active chat: %v", err)
+		}
+		toolCalls.delete(requestID)
+	})
+
+	t.Run("completion", func(t *testing.T) {
+		database := openTestDatabase(t)
+		toolCalls := newToolCallStore()
+		requestID := newToolCallRequest(t, toolCalls, 1)
+		body := paddedFormBody(t, "model=test-model&request="+requestID, maxCompletionBodyBytes+1)
+		response := serveRawForm(messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), http.MethodPost, "/messages/complete?chat=1", body)
+		if response.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", response.Code)
+		}
+		if _, ok := toolCalls.claim(requestID, 1); !ok {
+			t.Fatal("oversized completion consumed tracker")
+		}
+		toolCalls.delete(requestID)
+	})
+
+	t.Run("retry", func(t *testing.T) {
+		database := openTestDatabase(t)
+		toolCalls := newToolCallStore()
+		body := paddedFormBody(t, "model=test-model", maxRetryBodyBytes+1)
+		response := serveRawForm(messageRetryHandler(database, newTestToolRegistry(t), toolCalls), http.MethodPost, "/messages/retry?chat=1", body)
+		if response.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", response.Code)
+		}
+		requestID, err := toolCalls.create(1)
+		if err != nil {
+			t.Fatalf("oversized retry retained active chat: %v", err)
+		}
+		toolCalls.delete(requestID)
+	})
+}
+
 func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 	database := openTestDatabase(t)
 	if _, err := database.Exec(`
@@ -637,7 +897,7 @@ func TestRenameChatHandlerUpdatesTitle(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
-	request := httptest.NewRequest(http.MethodPut, "/chats/8?current=9", strings.NewReader("title=New+title"))
+	request := httptest.NewRequest(http.MethodPut, "/chats/8?current=9", strings.NewReader(url.Values{"title": {"New title\nignored"}}.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 
@@ -740,8 +1000,18 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`hx-swap-oob="outerHTML"`,
 		`name="request" value="`,
 		`name="tool" value="webfetch"`,
+		`class="completion-network-error" role="alert" hidden`,
+		"Failed to complete message. Check your connection and retry.",
+		`hx-post="/messages/retry?chat=1"`,
+		`data-completion-error-message`,
 	)
 	requireNotContains(t, response.Body.String(), "every 200ms", `type="hidden" name="message"`)
+	if count := strings.Count(response.Body.String(), `name="model" value="selected-model"`); count != 1 {
+		t.Errorf("model input count = %d, want 1", count)
+	}
+	if count := strings.Count(response.Body.String(), `name="tool" value="webfetch"`); count != 1 {
+		t.Errorf("tool input count = %d, want 1", count)
+	}
 }
 
 func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
@@ -1213,6 +1483,59 @@ func TestMessageCompletionHandlerStoresRawMarkdown(t *testing.T) {
 	}
 }
 
+func TestMessageCompletionHandlerRejectsStaleGeneratedResponse(t *testing.T) {
+	database := openTestDatabase(t)
+	modelStarted := make(chan struct{})
+	releaseModel := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(modelStarted)
+		<-releaseModel
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"Stale answer."},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	insertAcceptedUser(t, database, 1, "First question")
+	toolCalls := newToolCallStore()
+	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(url.Values{
+		"model":   {"selected-model"},
+		"request": {newToolCallRequest(t, toolCalls, 1)},
+	}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	registry := newTestToolRegistry(t)
+	done := make(chan struct{})
+	go func() {
+		messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
+		close(done)
+	}()
+
+	waitForTestSignal(t, modelStarted, "model request")
+	insertAcceptedUser(t, database, 1, "Concurrent question")
+	close(releaseModel)
+	waitForTestSignal(t, done, "stale completion rejection")
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusConflict, response.Body.String())
+	}
+	requireContains(t, response.Body.String(),
+		"Conversation changed while the response was being generated. Retry the completion.",
+		`hx-post="/messages/retry?chat=1"`,
+	)
+	var assistants int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 1 AND role = 'assistant'`).Scan(&assistants); err != nil {
+		t.Fatalf("count assistant messages: %v", err)
+	}
+	if assistants != 0 {
+		t.Errorf("stored stale assistant count = %d, want 0", assistants)
+	}
+}
+
 func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 	database := openTestDatabase(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1307,8 +1630,11 @@ func TestMessageCompletionHandlerRendersToolCallLimitError(t *testing.T) {
 	if response.Code != http.StatusFailedDependency {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusFailedDependency, response.Body.String())
 	}
-	requireContains(t, response.Body.String(), "llm: exceeded 16 consecutive tool-call rounds")
+	requireContains(t, response.Body.String(), "llm: reached maximum of 16 consecutive tool-call rounds")
 	requireNotContains(t, response.Body.String(), "Failed to complete message.")
+	if requestNumber != 17 {
+		t.Errorf("model request count = %d, want 17", requestNumber)
+	}
 }
 
 func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
@@ -1341,8 +1667,8 @@ func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
 		},
 		{
 			name: "tool call limit",
-			err:  errors.New("llm: exceeded 16 consecutive tool-call rounds"),
-			want: "llm: exceeded 16 consecutive tool-call rounds",
+			err:  errors.New("llm: reached maximum of 16 consecutive tool-call rounds"),
+			want: "llm: reached maximum of 16 consecutive tool-call rounds",
 		},
 	}
 
@@ -1758,6 +2084,60 @@ func postForm(t *testing.T, handler http.Handler, target string, form url.Values
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
+}
+
+func serveRawForm(handler http.Handler, method, target, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func paddedFormBody(t *testing.T, base string, size int64) string {
+	t.Helper()
+	const separator = "&padding="
+	padding := int(size) - len(base) - len(separator)
+	if padding < 0 {
+		t.Fatalf("form base length %d exceeds requested body size %d", len(base), size)
+	}
+	return base + separator + strings.Repeat("x", padding)
+}
+
+func multipartBodyOfSize(t *testing.T, size int64) ([]byte, string) {
+	t.Helper()
+	const boundary = "kritui-test-boundary"
+	build := func(padding int) ([]byte, string) {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		if err := writer.SetBoundary(boundary); err != nil {
+			t.Fatalf("set multipart boundary: %v", err)
+		}
+		if err := writer.WriteField("message", "hello"); err != nil {
+			t.Fatalf("write multipart message: %v", err)
+		}
+		if err := writer.WriteField("model", "test-model"); err != nil {
+			t.Fatalf("write multipart model: %v", err)
+		}
+		if err := writer.WriteField("padding", strings.Repeat("x", padding)); err != nil {
+			t.Fatalf("write multipart padding: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close multipart form: %v", err)
+		}
+		return body.Bytes(), writer.FormDataContentType()
+	}
+
+	base, _ := build(0)
+	padding := int(size) - len(base)
+	if padding < 0 {
+		t.Fatalf("multipart overhead %d exceeds requested body size %d", len(base), size)
+	}
+	body, contentType := build(padding)
+	if int64(len(body)) != size {
+		t.Fatalf("multipart body size = %d, want %d", len(body), size)
+	}
+	return body, contentType
 }
 
 func requireContains(t *testing.T, content string, values ...string) {

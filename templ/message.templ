@@ -152,19 +152,21 @@ templ PendingCompletion(chatID string, requestID string, model string, tools []s
 		role="status"
 		aria-label="Waiting for model response"
 	>
-		<div
-			class="tool-call-list"
-			role="list"
-			sse-swap="tools"
-			hx-target="this"
-			hx-swap="innerHTML"
-		></div>
-		<strong class="thinking-indicator"><span class="braille-spinner" aria-hidden="true"></span>{ model }</strong>
-		<input type="hidden" name="model" value={ model }/>
+		<div class="completion-progress">
+			<div
+				class="tool-call-list"
+				role="list"
+				sse-swap="tools"
+				hx-target="this"
+				hx-swap="innerHTML"
+			></div>
+			<strong class="thinking-indicator"><span class="braille-spinner" aria-hidden="true"></span>{ model }</strong>
+		</div>
+		<div class="completion-network-error" role="alert" hidden>
+			@CompletionErrorDetails("Failed to complete message. Check your connection and retry.", model)
+			@CompletionRetry(chatID, model, tools)
+		</div>
 		<input type="hidden" name="request" value={ requestID }/>
-		for _, tool := range tools {
-			<input type="hidden" name="tool" value={ tool }/>
-		}
 	</article>
 }
 
@@ -175,28 +177,37 @@ templ MessageError(message string) {
 }
 
 templ CompletionError(chatID string, message string, model string, tools []string) {
-	<article class="message completion-error" role="alert" style="padding: .7rem 0; border-radius: 0; background: transparent;">
-		<strong style="color: #eb6f92;">{ model }</strong>
-		<div class="message-content plain-text" style="margin-top: .65rem; padding: .7rem 1rem; border-left: .15rem solid #eb6f92; color: var(--color-border-strong);">{ message }</div>
-		<form
-			hx-post={ "/messages/retry?chat=" + chatID }
-			hx-target="closest article"
-			hx-swap="outerHTML"
-			hx-sync="#messages:drop"
-			hx-disabled-elt="find button[type='submit']"
-		>
-			<input type="hidden" name="model" value={ model }/>
-			for _, tool := range tools {
-				<input type="hidden" name="tool" value={ tool }/>
-			}
-			<button type="submit" aria-label="Retry completion" title="Retry completion" style="padding: .25rem; border: 0; background: transparent; color: var(--color-border-strong); line-height: 0; cursor: pointer;">
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-					<path d="M20 6v6h-6"></path>
-					<path d="M20 12a8 8 0 1 0-2.34 5.66"></path>
-				</svg>
-			</button>
-		</form>
+	<article class="message completion-error" role="alert">
+		@CompletionErrorDetails(message, model)
+		@CompletionRetry(chatID, model, tools)
 	</article>
+}
+
+templ CompletionErrorDetails(message string, model string) {
+	<strong class="completion-error-model">{ model }</strong>
+	<div class="message-content plain-text completion-error-message" data-completion-error-message>{ message }</div>
+}
+
+templ CompletionRetry(chatID string, model string, tools []string) {
+	<form
+		class="completion-retry"
+		hx-post={ "/messages/retry?chat=" + chatID }
+		hx-target="closest article"
+		hx-swap="outerHTML"
+		hx-sync="#messages:drop"
+		hx-disabled-elt="find button[type='submit']"
+	>
+		<input type="hidden" name="model" value={ model }/>
+		for _, tool := range tools {
+			<input type="hidden" name="tool" value={ tool }/>
+		}
+		<button class="completion-retry-button" type="submit" aria-label="Retry completion" title="Retry completion">
+			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+				<path d="M20 6v6h-6"></path>
+				<path d="M20 12a8 8 0 1 0-2.34 5.66"></path>
+			</svg>
+		</button>
+	</form>
 }
 
 templ MessageInput(outOfBand bool) {

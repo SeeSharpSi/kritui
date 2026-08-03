@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"strconv"
@@ -27,8 +28,20 @@ type messageRequest struct {
 	selected *tools.Registry
 }
 
+const (
+	maxMessageBodyBytes    int64 = 1 << 20
+	maxCompletionBodyBytes int64 = 16 << 10
+	maxRetryBodyBytes      int64 = 16 << 10
+	maxSettingsBodyBytes   int64 = 16 << 10
+	maxRenameBodyBytes     int64 = 16 << 10
+	maxChatTitleRunes            = 120
+)
+
 func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !parseMessageForm(w, r, maxMessageBodyBytes) {
+			return
+		}
 		message := strings.TrimSpace(r.FormValue("message"))
 		if message == "" {
 			renderMessageError(w, r, http.StatusBadRequest, "Message is required.")
@@ -67,6 +80,9 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 
 func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore, toolCallLogger *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !parseMessageForm(w, r, maxCompletionBodyBytes) {
+			return
+		}
 		request, ok := parseMessageRequest(w, r, database, registry)
 		if !ok {
 			return
@@ -80,12 +96,13 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		}
 		defer toolCalls.delete(requestID)
 
-		messages, err := kritui_db.GetMessages(r.Context(), database, request.chatID)
+		snapshot, err := kritui_db.GetMessageSnapshot(r.Context(), database, request.chatID)
 		if err != nil {
 			log.Printf("get messages: %v", err)
 			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to load conversation.", request.model, request.selected.Names())
 			return
 		}
+		messages := snapshot.Messages
 		if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
 			renderMessageError(w, r, http.StatusConflict, "No message is waiting for completion.")
 			return
@@ -97,7 +114,6 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			return
 		}
 
-		position := len(messages)
 		conversation, err := llm.NewConversation(client, request.selected, llm.PromptContext{
 			CurrentTime:    time.Now(),
 			ClientLocation: clientLocation(r.FormValue("client_timezone")),
@@ -117,23 +133,16 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			return
 		}
 		completedMessages := conversation.Messages()[len(messages)+1:]
-		tx, err := database.BeginTx(r.Context(), nil)
-		if err != nil {
-			log.Printf("begin message transaction: %v", err)
-			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to store response.", request.model, request.selected.Names())
-			return
-		}
-		defer tx.Rollback()
-		for index, completedMessage := range completedMessages {
-			if _, err := kritui_db.InsertMessage(r.Context(), tx, request.chatID, position+index, completedMessage); err != nil {
-				log.Printf("store message: %v", err)
+		if err := kritui_db.AppendCompletion(r.Context(), database, request.chatID, snapshot, completedMessages); err != nil {
+			switch {
+			case errors.Is(err, kritui_db.ErrConversationConflict):
+				renderCompletionError(w, r, http.StatusConflict, request.chat, "Conversation changed while the response was being generated. Retry the completion.", request.model, request.selected.Names())
+			case errors.Is(err, kritui_db.ErrChatNotFound):
+				renderMessageError(w, r, http.StatusNotFound, "Chat no longer exists.")
+			default:
+				log.Printf("store response: %v", err)
 				renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to store response.", request.model, request.selected.Names())
-				return
 			}
-		}
-		if err := tx.Commit(); err != nil {
-			log.Printf("commit messages: %v", err)
-			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to store response.", request.model, request.selected.Names())
 			return
 		}
 		calls, _ := tracker.snapshot()
@@ -150,6 +159,9 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 
 func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !parseMessageForm(w, r, maxRetryBodyBytes) {
+			return
+		}
 		request, ok := parseMessageRequest(w, r, database, registry)
 		if !ok {
 			return
@@ -249,7 +261,7 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 		ON CONFLICT (id) DO UPDATE SET
 			title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END,
 			tools = excluded.tools
-	`, chatID, message, string(toolsJSON)); err != nil {
+	`, chatID, normalizeChatTitle(message), string(toolsJSON)); err != nil {
 		return fmt.Errorf("create chat: %w", err)
 	}
 
@@ -270,6 +282,48 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	return nil
 }
 
+func parseLimitedForm(w http.ResponseWriter, r *http.Request, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	if contentType := r.Header.Get("Content-Type"); contentType != "" {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			return err
+		}
+		if mediaType == "multipart/form-data" {
+			return r.ParseMultipartForm(limit)
+		}
+	}
+	return r.ParseForm()
+}
+
+func parseMessageForm(w http.ResponseWriter, r *http.Request, limit int64) bool {
+	if err := parseLimitedForm(w, r, limit); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			renderMessageError(w, r, http.StatusRequestEntityTooLarge, "Request body is too large.")
+			return false
+		}
+		renderMessageError(w, r, http.StatusBadRequest, "Invalid message form.")
+		return false
+	}
+	return true
+}
+
+func normalizeChatTitle(value string) string {
+	for _, line := range strings.Split(strings.TrimSpace(value), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > maxChatTitleRunes {
+			runes = runes[:maxChatTitleRunes]
+		}
+		return string(runes)
+	}
+	return ""
+}
+
 func renderMessageError(w http.ResponseWriter, r *http.Request, status int, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
@@ -280,7 +334,7 @@ func renderMessageError(w http.ResponseWriter, r *http.Request, status int, mess
 
 func completionErrorMessage(err error) string {
 	const fallback = "Failed to complete message."
-	const toolCallLimit = "llm: exceeded 16 consecutive tool-call rounds"
+	const toolCallLimit = "llm: reached maximum of 16 consecutive tool-call rounds"
 
 	if err == nil {
 		return fallback

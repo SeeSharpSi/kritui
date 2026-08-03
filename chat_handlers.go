@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -131,7 +132,12 @@ func settingsHandler(database *sql.DB) http.HandlerFunc {
 		}
 		saved := false
 		if r.Method == http.MethodPost {
-			if err := r.ParseForm(); err != nil {
+			if err := parseLimitedForm(w, r, maxSettingsBodyBytes); err != nil {
+				var tooLarge *http.MaxBytesError
+				if errors.As(err, &tooLarge) {
+					renderSettingsPage(w, r, http.StatusRequestEntityTooLarge, chat, selectedModel, false, "Request body is too large.")
+					return
+				}
 				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, false, "Invalid settings form.")
 				return
 			}
@@ -197,11 +203,16 @@ func renameChatHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		if err := r.ParseForm(); err != nil {
+		if err := parseLimitedForm(w, r, maxRenameBodyBytes); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				renderHistoryMutationError(w, r, http.StatusRequestEntityTooLarge, "Request body is too large.")
+				return
+			}
 			renderHistoryMutationError(w, r, http.StatusBadRequest, "Invalid rename form.")
 			return
 		}
-		title := strings.TrimSpace(r.FormValue("title"))
+		title := normalizeChatTitle(r.FormValue("title"))
 		if title == "" {
 			renderHistoryMutationError(w, r, http.StatusBadRequest, "A title is required.")
 			return

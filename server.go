@@ -73,6 +73,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	toolCalls := newToolCallStore()
+	mux.HandleFunc("GET /healthz", healthHandler(database))
 	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry))
 	mux.HandleFunc("GET /history", historyHandler(database))
 	mux.HandleFunc("GET /settings", settingsHandler(database))
@@ -115,6 +116,24 @@ func newHTTPServer(handler http.Handler) *http.Server {
 		Handler:           handler,
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
+func healthHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		var value int
+		if err := database.QueryRowContext(r.Context(), `SELECT 1`).Scan(&value); err != nil || value != 1 {
+			if err != nil {
+				log.Printf("health check database: %v", err)
+			} else {
+				log.Printf("health check database returned %d", value)
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintln(w, "unhealthy")
+			return
+		}
+		_, _ = fmt.Fprintln(w, "ok")
 	}
 }
 

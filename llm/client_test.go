@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -324,6 +325,172 @@ func TestCompleteRejectsResponseWithoutChoices(t *testing.T) {
 	}
 }
 
+func TestCompleteValidatesChatCompletionResponse(t *testing.T) {
+	validCall := `{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}`
+	tests := []struct {
+		name       string
+		choice     string
+		wantError  string
+		wantCalls  int
+		wantReason string
+	}{
+		{
+			name:      "missing role",
+			choice:    `{"message":{"content":"answer"},"finish_reason":"stop"}`,
+			wantError: "role must be assistant",
+		},
+		{
+			name:      "wrong role",
+			choice:    `{"message":{"role":"user","content":"answer"},"finish_reason":"stop"}`,
+			wantError: "role must be assistant",
+		},
+		{
+			name:      "empty message",
+			choice:    `{"message":{"role":"assistant","content":"  "},"finish_reason":"stop"}`,
+			wantError: "must contain content or tool calls",
+		},
+		{
+			name:      "unsupported finish reason",
+			choice:    `{"message":{"role":"assistant","content":"answer"},"finish_reason":"unknown"}`,
+			wantError: "unsupported finish reason",
+		},
+		{
+			name:      "tool finish without calls",
+			choice:    `{"message":{"role":"assistant"},"finish_reason":"tool_calls"}`,
+			wantError: "contained no tool calls",
+		},
+		{
+			name:      "stop with calls",
+			choice:    `{"message":{"role":"assistant","tool_calls":[` + validCall + `]},"finish_reason":"stop"}`,
+			wantError: "cannot contain tool calls",
+		},
+		{
+			name:      "duplicate call IDs",
+			choice:    `{"message":{"role":"assistant","tool_calls":[` + validCall + `,{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}`,
+			wantError: "duplicate tool call ID",
+		},
+		{
+			name:      "blank call ID",
+			choice:    `{"message":{"role":"assistant","tool_calls":[{"id":"  ","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}`,
+			wantError: "tool call ID is required",
+		},
+		{
+			name:      "unsupported call type",
+			choice:    `{"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"custom","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}`,
+			wantError: "unsupported tool call type",
+		},
+		{
+			name:      "blank function name",
+			choice:    `{"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"  ","arguments":"{}"}}]},"finish_reason":"tool_calls"}`,
+			wantError: "has no function name",
+		},
+		{
+			name:       "valid length response",
+			choice:     `{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}`,
+			wantReason: "length",
+		},
+		{
+			name:       "missing finish reason with content",
+			choice:     `{"message":{"role":"assistant","content":"answer"}}`,
+			wantReason: "stop",
+		},
+		{
+			name:       "missing finish reason with tool calls",
+			choice:     `{"message":{"role":"assistant","tool_calls":[` + validCall + `]}}`,
+			wantCalls:  1,
+			wantReason: "tool_calls",
+		},
+		{
+			name:       "valid tool calls",
+			choice:     `{"message":{"role":"assistant","tool_calls":[` + validCall + `]},"finish_reason":"tool_calls"}`,
+			wantCalls:  1,
+			wantReason: "tool_calls",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"choices":[` + test.choice + `]}`))
+			}))
+			defer server.Close()
+
+			client, err := New("key", "model", server.URL)
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
+			completion, err := client.Complete(context.Background(), []Message{{Role: "user", Content: "question"}})
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("Complete() error = %v, want error containing %q", err, test.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Complete() error: %v", err)
+			}
+			if len(completion.Message.ToolCalls) != test.wantCalls || completion.FinishReason != test.wantReason {
+				t.Errorf("completion = %#v, want %d calls and reason %q", completion, test.wantCalls, test.wantReason)
+			}
+		})
+	}
+}
+
+func TestConversationRejectsDuplicateToolCallIDsBeforeExecution(t *testing.T) {
+	executions := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"role":"assistant","tool_calls":[
+				{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}},
+				{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}
+			]},"finish_reason":"tool_calls"}]
+		}`))
+	}))
+	defer server.Close()
+
+	conversation := newCountingToolConversation(t, server.URL, &executions)
+	_, err := conversation.Send(context.Background(), "question")
+	if err == nil || !strings.Contains(err.Error(), "duplicate tool call ID") {
+		t.Fatalf("Send() error = %v, want duplicate ID error", err)
+	}
+	if executions != 0 {
+		t.Errorf("tool execution count = %d, want 0", executions)
+	}
+	if messages := conversation.Messages(); len(messages) != 2 || messages[1].Role != "user" {
+		t.Errorf("conversation messages = %#v, want only system and user", messages)
+	}
+}
+
+func TestConversationChecksToolRoundLimitBeforeExecution(t *testing.T) {
+	executions := 0
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = fmt.Fprintf(w, `{
+			"choices":[{"message":{"role":"assistant","tool_calls":[
+				{"id":"call-%d","type":"function","function":{"name":"lookup","arguments":"{}"}}
+			]},"finish_reason":"tool_calls"}]
+		}`, requests)
+	}))
+	defer server.Close()
+
+	conversation := newCountingToolConversation(t, server.URL, &executions)
+	_, err := conversation.Send(context.Background(), "question")
+	const wantError = "llm: reached maximum of 16 consecutive tool-call rounds"
+	if err == nil || err.Error() != wantError {
+		t.Fatalf("Send() error = %v, want %q", err, wantError)
+	}
+	if requests != 17 {
+		t.Errorf("model request count = %d, want 17", requests)
+	}
+	if executions != 16 {
+		t.Errorf("tool execution count = %d, want 16", executions)
+	}
+	if messages := conversation.Messages(); len(messages) != 34 {
+		t.Errorf("conversation message count = %d, want 34", len(messages))
+	}
+}
+
 func TestCompleteUsesRequestedModelWhenResponseOmitsModel(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -566,4 +733,39 @@ func (responseTestTool) Definition() tools.Definition {
 
 func (responseTestTool) Execute(context.Context, json.RawMessage) (string, error) {
 	return "found value", nil
+}
+
+type countingConversationTool struct {
+	executions *int
+}
+
+func (countingConversationTool) Definition() tools.Definition {
+	return tools.Definition{
+		Name:        "lookup",
+		Description: "Counts executions",
+		Parameters:  json.RawMessage(`{"type":"object"}`),
+	}
+}
+
+func (tool countingConversationTool) Execute(context.Context, json.RawMessage) (string, error) {
+	(*tool.executions)++
+	return "result", nil
+}
+
+func newCountingToolConversation(t *testing.T, endpoint string, executions *int) *Conversation {
+	t.Helper()
+
+	client, err := New("key", "model", endpoint)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	registry, err := tools.NewRegistry(countingConversationTool{executions: executions})
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	conversation, err := NewConversation(client, registry, PromptContext{CurrentTime: time.Now()})
+	if err != nil {
+		t.Fatalf("NewConversation() error: %v", err)
+	}
+	return conversation
 }

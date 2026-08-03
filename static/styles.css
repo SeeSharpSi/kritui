@@ -400,7 +400,8 @@ main {
                 padding: .7rem 0;
                 background: transparent;
 
-                &.htmx-request {
+                &.htmx-request,
+                &.completion-failed {
                     display: block;
                 }
 
@@ -412,6 +413,32 @@ main {
                     display: block;
                     margin-top: .45rem;
                 }
+            }
+
+            &.completion-error {
+                padding: .7rem 0;
+                border-radius: 0;
+                background: transparent;
+            }
+
+            .completion-error-model {
+                color: #eb6f92;
+            }
+
+            .completion-error-message {
+                margin-top: .65rem;
+                padding: .7rem 1rem;
+                border-left: .15rem solid #eb6f92;
+                color: var(--color-border-strong);
+            }
+
+            .completion-retry-button {
+                padding: .25rem;
+                border: 0;
+                background: transparent;
+                color: var(--color-border-strong);
+                line-height: 0;
+                cursor: pointer;
             }
 
             .message-content {

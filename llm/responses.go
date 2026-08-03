@@ -155,6 +155,9 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 	if message.Content == "" && len(message.ToolCalls) == 0 {
 		return Completion{}, errors.New("llm: response contained no assistant output")
 	}
+	if err := validateAssistantMessage(message); err != nil {
+		return Completion{}, err
+	}
 
 	finishReason := "stop"
 	if len(message.ToolCalls) > 0 {

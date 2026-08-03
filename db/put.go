@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"seesharpsi/kritui/llm"
@@ -12,6 +13,13 @@ import (
 type databaseExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
+
+var (
+	// ErrConversationConflict means stored history changed after model work began.
+	ErrConversationConflict = errors.New("conversation changed")
+	// ErrChatNotFound means completion target was deleted before persistence.
+	ErrChatNotFound = errors.New("chat not found")
+)
 
 // AllocateChat reserves a unique chat ID and removes abandoned empty chats.
 func AllocateChat(ctx context.Context, db *sql.DB) (int64, error) {
@@ -146,4 +154,53 @@ func InsertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 	}
 
 	return id, nil
+}
+
+// AppendCompletion atomically appends generated messages if stored history
+// still matches the snapshot used to generate them.
+func AppendCompletion(ctx context.Context, db *sql.DB, chatID int64, expected MessageSnapshot, messages []llm.Message) error {
+	if len(messages) == 0 {
+		return errors.New("append completion: at least one message is required")
+	}
+	if expected.chatID != chatID {
+		return ErrConversationConflict
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin completion transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// First write reserves the SQLite writer lock before history validation.
+	result, err := tx.ExecContext(ctx, `UPDATE chats SET id = id WHERE id = ?`, chatID)
+	if err != nil {
+		return fmt.Errorf("reserve chat for completion: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("reserve chat rows affected: %w", err)
+	}
+	if affected == 0 {
+		return ErrChatNotFound
+	}
+
+	current, err := getMessageSnapshot(ctx, tx, chatID)
+	if err != nil {
+		return fmt.Errorf("reload messages for completion: %w", err)
+	}
+	if current.version != expected.version {
+		return ErrConversationConflict
+	}
+
+	nextPosition := current.version.lastPosition + 1
+	for index, message := range messages {
+		if _, err := InsertMessage(ctx, tx, chatID, nextPosition+index, message); err != nil {
+			return fmt.Errorf("append completion message: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit completion: %w", err)
+	}
+	return nil
 }

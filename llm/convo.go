@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 
 	"seesharpsi/kritui/tools"
 )
@@ -96,19 +97,17 @@ func (c *Conversation) Complete(ctx context.Context) (Completion, error) {
 		if err != nil {
 			return Completion{}, err
 		}
+		if err := validateAssistantMessage(completion.Message); err != nil {
+			return Completion{}, err
+		}
 
 		calls := completion.Message.ToolCalls
 		if len(calls) == 0 {
-			if completion.FinishReason == "tool_calls" {
-				return Completion{}, errors.New("llm: response finished with tool_calls but contained no tool calls")
-			}
 			c.messages = append(c.messages, cloneMessage(completion.Message))
 			return completion, nil
 		}
-		for _, call := range calls {
-			if err := validateToolCall(call); err != nil {
-				return Completion{}, err
-			}
+		if toolRounds >= maxToolCallRounds {
+			return Completion{}, fmt.Errorf("llm: reached maximum of %d consecutive tool-call rounds", maxToolCallRounds)
 		}
 		c.messages = append(c.messages, cloneMessage(completion.Message))
 
@@ -125,9 +124,6 @@ func (c *Conversation) Complete(ctx context.Context) (Completion, error) {
 		}
 
 		toolRounds++
-		if toolRounds >= maxToolCallRounds {
-			return Completion{}, fmt.Errorf("llm: exceeded %d consecutive tool-call rounds", maxToolCallRounds)
-		}
 	}
 }
 
@@ -162,14 +158,36 @@ func (c *Conversation) executeToolCall(ctx context.Context, call ToolCall) (resu
 }
 
 func validateToolCall(call ToolCall) error {
-	if call.ID == "" {
+	if strings.TrimSpace(call.ID) == "" {
 		return errors.New("llm: tool call ID is required")
 	}
 	if call.Type != "function" {
 		return fmt.Errorf("llm: unsupported tool call type %q", call.Type)
 	}
-	if call.Function.Name == "" {
+	if strings.TrimSpace(call.Function.Name) == "" {
 		return fmt.Errorf("llm: tool call %q has no function name", call.ID)
+	}
+	return nil
+}
+
+func validateAssistantMessage(message Message) error {
+	if message.Role != "assistant" {
+		return fmt.Errorf("llm: completion message role must be assistant, got %q", message.Role)
+	}
+	if strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+		return errors.New("llm: assistant message must contain content or tool calls")
+	}
+
+	seenIDs := make(map[string]struct{}, len(message.ToolCalls))
+	for _, call := range message.ToolCalls {
+		if err := validateToolCall(call); err != nil {
+			return err
+		}
+		id := strings.TrimSpace(call.ID)
+		if _, exists := seenIDs[id]; exists {
+			return fmt.Errorf("llm: duplicate tool call ID %q", id)
+		}
+		seenIDs[id] = struct{}{}
 	}
 	return nil
 }

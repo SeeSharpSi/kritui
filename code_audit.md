@@ -427,7 +427,7 @@ Official documentation: <https://htmx.org/attributes/hx-trigger/>
 
 ---
 
-## Finding 11: Completion Network Failures Hide Recovery UI
+## [x] Finding 11: Completion Network Failures Hide Recovery UI
 
 **Severity:** Medium
 
@@ -463,7 +463,7 @@ Official documentation: <https://htmx.org/reference/#events>
 
 ---
 
-## Finding 12: Malformed Provider Responses Can Be Accepted or Executed
+## [x] Finding 12: Malformed Provider Responses Can Be Accepted or Executed
 
 **Severity:** Medium
 
@@ -505,7 +505,7 @@ Verify duplicate IDs execute no tools.
 
 ---
 
-## Finding 13: Request and Chat Title Sizes Lack Application Limits
+## [x] Finding 13: Request and Chat Title Sizes Lack Application Limits
 
 **Severity:** Medium
 
@@ -539,7 +539,7 @@ Test long Unicode prompts to ensure truncation does not split UTF-8 and stored m
 
 ---
 
-## Finding 14: Completion Persistence Uses Stale Positional Assumptions
+## [x] Finding 14: Completion Persistence Uses Stale Positional Assumptions
 
 **Severity:** Medium
 
@@ -575,7 +575,7 @@ Verify conflicts return a retryable application error rather than a generic stor
 
 ---
 
-## Finding 15: Docker Health Check Depends on the LLM Endpoint
+## [x] Finding 15: Docker Health Check Depends on the LLM Endpoint
 
 **Severity:** Medium
 
