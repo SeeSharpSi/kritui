@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 	"seesharpsi/kritui/tools"
 )
 
-func TestHomeHandlerRedirectsToNextChatID(t *testing.T) {
+func TestHomeHandlerAllocatesNextChatID(t *testing.T) {
 	database := openTestDatabase(t)
 	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (2, ''), (5, '')`); err != nil {
 		t.Fatalf("insert chats: %v", err)
@@ -40,8 +41,8 @@ func TestHomeHandlerRedirectsToNextChatID(t *testing.T) {
 	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&count); err != nil {
 		t.Fatalf("count chats: %v", err)
 	}
-	if count != 2 {
-		t.Errorf("chat count = %d, want 2", count)
+	if count != 3 {
+		t.Errorf("chat count = %d, want 3", count)
 	}
 }
 
@@ -54,6 +55,94 @@ func TestHomeHandlerUsesFirstChatIDForEmptyDatabase(t *testing.T) {
 
 	if location := response.Header().Get("Location"); location != "/?chat=1" {
 		t.Errorf("Location = %q, want %q", location, "/?chat=1")
+	}
+}
+
+func TestHomeHandlerAllocatesConcurrentChatsWithIsolatedMessages(t *testing.T) {
+	database := openTestDatabase(t)
+	registry := newTestToolRegistry(t)
+	responses := []*httptest.ResponseRecorder{httptest.NewRecorder(), httptest.NewRecorder()}
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for index := range responses {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			homeHandler(database, registry)(responses[index], httptest.NewRequest(http.MethodGet, "/", nil))
+		}()
+	}
+	close(start)
+	wait.Wait()
+
+	chatIDs := make([]int64, len(responses))
+	for index, response := range responses {
+		if response.Code != http.StatusSeeOther {
+			t.Fatalf("response %d status = %d, want %d", index, response.Code, http.StatusSeeOther)
+		}
+		location, err := url.Parse(response.Header().Get("Location"))
+		if err != nil {
+			t.Fatalf("parse response %d location: %v", index, err)
+		}
+		chatIDs[index], _ = strconv.ParseInt(location.Query().Get("chat"), 10, 64)
+	}
+	if chatIDs[0] == chatIDs[1] || chatIDs[0] == 0 || chatIDs[1] == 0 {
+		t.Fatalf("allocated chat IDs = %v, want distinct positive IDs", chatIDs)
+	}
+
+	toolCalls := newToolCallStore()
+	forms := []url.Values{
+		{"message": {"first message"}, "model": {"test-model"}, "tool": {"webfetch"}},
+		{"message": {"second message"}, "model": {"test-model"}, "tool": {"websearch"}},
+	}
+	for index, chatID := range chatIDs {
+		response := postForm(t, messageHandler(database, registry, toolCalls), "/messages?chat="+strconv.FormatInt(chatID, 10), forms[index])
+		if response.Code != http.StatusOK {
+			t.Fatalf("chat %d message status = %d, want %d; body = %q", chatID, response.Code, http.StatusOK, response.Body.String())
+		}
+	}
+	for index, chatID := range chatIDs {
+		messages, err := kritui_db.GetMessages(context.Background(), database, chatID)
+		if err != nil {
+			t.Fatalf("get chat %d messages: %v", chatID, err)
+		}
+		if len(messages) != 1 || messages[0].Content != forms[index].Get("message") {
+			t.Errorf("chat %d messages = %#v, want isolated %q", chatID, messages, forms[index].Get("message"))
+		}
+		selectedTools, err := kritui_db.GetChatTools(context.Background(), database, chatID)
+		if err != nil {
+			t.Fatalf("get chat %d tools: %v", chatID, err)
+		}
+		if len(selectedTools) != 1 || selectedTools[0] != forms[index].Get("tool") {
+			t.Errorf("chat %d tools = %v, want %q", chatID, selectedTools, forms[index].Get("tool"))
+		}
+	}
+}
+
+func TestAllocatedChatsStayHiddenAndAbandonedRowsAreRemoved(t *testing.T) {
+	database := openTestDatabase(t)
+	registry := newTestToolRegistry(t)
+	first := httptest.NewRecorder()
+	homeHandler(database, registry)(first, httptest.NewRequest(http.MethodGet, "/", nil))
+	if _, err := database.Exec(`UPDATE chats SET created_at = '2000-01-01T00:00:00.000Z'`); err != nil {
+		t.Fatalf("age abandoned chat: %v", err)
+	}
+
+	history := httptest.NewRecorder()
+	historyHandler(database)(history, httptest.NewRequest(http.MethodGet, "/history?chat=1", nil))
+	requireContains(t, history.Body.String(), "No saved chats yet.")
+
+	second := httptest.NewRecorder()
+	homeHandler(database, registry)(second, httptest.NewRequest(http.MethodGet, "/", nil))
+	var count int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&count); err != nil {
+		t.Fatalf("count allocated chats: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("allocated chat count = %d, want one current allocation", count)
+	}
+	if second.Header().Get("Location") != "/?chat=2" {
+		t.Errorf("second allocation location = %q, want /?chat=2", second.Header().Get("Location"))
 	}
 }
 
@@ -276,7 +365,10 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 
 func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 	database := openTestDatabase(t)
-	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (8, 'Project notes')`); err != nil {
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, title) VALUES (8, 'Project notes');
+		INSERT INTO messages (chat_id, position, role, content) VALUES (8, 0, 'user', 'notes');
+	`); err != nil {
 		t.Fatalf("insert chat: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/history?chat=8", nil)
@@ -312,7 +404,16 @@ func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 		INSERT INTO chats (id, title, updated_at) VALUES
 			(1, 'Oldest', '2026-01-01T00:00:00.000Z'),
 			(2, 'Middle', '2026-01-02T00:00:00.000Z'),
-			(3, 'Newest', '2026-01-03T00:00:00.000Z')
+			(3, 'Newest', '2026-01-03T00:00:00.000Z');
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', 'oldest'),
+			(2, 0, 'user', 'middle'),
+			(3, 0, 'user', 'newest');
+		UPDATE chats SET updated_at = CASE id
+			WHEN 1 THEN '2026-01-01T00:00:00.000Z'
+			WHEN 2 THEN '2026-01-02T00:00:00.000Z'
+			WHEN 3 THEN '2026-01-03T00:00:00.000Z'
+		END;
 	`); err != nil {
 		t.Fatalf("insert chats: %v", err)
 	}
@@ -398,7 +499,12 @@ func TestHistoryHandlerRejectsInvalidPagination(t *testing.T) {
 
 func TestRenameChatHandlerUpdatesTitle(t *testing.T) {
 	database := openTestDatabase(t)
-	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (8, 'Old title'), (9, 'Other')`); err != nil {
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, title) VALUES (8, 'Old title'), (9, 'Other');
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(8, 0, 'user', 'first'),
+			(9, 0, 'user', 'second');
+	`); err != nil {
 		t.Fatalf("insert chats: %v", err)
 	}
 	mux := http.NewServeMux()
@@ -561,40 +667,113 @@ func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
 	}
 }
 
-func TestToolCallStoreCreateRemovesExpiredTrackers(t *testing.T) {
+func TestToolCallStoreUnclaimedTrackerExpiresWithoutAnotherCreate(t *testing.T) {
 	toolCalls := newToolCallStore()
-	startedID := newToolCallRequest(t, toolCalls, 1)
-	started, ok := toolCalls.claim(startedID, 1)
-	if !ok {
-		t.Fatal("claim started tracker failed")
-	}
-	unclaimedID := newToolCallRequest(t, toolCalls, 2)
-	unclaimed, ok := toolCalls.get(unclaimedID)
+	toolCalls.unclaimedTTL = time.Millisecond
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	tracker, ok := toolCalls.get(requestID)
 	if !ok {
 		t.Fatal("get unclaimed tracker failed")
 	}
-	activeID := newToolCallRequest(t, toolCalls, 3)
-
-	toolCalls.mu.Lock()
-	toolCalls.trackers[startedID].created = time.Now().Add(-toolCallTrackerTTL)
-	toolCalls.trackers[unclaimedID].created = time.Now().Add(-toolCallUnclaimedTrackerTTL)
-	toolCalls.mu.Unlock()
-
-	if _, err := toolCalls.create(3); !errors.Is(err, errChatCompletionActive) {
-		t.Fatalf("create active chat error = %v, want %v", err, errChatCompletionActive)
-	}
-	if _, ok := toolCalls.get(startedID); ok {
-		t.Error("expired started tracker remains stored")
-	}
-	if _, ok := toolCalls.get(unclaimedID); ok {
+	waitForTestSignal(t, tracker.done, "unclaimed tracker expiry")
+	if _, ok := toolCalls.get(requestID); ok {
 		t.Error("expired unclaimed tracker remains stored")
 	}
-	waitForTestSignal(t, started.done, "expired started tracker close")
-	waitForTestSignal(t, unclaimed.done, "expired unclaimed tracker close")
-	if _, err := toolCalls.create(1); err != nil {
-		t.Fatalf("reuse expired chat: %v", err)
+	replacementID, err := toolCalls.create(1)
+	if err != nil {
+		t.Fatalf("reuse chat after unclaimed expiry: %v", err)
 	}
-	toolCalls.delete(activeID)
+	toolCalls.delete(replacementID)
+}
+
+func TestToolCallStoreClaimedTrackerStaysActivePastExpiry(t *testing.T) {
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	tracker, ok := toolCalls.claim(requestID, 1)
+	if !ok {
+		t.Fatal("claim tracker failed")
+	}
+
+	toolCalls.expireUnclaimed(requestID)
+	if _, err := toolCalls.create(1); !errors.Is(err, errChatCompletionActive) {
+		t.Fatalf("create during started completion error = %v, want %v", err, errChatCompletionActive)
+	}
+	if current, ok := toolCalls.get(requestID); !ok || current != tracker {
+		t.Error("started tracker was removed by expiry")
+	}
+	select {
+	case <-tracker.done:
+		t.Fatal("started tracker was closed by expiry")
+	default:
+	}
+
+	toolCalls.delete(requestID)
+	waitForTestSignal(t, tracker.done, "started tracker completion")
+	replacementID, err := toolCalls.create(1)
+	if err != nil {
+		t.Fatalf("reuse chat after completion: %v", err)
+	}
+	toolCalls.delete(replacementID)
+}
+
+func TestMessageCompletionHandlerDoesNotReleaseActiveChatOnExpiry(t *testing.T) {
+	database := openTestDatabase(t)
+	insertAcceptedUser(t, database, 1, "Original question")
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		select {
+		case <-releaseRequest:
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"Original answer."},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	toolCalls := newToolCallStore()
+	registry := newTestToolRegistry(t)
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	completionResponse := httptest.NewRecorder()
+	completionDone := make(chan struct{})
+	go func() {
+		defer close(completionDone)
+		form := url.Values{"model": {"selected-model"}, "request": {requestID}}
+		request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		messageCompletionHandler(database, registry, toolCalls, nil)(completionResponse, request)
+	}()
+	waitForTestSignal(t, requestStarted, "active completion request")
+
+	toolCalls.expireUnclaimed(requestID)
+	replacement := postForm(t, messageHandler(database, registry, toolCalls), "/messages?chat=1", url.Values{
+		"message": {"Replacement question"},
+		"model":   {"selected-model"},
+	})
+	if replacement.Code != http.StatusConflict {
+		t.Fatalf("replacement status = %d, want %d; body = %q", replacement.Code, http.StatusConflict, replacement.Body.String())
+	}
+
+	close(releaseRequest)
+	waitForTestSignal(t, completionDone, "original completion")
+	if completionResponse.Code != http.StatusOK {
+		t.Fatalf("completion status = %d, want %d; body = %q", completionResponse.Code, http.StatusOK, completionResponse.Body.String())
+	}
+	messages, err := kritui_db.GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get completed messages: %v", err)
+	}
+	if len(messages) != 2 || messages[0].Content != "Original question" || messages[1].Content != "Original answer." {
+		t.Errorf("stored messages = %#v, want original question and answer only", messages)
+	}
 }
 
 func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
@@ -957,6 +1136,7 @@ func TestMessageCompletionHandlerRejectsTrackerFromAnotherChat(t *testing.T) {
 
 func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T) {
 	database := openTestDatabase(t)
+	fetchURL := "https://example.com/fetched"
 	fetchStarted := make(chan struct{}, 1)
 	releaseFetch := make(chan struct{})
 	fetched := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -975,7 +1155,7 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 		requestNumber++
 		w.Header().Set("Content-Type", "application/json")
 		if requestNumber == 1 {
-			arguments, _ := json.Marshal(map[string]string{"url": fetched.URL})
+			arguments, _ := json.Marshal(map[string]string{"url": fetchURL})
 			_, _ = w.Write([]byte(`{
 				"model":"response-model",
 				"choices":[{"message":{"role":"assistant","tool_calls":[{
@@ -1007,7 +1187,19 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
-	registry := newTestToolRegistry(t)
+	registry, err := tools.NewRegistry(
+		&tools.WebFetchTool{HTTPClient: &http.Client{Transport: testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			forwarded := request.Clone(request.Context())
+			target, _ := url.Parse(fetched.URL)
+			forwarded.URL.Scheme = target.Scheme
+			forwarded.URL.Host = target.Host
+			forwarded.Host = target.Host
+			return http.DefaultTransport.RoundTrip(forwarded)
+		})}},
+	)
+	if err != nil {
+		t.Fatalf("create test tool registry: %v", err)
+	}
 
 	completionDone := make(chan struct{})
 	go func() {
@@ -1046,7 +1238,7 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	body := response.Body.String()
-	requireContains(t, body, "webfetch", fetched.URL, "Final answer.", `class="tool-call-complete"`)
+	requireContains(t, body, "webfetch", fetchURL, "Final answer.", `class="tool-call-complete"`)
 	requireNotContains(t, body, `class="braille-spinner"`)
 	if strings.Index(body, "webfetch") > strings.Index(body, "Final answer.") {
 		t.Errorf("tool call does not precede answer: %s", body)
@@ -1068,29 +1260,202 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 		t.Fatalf("reload status = %d, want %d; body = %q", reloadResponse.Code, http.StatusOK, reloadResponse.Body.String())
 	}
 	reloaded := reloadResponse.Body.String()
-	requireContains(t, reloaded, "webfetch", fetched.URL, "Final answer.", `class="tool-call-complete"`)
+	requireContains(t, reloaded, "webfetch", fetchURL, "Final answer.", `class="tool-call-complete"`)
 	requireNotContains(t, reloaded, "fetched content")
 	if strings.Index(reloaded, "webfetch") > strings.Index(reloaded, "Final answer.") {
 		t.Errorf("reloaded tool call does not precede answer: %s", reloaded)
 	}
 }
 
-func TestMigrateDatabaseAddsSettingsTable(t *testing.T) {
+func TestResponsesProviderMetadataPersistsAcrossDatabaseReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.db")
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if _, err := database.Exec(schema); err != nil {
+		database.Close()
+		t.Fatalf("initialize database: %v", err)
+	}
+
+	requests := make(chan []json.RawMessage, 3)
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Input []json.RawMessage `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		requests <- request.Input
+		requestNumber++
+		w.Header().Set("Content-Type", "application/json")
+		switch requestNumber {
+		case 1:
+			_, _ = w.Write([]byte(`{
+				"id":"response-1",
+				"model":"response-model",
+				"status":"completed",
+				"output":[
+					{"type":"reasoning","id":"reasoning-1","encrypted_content":"opaque-state","summary":[]},
+					{"type":"function_call","id":"function-item-1","call_id":"call-1","name":"lookup","arguments":"{\"key\":\"value\"}"}
+				]
+			}`))
+		case 2:
+			_, _ = w.Write([]byte(`{
+				"id":"response-2",
+				"model":"response-model",
+				"status":"completed",
+				"output":[{"type":"message","id":"message-1","role":"assistant","content":[{"type":"output_text","text":"First answer."}]}]
+			}`))
+		case 3:
+			_, _ = w.Write([]byte(`{
+				"id":"response-3",
+				"model":"response-model",
+				"status":"completed",
+				"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Second answer."}]}]
+			}`))
+		default:
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL+"/v1/responses")
+
+	registry, err := tools.NewRegistry(responsePersistenceTestTool{})
+	if err != nil {
+		database.Close()
+		t.Fatalf("create tool registry: %v", err)
+	}
+	insertAcceptedUser(t, database, 1, "First question")
+	toolCalls := newToolCallStore()
+	firstResponse := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil), "/messages/complete?chat=1", url.Values{
+		"model":   {"selected-model"},
+		"request": {newToolCallRequest(t, toolCalls, 1)},
+		"tool":    {"lookup"},
+	})
+	if firstResponse.Code != http.StatusOK {
+		database.Close()
+		t.Fatalf("first completion status = %d, want %d; body = %q", firstResponse.Code, http.StatusOK, firstResponse.Body.String())
+	}
+	<-requests
+	<-requests
+	if err := database.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	database, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	defer database.Close()
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate reopened database: %v", err)
+	}
+	storedMessages, err := kritui_db.GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("load stored Responses messages: %v", err)
+	}
+	if len(storedMessages) != 4 {
+		t.Fatalf("stored message count = %d, want 4", len(storedMessages))
+	}
+	storedOutput := storedMessages[1].ProviderMetadata.ResponsesOutput()
+	if len(storedOutput) != 2 {
+		t.Fatalf("stored provider output count = %d, want 2", len(storedOutput))
+	}
+	if err := persistUserMessage(context.Background(), database, 1, "Second question", []string{"lookup"}); err != nil {
+		t.Fatalf("store second user message: %v", err)
+	}
+
+	toolCalls = newToolCallStore()
+	secondResponse := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil), "/messages/complete?chat=1", url.Values{
+		"model":   {"selected-model"},
+		"request": {newToolCallRequest(t, toolCalls, 1)},
+		"tool":    {"lookup"},
+	})
+	if secondResponse.Code != http.StatusOK {
+		t.Fatalf("second completion status = %d, want %d; body = %q", secondResponse.Code, http.StatusOK, secondResponse.Body.String())
+	}
+	continuedInput := <-requests
+	if len(continuedInput) != 7 {
+		t.Fatalf("continued input length = %d, want 7", len(continuedInput))
+	}
+	reasoning := decodeResponseInputItem(t, continuedInput[2])
+	if reasoning["type"] != "reasoning" || reasoning["id"] != "reasoning-1" || reasoning["encrypted_content"] != "opaque-state" {
+		t.Errorf("continued reasoning item = %#v, want original opaque item", reasoning)
+	}
+	functionCall := decodeResponseInputItem(t, continuedInput[3])
+	if functionCall["type"] != "function_call" || functionCall["id"] != "function-item-1" || functionCall["call_id"] != "call-1" {
+		t.Errorf("continued function-call item = %#v, want original provider item", functionCall)
+	}
+	functionOutput := decodeResponseInputItem(t, continuedInput[4])
+	if functionOutput["type"] != "function_call_output" || functionOutput["call_id"] != "call-1" || functionOutput["output"] != "found value" {
+		t.Errorf("continued function output = %#v", functionOutput)
+	}
+	finalMessage := decodeResponseInputItem(t, continuedInput[5])
+	if finalMessage["type"] != "message" || finalMessage["id"] != "message-1" {
+		t.Errorf("continued final message = %#v, want original provider message item", finalMessage)
+	}
+	secondUser := decodeResponseInputItem(t, continuedInput[6])
+	if secondUser["role"] != "user" || secondUser["content"] != "Second question" {
+		t.Errorf("continued user input = %#v, want second question", secondUser)
+	}
+}
+
+func TestMigrateDatabaseHistoricalSchemas(t *testing.T) {
+	for _, legacyVersion := range []int{1, 2, 3, 4, 5, 6} {
+		t.Run("legacy-version-"+strconv.Itoa(legacyVersion), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "data.db")
+			database := openLegacyTestDatabase(t, path, legacyVersion)
+
+			if err := migrateDatabase(database); err != nil {
+				t.Fatalf("migrate database: %v", err)
+			}
+			assertMigratedDatabase(t, database)
+			if err := migrateDatabase(database); err != nil {
+				t.Fatalf("run migrations twice: %v", err)
+			}
+			if err := database.Close(); err != nil {
+				t.Fatalf("close migrated database: %v", err)
+			}
+
+			database, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatalf("reopen migrated database: %v", err)
+			}
+			t.Cleanup(func() { database.Close() })
+			if err := migrateDatabase(database); err != nil {
+				t.Fatalf("migrate reopened database: %v", err)
+			}
+			assertMigratedDatabase(t, database)
+		})
+	}
+}
+
+func TestMigrateDatabaseRejectsMalformedLegacySchema(t *testing.T) {
 	database, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
 	database.SetMaxOpenConns(1)
 	defer database.Close()
-	if _, err := database.Exec(`CREATE TABLE messages (id INTEGER PRIMARY KEY, total_tokens INTEGER, cost REAL) STRICT`); err != nil {
-		t.Fatalf("create legacy messages table: %v", err)
+	if _, err := database.Exec(`CREATE TABLE chats (id INTEGER PRIMARY KEY) STRICT`); err != nil {
+		t.Fatalf("create malformed schema: %v", err)
 	}
 
-	if err := migrateDatabase(database); err != nil {
-		t.Fatalf("migrate database: %v", err)
+	err = migrateDatabase(database)
+	if err == nil || !strings.Contains(err.Error(), "required table messages does not exist") {
+		t.Fatalf("migrate malformed database error = %v, want missing messages table", err)
 	}
-	if err := kritui_db.SetDefaultModel(context.Background(), database, "migrated-model"); err != nil {
-		t.Fatalf("store migrated setting: %v", err)
+	var version int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != 0 {
+		t.Errorf("schema version = %d, want 0 after rollback", version)
 	}
 }
 
@@ -1142,6 +1507,12 @@ func newTestToolRegistry(t *testing.T) *tools.Registry {
 	return registry
 }
 
+type testRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f testRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func postForm(t *testing.T, handler http.Handler, target string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
@@ -1167,6 +1538,29 @@ func requireNotContains(t *testing.T, content string, values ...string) {
 			t.Errorf("content unexpectedly contains %q: %s", value, content)
 		}
 	}
+}
+
+func decodeResponseInputItem(t *testing.T, raw json.RawMessage) map[string]any {
+	t.Helper()
+	var item map[string]any
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatalf("decode Responses input item: %v", err)
+	}
+	return item
+}
+
+type responsePersistenceTestTool struct{}
+
+func (responsePersistenceTestTool) Definition() tools.Definition {
+	return tools.Definition{
+		Name:        "lookup",
+		Description: "Looks up a test value",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"key":{"type":"string"}}}`),
+	}
+}
+
+func (responsePersistenceTestTool) Execute(context.Context, json.RawMessage) (string, error) {
+	return "found value", nil
 }
 
 type flushingResponseRecorder struct {
@@ -1241,4 +1635,123 @@ func openTestDatabase(t *testing.T) *sql.DB {
 		t.Fatalf("initialize database: %v", err)
 	}
 	return database
+}
+
+func openLegacyTestDatabase(t *testing.T, path string, version int) *sql.DB {
+	t.Helper()
+
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+
+	chatTools := ""
+	if version >= 3 {
+		chatTools = `tools TEXT NOT NULL DEFAULT '[]',`
+	}
+	messageModel := ""
+	if version >= 2 {
+		messageModel = `model TEXT,`
+	}
+	messageUsage := ""
+	if version >= 4 {
+		messageUsage = `total_tokens INTEGER, cost REAL,`
+	}
+	providerMetadata := ""
+	if version >= 6 {
+		providerMetadata = `provider_metadata TEXT,`
+	}
+	settings := ""
+	if version >= 5 {
+		settings = `CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;`
+	}
+	fixture := `
+		PRAGMA foreign_keys = ON;
+		CREATE TABLE chats (
+			id INTEGER PRIMARY KEY,
+			title TEXT NOT NULL DEFAULT '',
+			` + chatTools + `
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		) STRICT;
+		CREATE TABLE messages (
+			id INTEGER PRIMARY KEY,
+			chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+			position INTEGER NOT NULL CHECK (position >= 0),
+			role TEXT NOT NULL CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
+			content TEXT NOT NULL DEFAULT '',
+			` + messageModel + messageUsage + providerMetadata + `
+			tool_calls TEXT,
+			tool_call_id TEXT,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			UNIQUE (chat_id, position)
+		) STRICT;
+		` + settings + `
+		INSERT INTO chats (id, title) VALUES (7, 'legacy chat');
+		INSERT INTO messages (chat_id, position, role, content) VALUES (7, 0, 'user', 'legacy message');
+	`
+	if _, err := database.Exec(fixture); err != nil {
+		database.Close()
+		t.Fatalf("initialize legacy version %d: %v", version, err)
+	}
+	return database
+}
+
+func assertMigratedDatabase(t *testing.T, database *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+
+	var version int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != len(databaseMigrations) {
+		t.Errorf("schema version = %d, want %d", version, len(databaseMigrations))
+	}
+
+	chats, err := kritui_db.GetChats(ctx, database)
+	if err != nil {
+		t.Fatalf("get migrated chats: %v", err)
+	}
+	if len(chats) != 1 || chats[0].ID != 7 || chats[0].Title != "legacy chat" {
+		t.Fatalf("migrated chats = %#v, want preserved chat 7", chats)
+	}
+	tools, err := kritui_db.GetChatTools(ctx, database, 7)
+	if err != nil {
+		t.Fatalf("get migrated chat tools: %v", err)
+	}
+	if len(tools) != 0 {
+		t.Errorf("migrated chat tools = %#v, want empty", tools)
+	}
+	messages, err := kritui_db.GetMessages(ctx, database, 7)
+	if err != nil {
+		t.Fatalf("get migrated messages: %v", err)
+	}
+	if len(messages) == 0 || messages[0].Content != "legacy message" {
+		t.Fatalf("migrated messages = %#v, want preserved legacy message", messages)
+	}
+
+	if len(messages) == 1 {
+		tokens := 42
+		cost := 0.25
+		if _, err := kritui_db.InsertMessage(ctx, database, 7, 1, llm.Message{
+			Role:        "assistant",
+			Content:     "migrated response",
+			Model:       "migrated-model",
+			TotalTokens: &tokens,
+			Cost:        &cost,
+		}); err != nil {
+			t.Fatalf("append migrated message: %v", err)
+		}
+	}
+	if err := kritui_db.SetDefaultModel(ctx, database, "migrated-model"); err != nil {
+		t.Fatalf("set migrated setting: %v", err)
+	}
+	model, err := kritui_db.GetDefaultModel(ctx, database, "fallback")
+	if err != nil {
+		t.Fatalf("get migrated setting: %v", err)
+	}
+	if model != "migrated-model" {
+		t.Errorf("migrated setting = %q, want migrated-model", model)
+	}
 }

@@ -17,7 +17,6 @@ import (
 )
 
 const (
-	toolCallTrackerTTL          = 10 * time.Minute
 	toolCallUnclaimedTrackerTTL = 30 * time.Second
 	toolCallUpdateEvent         = "tools"
 	toolCallCloseEvent          = "close"
@@ -78,20 +77,22 @@ func (t *toolCallTracker) close() {
 type toolCallTrackerEntry struct {
 	tracker *toolCallTracker
 	chatID  int64
-	created time.Time
 	started bool
+	expiry  *time.Timer
 }
 
 type toolCallStore struct {
-	mu          sync.RWMutex
-	trackers    map[string]*toolCallTrackerEntry
-	activeChats map[int64]string
+	mu           sync.RWMutex
+	trackers     map[string]*toolCallTrackerEntry
+	activeChats  map[int64]string
+	unclaimedTTL time.Duration
 }
 
 func newToolCallStore() *toolCallStore {
 	return &toolCallStore{
-		trackers:    make(map[string]*toolCallTrackerEntry),
-		activeChats: make(map[int64]string),
+		trackers:     make(map[string]*toolCallTrackerEntry),
+		activeChats:  make(map[int64]string),
+		unclaimedTTL: toolCallUnclaimedTrackerTTL,
 	}
 }
 
@@ -101,37 +102,22 @@ func (s *toolCallStore) create(chatID int64) (string, error) {
 		return "", err
 	}
 	id := hex.EncodeToString(token[:])
-	now := time.Now()
 
-	var expired []*toolCallTracker
 	s.mu.Lock()
-	for existingID, entry := range s.trackers {
-		ttl := toolCallTrackerTTL
-		if !entry.started {
-			ttl = toolCallUnclaimedTrackerTTL
-		}
-		if now.Sub(entry.created) >= ttl {
-			delete(s.trackers, existingID)
-			if s.activeChats[entry.chatID] == existingID {
-				delete(s.activeChats, entry.chatID)
-			}
-			expired = append(expired, entry.tracker)
-		}
-	}
 	_, active := s.activeChats[chatID]
 	if !active {
-		s.trackers[id] = &toolCallTrackerEntry{
+		entry := &toolCallTrackerEntry{
 			tracker: newToolCallTracker(),
 			chatID:  chatID,
-			created: now,
 		}
+		s.trackers[id] = entry
 		s.activeChats[chatID] = id
+		entry.expiry = time.AfterFunc(s.unclaimedTTL, func() {
+			s.expireUnclaimed(id)
+		})
 	}
 	s.mu.Unlock()
 
-	for _, tracker := range expired {
-		tracker.close()
-	}
 	if active {
 		return "", errChatCompletionActive
 	}
@@ -147,6 +133,8 @@ func (s *toolCallStore) claim(id string, chatID int64) (*toolCallTracker, bool) 
 		return nil, false
 	}
 	entry.started = true
+	entry.expiry.Stop()
+	entry.expiry = nil
 	return entry.tracker, true
 }
 
@@ -168,11 +156,30 @@ func (s *toolCallStore) delete(id string) {
 	if ok && s.activeChats[entry.chatID] == id {
 		delete(s.activeChats, entry.chatID)
 	}
+	if ok && entry.expiry != nil {
+		entry.expiry.Stop()
+	}
 	s.mu.Unlock()
 
 	if ok {
 		entry.tracker.close()
 	}
+}
+
+func (s *toolCallStore) expireUnclaimed(id string) {
+	s.mu.Lock()
+	entry, ok := s.trackers[id]
+	if !ok || entry.started {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.trackers, id)
+	if s.activeChats[entry.chatID] == id {
+		delete(s.activeChats, entry.chatID)
+	}
+	s.mu.Unlock()
+
+	entry.tracker.close()
 }
 
 func messageToolStreamHandler(toolCalls *toolCallStore) http.HandlerFunc {

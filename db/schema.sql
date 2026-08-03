@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS messages (
     cost REAL,
     tool_calls TEXT,
     tool_call_id TEXT,
+    provider_metadata TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (chat_id, position),
     CHECK (tool_calls IS NULL OR role = 'assistant'),
@@ -43,6 +44,13 @@ CREATE TABLE IF NOT EXISTS messages (
     CHECK (
         (role = 'tool' AND tool_call_id IS NOT NULL) OR
         (role <> 'tool' AND tool_call_id IS NULL)
+    ),
+    CHECK (
+        provider_metadata IS NULL OR
+        CASE
+            WHEN role = 'assistant' AND json_valid(provider_metadata) THEN json_type(provider_metadata) = 'object'
+            ELSE 0
+        END
     )
 ) STRICT;
 
@@ -72,3 +80,5 @@ BEGIN
     SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = OLD.chat_id;
 END;
+
+PRAGMA user_version = 5;

@@ -25,22 +25,15 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
 		if chat == "" {
-			chats, err := kritui_db.GetChats(r.Context(), database)
+			chatID, err := kritui_db.AllocateChat(r.Context(), database)
 			if err != nil {
-				log.Printf("get chats: %v", err)
-				http.Error(w, "failed to get chats", http.StatusInternalServerError)
+				log.Printf("allocate chat: %v", err)
+				http.Error(w, "failed to allocate chat", http.StatusInternalServerError)
 				return
 			}
 
-			nextChatID := int64(1)
-			for _, chat := range chats {
-				if chat.ID >= nextChatID {
-					nextChatID = chat.ID + 1
-				}
-			}
-
 			query := r.URL.Query()
-			query.Set("chat", strconv.FormatInt(nextChatID, 10))
+			query.Set("chat", strconv.FormatInt(chatID, 10))
 			target := *r.URL
 			target.RawQuery = query.Encode()
 			http.Redirect(w, r, target.String(), http.StatusSeeOther)

@@ -21,9 +21,14 @@ type Chat struct {
 // GetChats returns chats from most recently updated to least recently updated.
 func GetChats(ctx context.Context, db *sql.DB) ([]Chat, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, title, tools, created_at, updated_at
+		SELECT chats.id, chats.title, chats.tools, chats.created_at, chats.updated_at
 		FROM chats
-		ORDER BY updated_at DESC, id DESC
+		WHERE EXISTS (
+			SELECT 1
+			FROM messages
+			WHERE messages.chat_id = chats.id
+		)
+		ORDER BY chats.updated_at DESC, chats.id DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("get chats: %w", err)
@@ -44,17 +49,27 @@ func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, befor
 	)
 	if beforeUpdatedAt == "" {
 		rows, err = db.QueryContext(ctx, `
-			SELECT id, title, tools, created_at, updated_at
+			SELECT chats.id, chats.title, chats.tools, chats.created_at, chats.updated_at
 			FROM chats
-			ORDER BY updated_at DESC, id DESC
+			WHERE EXISTS (
+				SELECT 1
+				FROM messages
+				WHERE messages.chat_id = chats.id
+			)
+			ORDER BY chats.updated_at DESC, chats.id DESC
 			LIMIT ?
 		`, limit)
 	} else {
 		rows, err = db.QueryContext(ctx, `
-			SELECT id, title, tools, created_at, updated_at
+			SELECT chats.id, chats.title, chats.tools, chats.created_at, chats.updated_at
 			FROM chats
-			WHERE updated_at < ? OR (updated_at = ? AND id < ?)
-			ORDER BY updated_at DESC, id DESC
+			WHERE EXISTS (
+				SELECT 1
+				FROM messages
+				WHERE messages.chat_id = chats.id
+			)
+				AND (chats.updated_at < ? OR (chats.updated_at = ? AND chats.id < ?))
+			ORDER BY chats.updated_at DESC, chats.id DESC
 			LIMIT ?
 		`, beforeUpdatedAt, beforeUpdatedAt, beforeID, limit)
 	}
@@ -110,7 +125,7 @@ func GetChatTools(ctx context.Context, db *sql.DB, chatID int64) ([]string, erro
 // GetMessages returns a chat's messages in conversation order.
 func GetMessages(ctx context.Context, db *sql.DB, chatID int64) ([]llm.Message, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT role, content, model, total_tokens, cost, tool_calls, tool_call_id
+		SELECT role, content, model, total_tokens, cost, tool_calls, tool_call_id, provider_metadata
 		FROM messages
 		WHERE chat_id = ?
 		ORDER BY position
@@ -128,7 +143,8 @@ func GetMessages(ctx context.Context, db *sql.DB, chatID int64) ([]llm.Message, 
 		var cost sql.NullFloat64
 		var toolCalls sql.NullString
 		var toolCallID sql.NullString
-		if err := rows.Scan(&message.Role, &message.Content, &model, &totalTokens, &cost, &toolCalls, &toolCallID); err != nil {
+		var providerMetadata sql.NullString
+		if err := rows.Scan(&message.Role, &message.Content, &model, &totalTokens, &cost, &toolCalls, &toolCallID, &providerMetadata); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 
@@ -150,6 +166,14 @@ func GetMessages(ctx context.Context, db *sql.DB, chatID int64) ([]llm.Message, 
 		}
 		if toolCallID.Valid {
 			message.ToolCallID = toolCallID.String
+		}
+		if providerMetadata.Valid {
+			if message.Role != "assistant" {
+				return nil, fmt.Errorf("decode provider metadata: only assistant messages may contain provider metadata")
+			}
+			if err := json.Unmarshal([]byte(providerMetadata.String), &message.ProviderMetadata); err != nil {
+				return nil, fmt.Errorf("decode provider metadata: %w", err)
+			}
 		}
 
 		messages = append(messages, message)

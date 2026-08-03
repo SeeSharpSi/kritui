@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/tools"
@@ -84,17 +84,111 @@ func main() {
 }
 
 func migrateDatabase(database *sql.DB) error {
-	for _, statement := range []string{
-		`ALTER TABLE messages ADD COLUMN total_tokens INTEGER`,
-		`ALTER TABLE messages ADD COLUMN cost REAL`,
-		`CREATE TABLE IF NOT EXISTS settings (
-			name TEXT PRIMARY KEY,
-			value TEXT NOT NULL
-		) STRICT`,
-	} {
-		if _, err := database.Exec(statement); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+	ctx := context.Background()
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	var version int
+	if err := tx.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version > len(databaseMigrations) {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, len(databaseMigrations))
+	}
+
+	for version < len(databaseMigrations) {
+		nextVersion := version + 1
+		if err := databaseMigrations[version](ctx, tx); err != nil {
+			return fmt.Errorf("migrate database to version %d: %w", nextVersion, err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, nextVersion)); err != nil {
+			return fmt.Errorf("record schema version %d: %w", nextVersion, err)
+		}
+		version = nextVersion
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+	return nil
+}
+
+var databaseMigrations = []func(context.Context, *sql.Tx) error{
+	func(ctx context.Context, tx *sql.Tx) error {
+		return addColumnIfMissing(ctx, tx, "messages", "model", `TEXT`)
+	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		return addColumnIfMissing(ctx, tx, "chats", "tools", `TEXT NOT NULL DEFAULT '[]' CHECK (
+			CASE
+				WHEN json_valid(tools) THEN json_type(tools) = 'array'
+				ELSE 0
+			END
+		)`)
+	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		if err := addColumnIfMissing(ctx, tx, "messages", "total_tokens", `INTEGER`); err != nil {
 			return err
 		}
+		return addColumnIfMissing(ctx, tx, "messages", "cost", `REAL`)
+	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS settings (
+			name TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		) STRICT`)
+		return err
+	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		return addColumnIfMissing(ctx, tx, "messages", "provider_metadata", `TEXT CHECK (
+			provider_metadata IS NULL OR
+			CASE
+				WHEN role = 'assistant' AND json_valid(provider_metadata) THEN json_type(provider_metadata) = 'object'
+				ELSE 0
+			END
+		)`)
+	},
+}
+
+func addColumnIfMissing(ctx context.Context, tx *sql.Tx, table, column, definition string) error {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%q)`, table))
+	if err != nil {
+		return fmt.Errorf("inspect table %s: %w", table, err)
+	}
+
+	tableExists := false
+	columnExists := false
+	for rows.Next() {
+		tableExists = true
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("inspect table %s: %w", table, err)
+		}
+		if name == column {
+			columnExists = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	if !tableExists {
+		return fmt.Errorf("required table %s does not exist", table)
+	}
+	if columnExists {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %q ADD COLUMN %q %s`, table, column, definition)); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
 	return nil
 }

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -58,13 +60,13 @@ The URL must be a fully formed HTTP or HTTPS URL. This tool is read-only and doe
 }`
 )
 
-// WebFetchTool fetches web content. Its zero value uses http.DefaultClient and
-// is safe for concurrent use when its HTTPClient is safe for concurrent use.
+// WebFetchTool fetches web content. Its zero value uses a client that only
+// connects to public destinations and is safe for concurrent use.
 type WebFetchTool struct {
 	HTTPClient *http.Client
 }
 
-// NewWebFetchTool creates a webfetch tool using http.DefaultClient.
+// NewWebFetchTool creates a webfetch tool using a public-destination-only client.
 func NewWebFetchTool() *WebFetchTool {
 	return &WebFetchTool{}
 }
@@ -96,10 +98,7 @@ func (t WebFetchTool) Execute(ctx context.Context, arguments json.RawMessage) (s
 	requestContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	client := t.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := webFetchHTTPClient(t.HTTPClient)
 
 	operation := "send request"
 	response, err := fetchWebResponse(requestContext, client, params.url, webFetchBrowserUserAgent)
@@ -204,12 +203,12 @@ func parseWebFetchArguments(arguments json.RawMessage) (webFetchArguments, error
 	if !exists || json.Unmarshal(rawURL, &params.url) != nil {
 		return webFetchArguments{}, errors.New("webfetch: url must be a string")
 	}
-	if !strings.HasPrefix(params.url, "http://") && !strings.HasPrefix(params.url, "https://") {
-		return webFetchArguments{}, errors.New("webfetch: URL must start with http:// or https://")
-	}
 	parsedURL, err := url.Parse(params.url)
-	if err != nil || parsedURL.Host == "" {
+	if err != nil {
 		return webFetchArguments{}, errors.New("webfetch: URL must be a fully formed HTTP or HTTPS URL")
+	}
+	if err := validateWebFetchURL(parsedURL); err != nil {
+		return webFetchArguments{}, err
 	}
 
 	params.offset = 0
@@ -252,6 +251,163 @@ func fetchWebResponse(ctx context.Context, client *http.Client, address, userAge
 	request.Header.Set("Accept", webFetchAccept)
 	request.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	return client.Do(request)
+}
+
+var defaultWebFetchHTTPClient = &http.Client{
+	Transport:     secureWebFetchTransport(nil),
+	CheckRedirect: checkWebFetchRedirect,
+}
+
+func webFetchHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		return defaultWebFetchHTTPClient
+	}
+
+	secured := *client
+	secured.Transport = secureWebFetchTransport(client.Transport)
+	redirectPolicy := client.CheckRedirect
+	secured.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if err := checkWebFetchRedirect(request, via); err != nil {
+			return err
+		}
+		if redirectPolicy != nil {
+			return redirectPolicy(request, via)
+		}
+		return nil
+	}
+	return &secured
+}
+
+func secureWebFetchTransport(roundTripper http.RoundTripper) http.RoundTripper {
+	var transport *http.Transport
+	switch current := roundTripper.(type) {
+	case nil:
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	case *http.Transport:
+		transport = current.Clone()
+	default:
+		// Custom round trippers are retained for tests and specialized callers.
+		// URL and redirect validation still applies to them.
+		return roundTripper
+	}
+
+	dialer := &net.Dialer{}
+	transport.Proxy = nil
+	transport.DialContext = webFetchDialer{
+		lookupNetIP: net.DefaultResolver.LookupNetIP,
+		dialContext: dialer.DialContext,
+	}.DialContext
+	transport.DialTLSContext = nil
+	return transport
+}
+
+func checkWebFetchRedirect(request *http.Request, via []*http.Request) error {
+	if err := validateWebFetchURL(request.URL); err != nil {
+		return err
+	}
+	if len(via) >= 10 {
+		return errors.New("webfetch: stopped after 10 redirects")
+	}
+	return nil
+}
+
+func validateWebFetchURL(address *url.URL) error {
+	if address.Scheme != "http" && address.Scheme != "https" {
+		return errors.New("webfetch: URL must start with http:// or https://")
+	}
+	if address.Host == "" || address.Hostname() == "" {
+		return errors.New("webfetch: URL must be a fully formed HTTP or HTTPS URL")
+	}
+	if address.User != nil {
+		return errors.New("webfetch: URL credentials are not allowed")
+	}
+
+	port := address.Port()
+	if port != "" && (address.Scheme == "http" && port != "80" || address.Scheme == "https" && port != "443") {
+		return errors.New("webfetch: URL must use the default port for its scheme")
+	}
+
+	host := strings.TrimSuffix(address.Hostname(), ".")
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return errors.New("webfetch: destination must use a public IP address")
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && !isPublicWebFetchIP(ip) {
+		return errors.New("webfetch: destination must use a public IP address")
+	}
+	return nil
+}
+
+type webFetchDialer struct {
+	lookupNetIP func(context.Context, string, string) ([]netip.Addr, error)
+	dialContext func(context.Context, string, string) (net.Conn, error)
+}
+
+func (d webFetchDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("webfetch: parse destination: %w", err)
+	}
+	addresses, err := d.lookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("webfetch: resolve destination: %w", err)
+	}
+	if len(addresses) == 0 {
+		return nil, errors.New("webfetch: destination resolved to no IP addresses")
+	}
+	for _, ip := range addresses {
+		if !isPublicWebFetchIP(ip) {
+			return nil, errors.New("webfetch: destination resolved to a non-public IP address")
+		}
+	}
+
+	var dialErrors []error
+	for _, ip := range addresses {
+		connection, err := d.dialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return connection, nil
+		}
+		dialErrors = append(dialErrors, err)
+	}
+	return nil, fmt.Errorf("webfetch: connect to destination: %w", errors.Join(dialErrors...))
+}
+
+var blockedWebFetchPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+}
+
+var globalWebFetchIPv6Prefix = netip.MustParsePrefix("2000::/3")
+
+func isPublicWebFetchIP(ip netip.Addr) bool {
+	if !ip.IsValid() {
+		return false
+	}
+	ip = ip.Unmap()
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	if ip.Is6() && !globalWebFetchIPv6Prefix.Contains(ip) {
+		return false
+	}
+	for _, prefix := range blockedWebFetchPrefixes {
+		if prefix.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 func sliceRunes(content string, offset, limit int) (string, int) {

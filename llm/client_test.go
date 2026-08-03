@@ -382,6 +382,43 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 	}
 }
 
+func TestProviderMetadataJSONRoundTrip(t *testing.T) {
+	metadata, err := newResponsesProviderMetadata([]json.RawMessage{
+		json.RawMessage(`{"type":"reasoning","id":"reasoning-1","encrypted_content":"opaque"}`),
+	})
+	if err != nil {
+		t.Fatalf("newResponsesProviderMetadata() error: %v", err)
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal provider metadata: %v", err)
+	}
+	var restored ProviderMetadata
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatalf("unmarshal provider metadata: %v", err)
+	}
+	output := restored.ResponsesOutput()
+	if len(output) != 1 || !strings.Contains(string(output[0]), `"encrypted_content":"opaque"`) {
+		t.Fatalf("restored output = %s, want opaque reasoning item", output)
+	}
+	output[0][0] = '['
+	if fresh := restored.ResponsesOutput(); len(fresh) != 1 || fresh[0][0] != '{' {
+		t.Fatal("ResponsesOutput() did not return a deep copy")
+	}
+
+	for _, invalid := range []string{
+		`{}`,
+		`{"responses_output":null}`,
+		`{"responses_output":[]}`,
+		`{"responses_output":[null]}`,
+		`{"responses_output":[{"id":"missing-type"}]}`,
+	} {
+		if err := json.Unmarshal([]byte(invalid), &restored); err == nil {
+			t.Errorf("UnmarshalJSON(%s) error = nil, want validation error", invalid)
+		}
+	}
+}
+
 func TestModelsFromResponsesEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RequestURI() != "/v1/models?api-version=1" {

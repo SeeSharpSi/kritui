@@ -20,14 +20,97 @@ const maxErrorBodySize = 1 << 20
 
 // Message is one message in a chat completion conversation.
 type Message struct {
-	Role          string     `json:"role"`
-	Content       string     `json:"content"`
-	Model         string     `json:"-"`
-	TotalTokens   *int       `json:"-"`
-	Cost          *float64   `json:"-"`
-	ToolCalls     []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID    string     `json:"tool_call_id,omitempty"`
-	responseItems []json.RawMessage
+	Role             string           `json:"role"`
+	Content          string           `json:"content"`
+	Model            string           `json:"-"`
+	TotalTokens      *int             `json:"-"`
+	Cost             *float64         `json:"-"`
+	ToolCalls        []ToolCall       `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
+	ProviderMetadata ProviderMetadata `json:"-"`
+}
+
+// ProviderMetadata retains provider-specific state needed for later requests.
+// Its zero value contains no metadata.
+type ProviderMetadata struct {
+	responsesOutput []json.RawMessage
+}
+
+type storedProviderMetadata struct {
+	ResponsesOutput []json.RawMessage `json:"responses_output"`
+}
+
+func newResponsesProviderMetadata(output []json.RawMessage) (ProviderMetadata, error) {
+	if err := validateResponsesOutput(output); err != nil {
+		return ProviderMetadata{}, err
+	}
+	return ProviderMetadata{responsesOutput: cloneRawMessages(output)}, nil
+}
+
+// ResponsesOutput returns a deep copy of stored Responses API output items.
+func (m ProviderMetadata) ResponsesOutput() []json.RawMessage {
+	return cloneRawMessages(m.responsesOutput)
+}
+
+// IsZero reports whether metadata contains no provider state.
+func (m ProviderMetadata) IsZero() bool {
+	return len(m.responsesOutput) == 0
+}
+
+// MarshalJSON encodes validated provider metadata for durable storage.
+func (m ProviderMetadata) MarshalJSON() ([]byte, error) {
+	if err := validateResponsesOutput(m.responsesOutput); err != nil {
+		return nil, err
+	}
+	return json.Marshal(storedProviderMetadata{ResponsesOutput: m.responsesOutput})
+}
+
+// UnmarshalJSON restores and validates provider metadata from durable storage.
+func (m *ProviderMetadata) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return errors.New("llm: provider metadata destination is nil")
+	}
+	var encoded struct {
+		ResponsesOutput json.RawMessage `json:"responses_output"`
+	}
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		return fmt.Errorf("llm: decode provider metadata: %w", err)
+	}
+	if len(encoded.ResponsesOutput) == 0 || bytes.Equal(bytes.TrimSpace(encoded.ResponsesOutput), []byte("null")) {
+		return errors.New("llm: provider metadata responses_output must be a non-empty JSON array")
+	}
+	var stored storedProviderMetadata
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return fmt.Errorf("llm: decode provider metadata: %w", err)
+	}
+	if err := validateResponsesOutput(stored.ResponsesOutput); err != nil {
+		return err
+	}
+	m.responsesOutput = cloneRawMessages(stored.ResponsesOutput)
+	return nil
+}
+
+func (m ProviderMetadata) clone() ProviderMetadata {
+	return ProviderMetadata{responsesOutput: cloneRawMessages(m.responsesOutput)}
+}
+
+func validateResponsesOutput(output []json.RawMessage) error {
+	if len(output) == 0 {
+		return errors.New("llm: provider metadata responses_output must contain at least one item")
+	}
+	for index, raw := range output {
+		var item struct {
+			Type string `json:"type"`
+		}
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(trimmed, &item) != nil {
+			return fmt.Errorf("llm: Responses output item %d must be a JSON object", index)
+		}
+		if strings.TrimSpace(item.Type) == "" {
+			return fmt.Errorf("llm: Responses output item %d has no type", index)
+		}
+	}
+	return nil
 }
 
 // ToolCall is a function invocation requested by an assistant message.

@@ -29,8 +29,8 @@ type responseTool struct {
 func (c *Client) completeResponse(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
 	input := make([]any, 0, len(messages))
 	for _, message := range messages {
-		if len(message.responseItems) > 0 {
-			for _, item := range message.responseItems {
+		if responseOutput := message.ProviderMetadata.ResponsesOutput(); len(responseOutput) > 0 {
+			for _, item := range responseOutput {
 				input = append(input, item)
 			}
 			continue
@@ -102,10 +102,14 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 		Cost:             response.Usage.Cost,
 	}
 	model := c.completionModel(response.Model)
+	providerMetadata, err := newResponsesProviderMetadata(response.Output)
+	if err != nil {
+		return Completion{}, err
+	}
 	message := Message{
-		Role:          "assistant",
-		Model:         model,
-		responseItems: cloneRawMessages(response.Output),
+		Role:             "assistant",
+		Model:            model,
+		ProviderMetadata: providerMetadata,
 	}
 	applyUsage(&message, usage)
 	for _, rawOutput := range response.Output {
