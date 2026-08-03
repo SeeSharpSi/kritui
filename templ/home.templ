@@ -13,7 +13,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 				<div class="message-panel">
 					@MessageList(messages, false)
 					<div id="page-panel">
-						@SettingsPage(chatID, models, defaultModel, false, false)
+						@SettingsPage(chatID, models, defaultModel, false, false, "")
 						@HistoryPage(chatID)
 					</div>
 				</div>
@@ -66,7 +66,6 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 			</section>
 			<form
 				id="message-form"
-				data-swap-errors
 				hx-post={ "/messages?chat=" + chatID }
 				hx-target="#messages"
 				hx-swap="beforeend"
@@ -80,6 +79,22 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 				@HistoryButton()
 				@SendButton()
 			</form>
+		</main>
+	}
+}
+
+templ PageError(message string) {
+	@Layout("Kritui") {
+		<main hx-history="false">
+			<section class="chat">
+				<div class="message-panel">
+					<div class="message-list">
+						<div id="messages" class="message-thread">
+							@MessageError(message)
+						</div>
+					</div>
+				</div>
+			</section>
 		</main>
 	}
 }

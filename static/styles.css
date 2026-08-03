@@ -150,13 +150,24 @@ main {
                 .settings-status {
                     color: var(--color-accent);
                 }
+
+                .settings-error {
+                    color: var(--color-gold);
+                }
             }
 
-            .history-empty {
+            .history-empty,
+            .history-error {
                 display: grid;
                 min-height: 8rem;
                 place-items: center;
                 color: var(--color-border-strong);
+            }
+
+            .history-error,
+            .history-status {
+                margin: 0;
+                color: var(--color-gold);
             }
 
             .history-nav {

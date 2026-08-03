@@ -6,7 +6,7 @@ templ Layout(title string) {
 		<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<meta name="htmx-config" content={ `{"reportValidityOfForms":true,"allowNestedOobSwaps":false}` }/>
+			<meta name="htmx-config" content={ `{"reportValidityOfForms":true,"allowNestedOobSwaps":false,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true},{"code":"...","swap":false}]}` }/>
 			<title>{ title }</title>
 			<script src="/static/htmx.min.js"></script>
 			<script src="/static/htmx-ext-sse.min.js"></script>

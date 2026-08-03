@@ -186,10 +186,7 @@ function togglePanel(panelID) {
         button.setAttribute('aria-pressed', String(active));
     });
     if (opening && panelID === 'history-page') {
-        const loader = selectedPanel.querySelector('.history-loader');
-        if (loader) {
-            htmx.trigger(loader, 'loadHistory');
-        }
+        selectedPanel.dispatchEvent(new Event('history-open'));
     }
     syncPanelSendButton();
 }
@@ -220,13 +217,6 @@ document.addEventListener('htmx:configRequest', (event) => {
     if (event.detail.elt.matches('.history-loader')) {
         const panelHeight = event.detail.elt.closest('.history-page')?.clientHeight ?? 0;
         event.detail.parameters.limit = Math.min(50, Math.max(1, Math.ceil(panelHeight / 80)));
-    }
-});
-
-document.addEventListener('htmx:beforeSwap', (event) => {
-    const source = event.detail.requestConfig.elt;
-    if (event.detail.isError && source?.closest('[data-swap-errors]')) {
-        event.detail.shouldSwap = true;
     }
 });
 

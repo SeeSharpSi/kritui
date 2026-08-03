@@ -278,7 +278,7 @@ Assert that the next Responses request contains the original raw reasoning and f
 
 ---
 
-## Finding 7: Server and Model Requests Have Weak Timeout and Size Controls
+## [x] Finding 7: Server and Model Requests Have Weak Timeout and Size Controls
 
 **Severity:** Medium
 
@@ -320,7 +320,7 @@ Verify SSE continues past ordinary response deadlines while still terminating wh
 
 ---
 
-## Finding 8: SQLite Concurrency Configuration Is Fragile
+## [x] Finding 8: SQLite Concurrency Configuration Is Fragile
 
 **Severity:** Medium
 
@@ -355,7 +355,7 @@ Test concurrent rename, delete, submission, and completion persistence.
 
 ---
 
-## Finding 9: Broad htmx Error Swapping Can Destroy UI Regions
+## [x] Finding 9: Broad htmx Error Swapping Can Destroy UI Regions
 
 **Severity:** Medium
 
@@ -393,7 +393,7 @@ Official documentation: <https://htmx.org/docs/#response-handling>
 
 ---
 
-## Finding 10: History Becomes Stale After Its First Load
+## [x] Finding 10: History Becomes Stale After Its First Load
 
 **Severity:** Medium
 

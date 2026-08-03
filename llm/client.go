@@ -9,14 +9,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"seesharpsi/kritui/tools"
 )
 
-const maxErrorBodySize = 1 << 20
+const (
+	maxErrorBodySize            = 1 << 20
+	defaultMaxResponseBodySize  = 16 << 20
+	defaultModelsTimeout        = 5 * time.Second
+	defaultCompletionTimeout    = 10 * time.Minute
+	providerConnectTimeout      = 10 * time.Second
+	providerResponseHeadTimeout = 30 * time.Second
+)
 
 // Message is one message in a chat completion conversation.
 type Message struct {
@@ -156,18 +165,33 @@ func (e *APIError) Error() string {
 
 // Client sends requests to one OpenAI-compatible chat completion endpoint.
 type Client struct {
-	apiKey         string
-	model          string
-	endpoint       string
-	modelsEndpoint string
-	responses      bool
-	httpClient     *http.Client
+	apiKey              string
+	model               string
+	endpoint            string
+	modelsEndpoint      string
+	responses           bool
+	httpClient          *http.Client
+	modelsTimeout       time.Duration
+	completeTimeout     time.Duration
+	maxResponseBodySize int64
+}
+
+// ClientOptions configures provider request deadlines and response limits.
+// Zero values use secure defaults.
+type ClientOptions struct {
+	HTTPClient          *http.Client
+	ModelsTimeout       time.Duration
+	CompletionTimeout   time.Duration
+	MaxResponseBodySize int64
 }
 
 // New creates a client. Endpoint must be the full Chat Completions or Responses
 // URL; New does not append a path to it. A path ending in /responses selects
 // the Responses API; all other paths use Chat Completions.
-func New(apiKey, model, endpoint string) (*Client, error) {
+func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, error) {
+	if len(options) > 1 {
+		return nil, errors.New("llm: at most one client options value is allowed")
+	}
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, errors.New("llm: API key is required")
 	}
@@ -195,13 +219,42 @@ func New(apiKey, model, endpoint string) (*Client, error) {
 	path = strings.TrimSuffix(path, "/responses")
 	parsedEndpoint.Path = strings.TrimRight(path, "/") + "/models"
 
+	configuration := ClientOptions{}
+	if len(options) == 1 {
+		configuration = options[0]
+	}
+	if configuration.ModelsTimeout < 0 {
+		return nil, errors.New("llm: models timeout must not be negative")
+	}
+	if configuration.CompletionTimeout < 0 {
+		return nil, errors.New("llm: completion timeout must not be negative")
+	}
+	if configuration.MaxResponseBodySize < 0 {
+		return nil, errors.New("llm: maximum response body size must not be negative")
+	}
+	if configuration.ModelsTimeout == 0 {
+		configuration.ModelsTimeout = defaultModelsTimeout
+	}
+	if configuration.CompletionTimeout == 0 {
+		configuration.CompletionTimeout = defaultCompletionTimeout
+	}
+	if configuration.MaxResponseBodySize == 0 {
+		configuration.MaxResponseBodySize = defaultMaxResponseBodySize
+	}
+	if configuration.HTTPClient == nil {
+		configuration.HTTPClient = defaultHTTPClient()
+	}
+
 	return &Client{
-		apiKey:         apiKey,
-		model:          model,
-		endpoint:       endpoint,
-		modelsEndpoint: parsedEndpoint.String(),
-		responses:      responses,
-		httpClient:     &http.Client{},
+		apiKey:              apiKey,
+		model:               model,
+		endpoint:            endpoint,
+		modelsEndpoint:      parsedEndpoint.String(),
+		responses:           responses,
+		httpClient:          configuration.HTTPClient,
+		modelsTimeout:       configuration.ModelsTimeout,
+		completeTimeout:     configuration.CompletionTimeout,
+		maxResponseBodySize: configuration.MaxResponseBodySize,
 	}, nil
 }
 
@@ -212,6 +265,9 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (Completion, 
 
 // Models returns model identifiers advertised by the endpoint.
 func (c *Client) Models(ctx context.Context) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.modelsTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.modelsEndpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("llm: create models request: %w", err)
@@ -234,7 +290,7 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := decodeJSONBody(resp.Body, c.maxResponseBodySize, &response); err != nil {
 		return nil, fmt.Errorf("llm: decode models response: %w", err)
 	}
 
@@ -251,6 +307,8 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 	if len(messages) == 0 {
 		return Completion{}, errors.New("llm: at least one message is required")
 	}
+	ctx, cancel := context.WithTimeout(ctx, c.completeTimeout)
+	defer cancel()
 	if c.responses {
 		return c.completeResponse(ctx, messages, definitions)
 	}
@@ -267,7 +325,7 @@ func (c *Client) postJSON(ctx context.Context, payload any, target any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+	if err := decodeJSONBody(resp.Body, c.maxResponseBodySize, target); err != nil {
 		return fmt.Errorf("llm: decode response: %w", err)
 	}
 	return nil
@@ -291,6 +349,40 @@ func (c *Client) post(ctx context.Context, payload []byte) (*http.Response, erro
 		return nil, endpointError(resp)
 	}
 	return resp, nil
+}
+
+func defaultHTTPClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   providerConnectTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		ResponseHeaderTimeout: providerResponseHeadTimeout,
+	}}
+}
+
+func decodeJSONBody(body io.Reader, limit int64, target any) error {
+	limited := &io.LimitedReader{R: body, N: limit}
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return err
+	}
+	if limited.N == 0 {
+		extra, err := io.ReadAll(io.LimitReader(body, 1))
+		if err != nil {
+			return err
+		}
+		if len(extra) != 0 {
+			return fmt.Errorf("response exceeds %d bytes", limit)
+		}
+	}
+	return json.Unmarshal(data, target)
 }
 
 func endpointError(resp *http.Response) error {

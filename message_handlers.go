@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -135,11 +136,15 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to store response.", request.model, request.selected.Names())
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		calls, _ := tracker.snapshot()
-		if err := templates.CompletedMessage(calls, completion.Message).Render(r.Context(), w); err != nil {
-			http.Error(w, "failed to render message", http.StatusInternalServerError)
+		var fragment bytes.Buffer
+		if err := templates.CompletedMessage(calls, completion.Message).Render(r.Context(), &fragment); err != nil {
+			log.Printf("render completed message: %v", err)
+			renderMessageError(w, r, http.StatusInternalServerError, "Response completed, but could not be displayed.")
+			return
 		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(fragment.Bytes())
 	}
 }
 

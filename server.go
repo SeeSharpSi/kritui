@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"time"
 
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/tools"
@@ -22,6 +24,12 @@ var staticFiles embed.FS
 //go:embed db/schema.sql
 var schema string
 
+const (
+	serverReadHeaderTimeout = 5 * time.Second
+	serverIdleTimeout       = 2 * time.Minute
+	databaseBusyTimeout     = 5 * time.Second
+)
+
 func main() {
 	databaseExists := true
 	if _, err := os.Stat("data.db"); errors.Is(err, os.ErrNotExist) {
@@ -30,7 +38,7 @@ func main() {
 		log.Fatalf("check database: %v", err)
 	}
 
-	database, err := sql.Open("sqlite", "file:data.db?_pragma=foreign_keys(1)")
+	database, err := openDatabase("data.db")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -78,8 +86,35 @@ func main() {
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
 
 	log.Println("listening on http://localhost:8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	server := newHTTPServer(mux)
+	// SSE responses intentionally have no server-wide write deadline.
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func openDatabase(path string) (*sql.DB, error) {
+	parameters := url.Values{}
+	parameters.Add("_pragma", "foreign_keys(1)")
+	parameters.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", databaseBusyTimeout.Milliseconds()))
+	parameters.Add("_pragma", "journal_mode(DELETE)")
+	dataSourceName := (&url.URL{Scheme: "file", Opaque: path, RawQuery: parameters.Encode()}).String()
+	database, err := sql.Open("sqlite", dataSourceName)
+	if err != nil {
+		return nil, err
+	}
+	// One rollback-journal connection serializes in-process writes.
+	database.SetMaxOpenConns(1)
+	database.SetMaxIdleConns(1)
+	return database, nil
+}
+
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              ":8080",
+		Handler:           handler,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		IdleTimeout:       serverIdleTimeout,
 	}
 }
 

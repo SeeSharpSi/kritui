@@ -39,6 +39,119 @@ func TestNewRequiresConfiguration(t *testing.T) {
 	}
 }
 
+func TestNewConfiguresProviderDeadlines(t *testing.T) {
+	client, err := New("key", "model", "https://example.com/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("HTTP transport = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	if transport.DialContext == nil {
+		t.Error("provider DialContext = nil, want connect deadline")
+	}
+	if transport.ResponseHeaderTimeout != providerResponseHeadTimeout {
+		t.Errorf("response header timeout = %s, want %s", transport.ResponseHeaderTimeout, providerResponseHeadTimeout)
+	}
+	if client.modelsTimeout != defaultModelsTimeout {
+		t.Errorf("models timeout = %s, want %s", client.modelsTimeout, defaultModelsTimeout)
+	}
+	if client.completeTimeout != defaultCompletionTimeout {
+		t.Errorf("completion timeout = %s, want %s", client.completeTimeout, defaultCompletionTimeout)
+	}
+}
+
+func TestProviderOperationsTimeOut(t *testing.T) {
+	tests := []struct {
+		name   string
+		invoke func(context.Context, *Client) error
+	}{
+		{
+			name: "models",
+			invoke: func(ctx context.Context, client *Client) error {
+				_, err := client.Models(ctx)
+				return err
+			},
+		},
+		{
+			name: "completion",
+			invoke: func(ctx context.Context, client *Client) error {
+				_, err := client.Complete(ctx, []Message{{Role: "user", Content: "Hello"}})
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				<-release
+			}))
+			defer server.Close()
+
+			client, err := New("key", "model", server.URL+"/v1/chat/completions", ClientOptions{
+				ModelsTimeout:     100 * time.Millisecond,
+				CompletionTimeout: 100 * time.Millisecond,
+			})
+			if err != nil {
+				close(release)
+				t.Fatalf("New() error: %v", err)
+			}
+			err = test.invoke(context.Background(), client)
+			close(release)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("operation error = %v, want context deadline exceeded", err)
+			}
+		})
+	}
+}
+
+func TestProviderOperationsRejectOversizedResponses(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		invoke   func(*Client) error
+	}{
+		{
+			name:     "models",
+			response: `{"data":[{"id":"` + strings.Repeat("m", 256) + `"}]}`,
+			invoke: func(client *Client) error {
+				_, err := client.Models(context.Background())
+				return err
+			},
+		},
+		{
+			name:     "completion",
+			response: `{"choices":[{"message":{"role":"assistant","content":"` + strings.Repeat("x", 256) + `"},"finish_reason":"stop"}]}`,
+			invoke: func(client *Client) error {
+				_, err := client.Complete(context.Background(), []Message{{Role: "user", Content: "Hello"}})
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(test.response))
+			}))
+			defer server.Close()
+
+			client, err := New("key", "model", server.URL+"/v1/chat/completions", ClientOptions{MaxResponseBodySize: 128})
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
+			err = test.invoke(client)
+			if err == nil || !strings.Contains(err.Error(), "response exceeds 128 bytes") {
+				t.Fatalf("operation error = %v, want response-size error", err)
+			}
+		})
+	}
+}
+
 func TestComplete(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

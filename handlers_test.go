@@ -20,6 +20,88 @@ import (
 	"seesharpsi/kritui/tools"
 )
 
+func TestHTTPServerConfiguresConnectionTimeouts(t *testing.T) {
+	server := newHTTPServer(http.NewServeMux())
+	if server.ReadHeaderTimeout != serverReadHeaderTimeout {
+		t.Errorf("ReadHeaderTimeout = %s, want %s", server.ReadHeaderTimeout, serverReadHeaderTimeout)
+	}
+	if server.IdleTimeout != serverIdleTimeout {
+		t.Errorf("IdleTimeout = %s, want %s", server.IdleTimeout, serverIdleTimeout)
+	}
+	if server.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %s, want zero so SSE can remain open", server.WriteTimeout)
+	}
+}
+
+func TestOpenDatabaseSerializesConcurrentWrites(t *testing.T) {
+	database, err := openDatabase(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(schema); err != nil {
+		t.Fatalf("initialize database: %v", err)
+	}
+
+	if maximum := database.Stats().MaxOpenConnections; maximum != 1 {
+		t.Errorf("maximum open connections = %d, want 1", maximum)
+	}
+	var busyTimeout int64
+	if err := database.QueryRow(`PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatalf("read busy timeout: %v", err)
+	}
+	if busyTimeout != databaseBusyTimeout.Milliseconds() {
+		t.Errorf("busy timeout = %dms, want %dms", busyTimeout, databaseBusyTimeout.Milliseconds())
+	}
+	var journalMode string
+	if err := database.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("read journal mode: %v", err)
+	}
+	if journalMode != "delete" {
+		t.Errorf("journal mode = %q, want delete", journalMode)
+	}
+
+	start := make(chan struct{})
+	errors := make(chan error, 2)
+	var wait sync.WaitGroup
+	for chatID := int64(1); chatID <= 2; chatID++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			errors <- persistUserMessage(context.Background(), database, chatID, "message", []string{})
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Errorf("concurrent write: %v", err)
+		}
+	}
+
+	var messageCount int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&messageCount); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if messageCount != 2 {
+		t.Errorf("message count = %d, want 2", messageCount)
+	}
+}
+
+func TestOpenDatabaseAcceptsRelativePath(t *testing.T) {
+	t.Chdir(t.TempDir())
+	database, err := openDatabase("data.db")
+	if err != nil {
+		t.Fatalf("open relative database: %v", err)
+	}
+	defer database.Close()
+	if err := database.Ping(); err != nil {
+		t.Fatalf("ping relative database: %v", err)
+	}
+}
+
 func TestHomeHandlerAllocatesNextChatID(t *testing.T) {
 	database := openTestDatabase(t)
 	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (2, ''), (5, '')`); err != nil {
@@ -174,6 +256,8 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`/static/htmx-ext-sse.min.js`,
 		`/static/app.js`,
 		`reportValidityOfForms`,
+		`responseHandling`,
+		`&#34;[45]..&#34;,&#34;swap&#34;:true,&#34;error&#34;:true`,
 		`hx-history="false"`,
 		`hx-sync="#messages:drop"`,
 		"<strong>stored-model</strong>",
@@ -224,11 +308,25 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 		`hx-target="#settings-page"`,
 		`id="history-page"`,
 		`class="panel-page history-page"`,
+		`id="history-error"`,
+		`class="history-status"`,
 		`hx-get="/history?chat=8"`,
-		`hx-trigger="loadHistory"`,
+		`hx-trigger="history-open"`,
+		`hx-target="#history-entries"`,
+		`hx-sync="this:replace"`,
 		`<svg`,
 	)
-	requireNotContains(t, body, `hx-get="/settings?chat=8"`, "Loaded lazily")
+	if count := strings.Count(body, `hx-get="/history?chat=8"`); count != 1 {
+		t.Errorf("first-page history request count = %d, want 1", count)
+	}
+	requireNotContains(t, body, `hx-get="/settings?chat=8"`, "Loaded lazily", "loadHistory")
+
+	script, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app script: %v", err)
+	}
+	requireContains(t, string(script), `selectedPanel.dispatchEvent(new Event('history-open'))`)
+	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger")
 }
 
 func TestHomeHandlerRendersEndpointModels(t *testing.T) {
@@ -394,6 +492,8 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		`hx-target="main"`,
 		`hx-select="main"`,
 		`hx-swap="outerHTML show:none"`,
+		`id="history-error"`,
+		`hx-swap-oob="outerHTML"`,
 	)
 	requireNotContains(t, response.Body.String(), "<style>", `id="send-button"`)
 }
@@ -426,7 +526,7 @@ func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 	body := response.Body.String()
-	requireContains(t, body, "Newest", "Middle", `before_id=2`, `class="history-loader"`)
+	requireContains(t, body, "Newest", "Middle", `before_id=2`, `class="history-loader"`, `hx-target="this"`)
 	requireNotContains(t, body, "Oldest")
 
 	request = httptest.NewRequest(http.MethodGet, "/history?chat=8&limit=2&before=2026-01-02T00:00:00.000Z&before_id=2", nil)
@@ -439,6 +539,34 @@ func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 	body = response.Body.String()
 	requireContains(t, body, "Oldest")
 	requireNotContains(t, body, "Newest", "Middle", `class="history-loader"`)
+}
+
+func TestHistoryHandlerRefreshesCurrentTitlesAndOrdering(t *testing.T) {
+	database := openTestDatabase(t)
+	loadHistory := func() string {
+		response := httptest.NewRecorder()
+		historyHandler(database)(response, httptest.NewRequest(http.MethodGet, "/history?chat=1", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("history status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+		}
+		return response.Body.String()
+	}
+
+	requireContains(t, loadHistory(), "No saved chats yet.")
+	if err := persistUserMessage(context.Background(), database, 1, "First title", []string{}); err != nil {
+		t.Fatalf("store first chat: %v", err)
+	}
+	requireContains(t, loadHistory(), "First title")
+
+	if err := persistUserMessage(context.Background(), database, 2, "Newest title", []string{}); err != nil {
+		t.Fatalf("store newest chat: %v", err)
+	}
+	refreshed := loadHistory()
+	newestIndex := strings.Index(refreshed, "Newest title")
+	firstIndex := strings.Index(refreshed, "First title")
+	if newestIndex == -1 || firstIndex == -1 || newestIndex >= firstIndex {
+		t.Errorf("refreshed history ordering is stale: %s", refreshed)
+	}
 }
 
 func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
@@ -603,7 +731,6 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		"selected-model",
 		`hx-post="/messages/complete?chat=1"`,
 		`hx-trigger="load"`,
-		`data-swap-errors`,
 		`hx-sync="#messages:queue last"`,
 		`hx-disabled-elt="#message-form button[type='submit']"`,
 		`hx-ext="sse"`,
@@ -615,6 +742,117 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`name="tool" value="webfetch"`,
 	)
 	requireNotContains(t, response.Body.String(), "every 200ms", `type="hidden" name="message"`)
+}
+
+func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
+	t.Run("page", func(t *testing.T) {
+		database := openTestDatabase(t)
+		response := httptest.NewRecorder()
+		homeHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/?chat=invalid", nil))
+
+		requireHTMLErrorResponse(t, response, http.StatusBadRequest, `<main hx-history="false">`, `id="messages"`, "A valid chat is required.")
+	})
+
+	t.Run("settings validation", func(t *testing.T) {
+		database := openTestDatabase(t)
+		t.Setenv("LLM_MODEL", "test-model")
+		t.Setenv("LLM_ENDPOINT", "")
+		request := httptest.NewRequest(http.MethodPost, "/settings?chat=1", strings.NewReader("%"))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		settingsHandler(database)(response, request)
+
+		requireHTMLErrorResponse(t, response, http.StatusBadRequest, `id="settings-page"`, `class="settings-form"`, "Invalid settings form.")
+	})
+
+	t.Run("settings storage", func(t *testing.T) {
+		database := openTestDatabase(t)
+		database.Close()
+		t.Setenv("LLM_MODEL", "test-model")
+		t.Setenv("LLM_ENDPOINT", "")
+		response := httptest.NewRecorder()
+		settingsHandler(database)(response, httptest.NewRequest(http.MethodGet, "/settings?chat=1", nil))
+
+		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `id="settings-page"`, `class="settings-form"`, "Failed to load settings.")
+	})
+
+	t.Run("history load", func(t *testing.T) {
+		database := openTestDatabase(t)
+		database.Close()
+		response := httptest.NewRecorder()
+		historyHandler(database)(response, httptest.NewRequest(http.MethodGet, "/history?chat=1", nil))
+
+		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `<li class="history-error"`, "Failed to load chat history.")
+	})
+
+	t.Run("rename validation", func(t *testing.T) {
+		database := openTestDatabase(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
+		request := httptest.NewRequest(http.MethodPut, "/chats/1?current=1", strings.NewReader("title="))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+
+		requireHistoryMutationError(t, response, http.StatusBadRequest, "A title is required.")
+	})
+
+	t.Run("rename storage", func(t *testing.T) {
+		database := openTestDatabase(t)
+		database.Close()
+		mux := http.NewServeMux()
+		mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
+		request := httptest.NewRequest(http.MethodPut, "/chats/1?current=1", strings.NewReader("title=New"))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+
+		requireHistoryMutationError(t, response, http.StatusInternalServerError, "Failed to rename chat.")
+	})
+
+	t.Run("delete storage", func(t *testing.T) {
+		database := openTestDatabase(t)
+		database.Close()
+		mux := http.NewServeMux()
+		mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/chats/1?current=1", nil))
+
+		requireHistoryMutationError(t, response, http.StatusInternalServerError, "Failed to delete chat.")
+	})
+
+	t.Run("message storage", func(t *testing.T) {
+		database := openTestDatabase(t)
+		database.Close()
+		response := postForm(t, messageHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages?chat=1", url.Values{
+			"message": {"Hello"},
+			"model":   {"test-model"},
+		})
+
+		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `<article class="message" role="alert">`, "Failed to store message.")
+	})
+
+	t.Run("completion storage", func(t *testing.T) {
+		database := openTestDatabase(t)
+		database.Close()
+		toolCalls := newToolCallStore()
+		response := postForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), "/messages/complete?chat=1", url.Values{
+			"model":   {"test-model"},
+			"request": {newToolCallRequest(t, toolCalls, 1)},
+		})
+
+		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `class="message completion-error"`, "Failed to load conversation.")
+	})
+
+	t.Run("retry storage", func(t *testing.T) {
+		database := openTestDatabase(t)
+		database.Close()
+		response := postForm(t, messageRetryHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages/retry?chat=1", url.Values{
+			"model": {"test-model"},
+		})
+
+		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `class="message completion-error"`, "Failed to prepare retry.")
+	})
 }
 
 func TestMessageHandlerUsesStoredDefaultWhenModelIsMissing(t *testing.T) {
@@ -1538,6 +1776,30 @@ func requireNotContains(t *testing.T, content string, values ...string) {
 			t.Errorf("content unexpectedly contains %q: %s", value, content)
 		}
 	}
+}
+
+func requireHTMLErrorResponse(t *testing.T, response *httptest.ResponseRecorder, status int, values ...string) {
+	t.Helper()
+	if response.Code != status {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, status, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want HTML", contentType)
+	}
+	requireContains(t, response.Body.String(), `role="alert"`)
+	requireContains(t, response.Body.String(), values...)
+}
+
+func requireHistoryMutationError(t *testing.T, response *httptest.ResponseRecorder, status int, message string) {
+	t.Helper()
+	requireHTMLErrorResponse(t, response, status, `id="history-error"`, message)
+	if target := response.Header().Get("HX-Retarget"); target != "#history-error" {
+		t.Errorf("HX-Retarget = %q, want #history-error", target)
+	}
+	if swap := response.Header().Get("HX-Reswap"); swap != "outerHTML" {
+		t.Errorf("HX-Reswap = %q, want outerHTML", swap)
+	}
+	requireNotContains(t, response.Body.String(), `id="history-entries"`)
 }
 
 func decodeResponseInputItem(t *testing.T, raw json.RawMessage) map[string]any {

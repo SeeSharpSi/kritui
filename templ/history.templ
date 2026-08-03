@@ -29,14 +29,43 @@ templ MessageList(messages []llm.Message, outOfBand bool) {
 }
 
 templ HistoryPage(chatID string) {
-	<section id="history-page" class="panel-page history-page" aria-label="Chat history" hidden>
+	<section
+		id="history-page"
+		class="panel-page history-page"
+		aria-label="Chat history"
+		hx-get={ historyEntriesURL(chatID, "", 0) }
+		hx-trigger="history-open"
+		hx-target="#history-entries"
+		hx-swap="innerHTML"
+		hx-sync="this:replace"
+		hidden
+	>
 		<nav class="history-nav" aria-label="Chat history">
-			<ul id="history-entries" data-swap-errors>
+			<ul id="history-entries">
 				@HistoryLoader(chatID, "", 0)
 			</ul>
 		</nav>
+		@HistoryError("", false)
 		<a class="history-action history-new" href="/" aria-label="Start a new chat" title="Start a new chat">+</a>
 	</section>
+}
+
+templ HistoryLoadError(message string) {
+	<li class="history-error" role="alert">{ message }</li>
+}
+
+templ HistoryError(message string, outOfBand bool) {
+	<p
+		id="history-error"
+		class="history-status"
+		role="alert"
+		if message == "" {
+			hidden
+		}
+		if outOfBand {
+			hx-swap-oob="outerHTML"
+		}
+	>{ message }</p>
 }
 
 templ HistoryEntries(chatID string, chats []kritui_db.Chat, firstPage bool, hasMore bool) {
@@ -56,14 +85,13 @@ templ HistoryEntries(chatID string, chats []kritui_db.Chat, firstPage bool, hasM
 templ HistoryLoader(chatID string, beforeUpdatedAt string, beforeID int64) {
 	<li
 		class="history-loader"
-		hx-get={ historyEntriesURL(chatID, beforeUpdatedAt, beforeID) }
-		if beforeUpdatedAt == "" {
-			hx-trigger="loadHistory"
-		} else {
+		if beforeUpdatedAt != "" {
+			hx-get={ historyEntriesURL(chatID, beforeUpdatedAt, beforeID) }
 			hx-trigger="intersect once root:#history-page threshold:0.1"
+			hx-target="this"
+			hx-swap="outerHTML"
+			hx-sync="this:drop"
 		}
-		hx-swap="outerHTML"
-		hx-sync="this:drop"
 		aria-label="Loading chat history"
 	>
 		<span class="braille-spinner" aria-hidden="true"></span>

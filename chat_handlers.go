@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -28,7 +30,7 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			chatID, err := kritui_db.AllocateChat(r.Context(), database)
 			if err != nil {
 				log.Printf("allocate chat: %v", err)
-				http.Error(w, "failed to allocate chat", http.StatusInternalServerError)
+				renderPageError(w, r, http.StatusInternalServerError, "Failed to allocate chat.")
 				return
 			}
 
@@ -42,25 +44,25 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 
 		chatID, ok := positiveID(chat)
 		if !ok {
-			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			renderPageError(w, r, http.StatusBadRequest, "A valid chat is required.")
 			return
 		}
 		messages, err := kritui_db.GetMessages(r.Context(), database, chatID)
 		if err != nil {
 			log.Printf("get messages: %v", err)
-			http.Error(w, "failed to get messages", http.StatusInternalServerError)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load messages.")
 			return
 		}
 		enabledTools, err := kritui_db.GetChatTools(r.Context(), database, chatID)
 		if err != nil {
 			log.Printf("get chat tools: %v", err)
-			http.Error(w, "failed to get chat tools", http.StatusInternalServerError)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat tools.")
 			return
 		}
 		defaultModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
 		if err != nil {
 			log.Printf("get default model: %v", err)
-			http.Error(w, "failed to get settings", http.StatusInternalServerError)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
 			return
 		}
 		selectedModel := defaultModel
@@ -75,10 +77,14 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			models = append([]string{defaultModel}, models...)
 		}
 
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.Home(chat, messages, models, selectedModel, defaultModel, registry.Names(), enabledTools).Render(r.Context(), w); err != nil {
-			http.Error(w, "failed to render page", http.StatusInternalServerError)
+		var page bytes.Buffer
+		if err := templates.Home(chat, messages, models, selectedModel, defaultModel, registry.Names(), enabledTools).Render(r.Context(), &page); err != nil {
+			log.Printf("render page: %v", err)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to render page.")
+			return
 		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(page.Bytes())
 	}
 }
 
@@ -86,7 +92,7 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
 		if _, ok := positiveID(chat); !ok {
-			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			renderHistoryLoadError(w, r, http.StatusBadRequest, "A valid chat is required.")
 			return
 		}
 
@@ -94,15 +100,18 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 		beforeUpdatedAt := r.URL.Query().Get("before")
 		beforeID, ok := historyCursorID(r, beforeUpdatedAt)
 		if !ok {
-			http.Error(w, "valid history cursor is required", http.StatusBadRequest)
+			renderHistoryLoadError(w, r, http.StatusBadRequest, "A valid history cursor is required.")
 			return
 		}
 		limit, ok := historyPageLimit(r)
 		if !ok {
-			http.Error(w, "valid history limit is required", http.StatusBadRequest)
+			renderHistoryLoadError(w, r, http.StatusBadRequest, "A valid history limit is required.")
 			return
 		}
-		renderHistoryEntries(r.Context(), w, database, chat, beforeUpdatedAt, beforeID, limit)
+		if err := renderHistoryEntries(r.Context(), w, database, chat, beforeUpdatedAt, beforeID, limit); err != nil {
+			log.Printf("render chat history: %v", err)
+			renderHistoryLoadError(w, r, http.StatusInternalServerError, "Failed to load chat history.")
+		}
 	}
 }
 
@@ -110,40 +119,36 @@ func settingsHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
 		if _, ok := positiveID(chat); !ok {
-			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			renderSettingsPage(w, r, http.StatusBadRequest, chat, os.Getenv("LLM_MODEL"), false, "A valid chat is required.")
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		selectedModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
 		if err != nil {
 			log.Printf("get default model: %v", err)
-			http.Error(w, "failed to get settings", http.StatusInternalServerError)
+			renderSettingsPage(w, r, http.StatusInternalServerError, chat, os.Getenv("LLM_MODEL"), false, "Failed to load settings.")
 			return
 		}
 		saved := false
 		if r.Method == http.MethodPost {
 			if err := r.ParseForm(); err != nil {
-				http.Error(w, "invalid form", http.StatusBadRequest)
+				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, false, "Invalid settings form.")
 				return
 			}
 			selectedModel = strings.TrimSpace(r.FormValue("model"))
 			if selectedModel == "" {
-				http.Error(w, "model is required", http.StatusBadRequest)
+				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, false, "A model is required.")
 				return
 			}
 			if err := kritui_db.SetDefaultModel(r.Context(), database, selectedModel); err != nil {
 				log.Printf("set default model: %v", err)
-				http.Error(w, "failed to save settings", http.StatusInternalServerError)
+				renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, false, "Failed to save settings.")
 				return
 			}
 			saved = true
 		}
 
-		models, selectedModel := availableModels(r, selectedModel)
-		if err := templates.SettingsPage(chat, models, selectedModel, saved, true).Render(r.Context(), w); err != nil {
-			http.Error(w, "failed to render settings", http.StatusInternalServerError)
-		}
+		renderSettingsPage(w, r, http.StatusOK, chat, selectedModel, saved, "")
 	}
 }
 
@@ -151,22 +156,26 @@ func deleteChatHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chatID, ok := positiveID(r.PathValue("chat"))
 		if !ok {
-			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "A valid chat is required.")
 			return
 		}
 		current := r.URL.Query().Get("current")
 		currentChatID, ok := positiveID(current)
 		if !ok {
-			http.Error(w, "valid current chat is required", http.StatusBadRequest)
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "A valid current chat is required.")
 			return
 		}
 
 		if _, err := database.ExecContext(r.Context(), `DELETE FROM chats WHERE id = ?`, chatID); err != nil {
 			log.Printf("delete chat: %v", err)
-			http.Error(w, "failed to delete chat", http.StatusInternalServerError)
+			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to delete chat.")
 			return
 		}
-		renderHistoryEntries(r.Context(), w, database, current, "", 0, defaultHistoryPageSize)
+		if err := renderHistoryEntries(r.Context(), w, database, current, "", 0, defaultHistoryPageSize); err != nil {
+			log.Printf("render chat history after delete: %v", err)
+			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Chat was deleted, but history could not be refreshed.")
+			return
+		}
 		if chatID == currentChatID {
 			if err := templates.MessageList(nil, true).Render(r.Context(), w); err != nil {
 				log.Printf("clear deleted chat: %v", err)
@@ -179,22 +188,22 @@ func renameChatHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chatID, ok := positiveID(r.PathValue("chat"))
 		if !ok {
-			http.Error(w, "valid chat is required", http.StatusBadRequest)
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "A valid chat is required.")
 			return
 		}
 		current := r.URL.Query().Get("current")
 		if _, ok := positiveID(current); !ok {
-			http.Error(w, "valid current chat is required", http.StatusBadRequest)
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "A valid current chat is required.")
 			return
 		}
 
 		if err := r.ParseForm(); err != nil {
-			http.Error(w, "invalid form", http.StatusBadRequest)
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "Invalid rename form.")
 			return
 		}
 		title := strings.TrimSpace(r.FormValue("title"))
 		if title == "" {
-			http.Error(w, "title is required", http.StatusBadRequest)
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "A title is required.")
 			return
 		}
 
@@ -205,39 +214,89 @@ func renameChatHandler(database *sql.DB) http.HandlerFunc {
 		`, title, chatID)
 		if err != nil {
 			log.Printf("rename chat: %v", err)
-			http.Error(w, "failed to rename chat", http.StatusInternalServerError)
+			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to rename chat.")
 			return
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
 			log.Printf("rename chat rows affected: %v", err)
-			http.Error(w, "failed to rename chat", http.StatusInternalServerError)
+			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to rename chat.")
 			return
 		}
 		if affected == 0 {
-			http.Error(w, "chat not found", http.StatusNotFound)
+			renderHistoryMutationError(w, r, http.StatusNotFound, "Chat not found.")
 			return
 		}
 
-		renderHistoryEntries(r.Context(), w, database, current, "", 0, defaultHistoryPageSize)
+		if err := renderHistoryEntries(r.Context(), w, database, current, "", 0, defaultHistoryPageSize); err != nil {
+			log.Printf("render chat history after rename: %v", err)
+			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Chat was renamed, but history could not be refreshed.")
+		}
 	}
 }
 
-func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *sql.DB, current, beforeUpdatedAt string, beforeID int64, limit int) {
+func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *sql.DB, current, beforeUpdatedAt string, beforeID int64, limit int) error {
 	chats, err := kritui_db.GetChatsPage(ctx, database, beforeUpdatedAt, beforeID, limit+1)
 	if err != nil {
-		log.Printf("get chats: %v", err)
-		http.Error(w, "failed to get chats", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("get chats: %w", err)
 	}
 	hasMore := len(chats) > limit
 	if hasMore {
 		chats = chats[:limit]
 	}
 
+	var fragment bytes.Buffer
+	if err := templates.HistoryEntries(current, chats, beforeUpdatedAt == "", hasMore).Render(ctx, &fragment); err != nil {
+		return fmt.Errorf("render history entries: %w", err)
+	}
+	if err := templates.HistoryError("", true).Render(ctx, &fragment); err != nil {
+		return fmt.Errorf("render history status: %w", err)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := templates.HistoryEntries(current, chats, beforeUpdatedAt == "", hasMore).Render(ctx, w); err != nil {
-		http.Error(w, "failed to render chat history", http.StatusInternalServerError)
+	if _, err := w.Write(fragment.Bytes()); err != nil {
+		return fmt.Errorf("write history entries: %w", err)
+	}
+	return nil
+}
+
+func renderPageError(w http.ResponseWriter, r *http.Request, status int, message string) {
+	var page bytes.Buffer
+	if err := templates.PageError(message).Render(r.Context(), &page); err != nil {
+		log.Printf("render page error: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(page.Bytes())
+}
+
+func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, chat, selectedModel string, saved bool, errorMessage string) {
+	models, selectedModel := availableModels(r, selectedModel)
+	var page bytes.Buffer
+	if err := templates.SettingsPage(chat, models, selectedModel, saved, true, errorMessage).Render(r.Context(), &page); err != nil {
+		log.Printf("render settings: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(page.Bytes())
+}
+
+func renderHistoryLoadError(w http.ResponseWriter, r *http.Request, status int, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := templates.HistoryLoadError(message).Render(r.Context(), w); err != nil {
+		log.Printf("render history load error: %v", err)
+	}
+}
+
+func renderHistoryMutationError(w http.ResponseWriter, r *http.Request, status int, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("HX-Retarget", "#history-error")
+	w.Header().Set("HX-Reswap", "outerHTML")
+	w.WriteHeader(status)
+	if err := templates.HistoryError(message, false).Render(r.Context(), w); err != nil {
+		log.Printf("render history mutation error: %v", err)
 	}
 }
 

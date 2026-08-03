@@ -139,7 +139,6 @@ templ PendingSubmission(chatID string, requestID string, message llm.Message, mo
 templ PendingCompletion(chatID string, requestID string, model string, tools []string) {
 	<article
 		class="message loading-message"
-		data-swap-errors
 		hx-post={ "/messages/complete?chat=" + chatID }
 		hx-trigger="load"
 		hx-target="this"
@@ -180,7 +179,6 @@ templ CompletionError(chatID string, message string, model string, tools []strin
 		<strong style="color: #eb6f92;">{ model }</strong>
 		<div class="message-content plain-text" style="margin-top: .65rem; padding: .7rem 1rem; border-left: .15rem solid #eb6f92; color: var(--color-border-strong);">{ message }</div>
 		<form
-			data-swap-errors
 			hx-post={ "/messages/retry?chat=" + chatID }
 			hx-target="closest article"
 			hx-swap="outerHTML"

@@ -1,6 +1,6 @@
 package templates
 
-templ SettingsPage(chatID string, models []string, selectedModel string, saved bool, visible bool) {
+templ SettingsPage(chatID string, models []string, selectedModel string, saved bool, visible bool, errorMessage string) {
 	<section
 		id="settings-page"
 		class="panel-page settings-page"
@@ -15,7 +15,6 @@ templ SettingsPage(chatID string, models []string, selectedModel string, saved b
 		</header>
 		<form
 			class="settings-form"
-			data-swap-errors
 			hx-post={ "/settings?chat=" + chatID }
 			hx-target="#settings-page"
 			hx-swap="outerHTML"
@@ -32,6 +31,9 @@ templ SettingsPage(chatID string, models []string, selectedModel string, saved b
 			<p class="settings-help">Preselected for each new chat.</p>
 			if saved {
 				<p class="settings-status" role="status">Default model saved.</p>
+			}
+			if errorMessage != "" {
+				<p class="settings-status settings-error" role="alert">{ errorMessage }</p>
 			}
 		</form>
 	</section>
