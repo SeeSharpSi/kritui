@@ -279,9 +279,11 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	t.Setenv("LLM_MODEL", "env-model")
 	if _, err := database.Exec(`
 		INSERT INTO chats (id) VALUES (8);
-		INSERT INTO messages (chat_id, position, role, content, model) VALUES
-			(8, 0, 'user', 'Earlier question', NULL),
-			(8, 1, 'assistant', 'Earlier answer', 'stored-model');
+		INSERT INTO messages (chat_id, position, role, content, model, tool_calls, tool_call_id) VALUES
+			(8, 0, 'user', 'Earlier question', NULL, NULL, NULL),
+			(8, 1, 'assistant', '', 'stored-model', '[{"id":"call-1","type":"function","function":{"name":"webfetch","arguments":"{\"url\":\"https://example.com\"}"}}]', NULL),
+			(8, 2, 'tool', 'result', NULL, NULL, 'call-1'),
+			(8, 3, 'assistant', 'Earlier answer', 'stored-model', NULL, NULL);
 	`); err != nil {
 		t.Fatalf("insert chat history: %v", err)
 	}
@@ -307,8 +309,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`hx-history="false"`,
 		`hx-sync="#messages:drop"`,
 		"<strong>stored-model</strong>",
+		`class="tool-call-toggle"`,
+		`aria-expanded="false"`,
 	)
-	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>")
+	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>", `role="button"`)
 }
 
 func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
@@ -347,6 +351,8 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, body,
 		`class="settings-button"`,
 		`data-panel-target="settings-page"`,
+		`aria-controls="settings-page"`,
+		`aria-expanded="false"`,
 		`aria-label="Settings"`,
 		`id="settings-page"`,
 		`class="panel-page settings-page"`,
@@ -360,6 +366,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 		`hx-trigger="history-open"`,
 		`hx-target="#history-entries"`,
 		`hx-sync="this:replace"`,
+		`data-panel-initial-focus`,
 		`<svg`,
 	)
 	if count := strings.Count(body, `hx-get="/history?chat=8"`); count != 1 {
@@ -372,6 +379,9 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 		t.Fatalf("read app script: %v", err)
 	}
 	requireContains(t, string(script), `selectedPanel.dispatchEvent(new Event('history-open'))`)
+	requireContains(t, string(script), `button.setAttribute('aria-expanded', String(active))`)
+	requireContains(t, string(script), `selectedPanel.querySelector('[data-panel-initial-focus]')?.focus()`)
+	requireContains(t, string(script), `panelButton?.focus()`)
 	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger")
 }
 
@@ -741,6 +751,9 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		`class="history-action history-edit"`,
 		`class="history-action history-cancel"`,
 		`class="history-action history-delete"`,
+		`class="history-save"`,
+		`type="submit"`,
+		`aria-current="page"`,
 		`hx-put="/chats/8?current=8"`,
 		`hx-delete="/chats/8?current=8"`,
 		`hx-confirm="Permanently delete Project notes?"`,
@@ -842,7 +855,10 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		`id="settings-page"`,
 		`class="panel-page settings-page"`,
-		`<h1 id="settings-heading">Settings</h1>`,
+		`id="settings-heading"`,
+		`tabindex="-1"`,
+		`data-panel-initial-focus`,
+		`>Settings</h1>`,
 		`hx-target="#settings-page"`,
 		`hx-swap="outerHTML"`,
 	)
@@ -1192,6 +1208,34 @@ func TestToolCallStoreUnclaimedTrackerExpiresWithoutAnotherCreate(t *testing.T) 
 		t.Fatalf("reuse chat after unclaimed expiry: %v", err)
 	}
 	toolCalls.delete(replacementID)
+}
+
+func TestMessageToolStreamHandlerStopsWhenUnclaimedTrackerExpires(t *testing.T) {
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	response := newFlushingResponseRecorder()
+	streamDone := make(chan struct{})
+	go func() {
+		messageToolStreamHandler(toolCalls)(response, httptest.NewRequest(http.MethodGet, "/messages/tools?request="+requestID, nil))
+		close(streamDone)
+	}()
+	waitForTestSignal(t, response.flushes, "initial tool-call event")
+
+	toolCalls.mu.Lock()
+	entry := toolCalls.trackers[requestID]
+	if entry != nil && entry.expiry != nil {
+		entry.expiry.Reset(time.Millisecond)
+	}
+	toolCalls.mu.Unlock()
+	if entry == nil || entry.expiry == nil {
+		t.Fatal("unclaimed tracker has no expiry timer")
+	}
+
+	waitForTestSignal(t, streamDone, "unclaimed tracker stream expiry")
+	if _, ok := toolCalls.get(requestID); ok {
+		t.Error("expired stream tracker remains stored")
+	}
+	requireContains(t, response.Body.String(), "event: close\n")
 }
 
 func TestToolCallStoreClaimedTrackerStaysActivePastExpiry(t *testing.T) {

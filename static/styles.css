@@ -601,12 +601,24 @@ main {
                     width: 1.1em;
                 }
 
-                strong {
+                strong,
+                .tool-call-toggle {
                     color: var(--color-text);
+                }
 
-                    &[role="button"] {
-                        cursor: pointer;
-                        user-select: none;
+                .tool-call-toggle {
+                    padding: 0;
+                    border: 0;
+                    background: transparent;
+                    font: inherit;
+                    font-weight: 700;
+                    text-align: left;
+                    cursor: pointer;
+                    user-select: none;
+
+                    &:focus-visible {
+                        outline: 2px solid var(--color-accent);
+                        outline-offset: 2px;
                     }
                 }
 

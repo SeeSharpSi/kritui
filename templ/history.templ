@@ -32,7 +32,7 @@ templ HistoryPage(chatID string) {
 	<section
 		id="history-page"
 		class="panel-page history-page"
-		aria-label="Chat history"
+		aria-labelledby="history-heading"
 		hx-get={ historyEntriesURL(chatID, "", 0) }
 		hx-trigger="history-open"
 		hx-target="#history-entries"
@@ -40,6 +40,9 @@ templ HistoryPage(chatID string) {
 		hx-sync="this:replace"
 		hidden
 	>
+		<header class="panel-heading">
+			<h1 id="history-heading" tabindex="-1" data-panel-initial-focus>Chat history</h1>
+		</header>
 		<nav class="history-nav" aria-label="Chat history">
 			<ul id="history-entries">
 				@HistoryLoader(chatID, "", 0)
@@ -111,6 +114,9 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 					hx-target="main"
 					hx-select="main"
 					hx-swap="outerHTML show:none"
+					if strconv.FormatInt(chat.ID, 10) == chatID {
+						aria-current="page"
+					}
 				>
 					<strong>{ historyTitle(chat) }</strong>
 				</a>
@@ -128,6 +134,7 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 						required
 						autocomplete="off"
 					/>
+					<button type="submit" class="history-save">Save</button>
 				</form>
 			</span>
 			<time datetime={ chat.UpdatedAt }>{ historyTime(chat.UpdatedAt) }</time>
@@ -137,7 +144,6 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 			class="history-action history-edit"
 			aria-label={ "Rename " + historyTitle(chat) }
 			title={ "Rename " + historyTitle(chat) }
-			onclick="const entry=this.closest('.history-entry');entry.classList.add('editing');const input=entry.querySelector('.history-rename input');input.focus();input.select();"
 		>
 			@Icon("M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z")
 		</button>
@@ -146,7 +152,6 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 			class="history-action history-cancel"
 			aria-label="Cancel rename"
 			title="Cancel rename"
-			onclick="const entry=this.closest('.history-entry');entry.querySelector('.history-rename').reset();entry.classList.remove('editing');"
 		>
 			@Icon("M18 6 6 18", "m6 6 12 12")
 		</button>
@@ -190,7 +195,7 @@ templ HistoryButton() {
 		class="history-button"
 		data-panel-target="history-page"
 		aria-controls="history-page"
-		aria-pressed="false"
+		aria-expanded="false"
 	>History</button>
 }
 

@@ -89,13 +89,11 @@ templ ToolCalls(calls []llm.ToolCall, runningID string) {
 				<span class="visually-hidden">Completed tool: </span>
 			}
 			if call.Function.Arguments != "" && call.Function.Arguments != "{}" {
-				<strong
-					role="button"
-					tabindex="0"
+				<button
+					type="button"
+					class="tool-call-toggle"
 					aria-expanded="false"
-					onclick="const row=this.closest('.tool-call');this.setAttribute('aria-expanded',row.classList.toggle('expanded'));"
-					onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}"
-				>{ call.Function.Name }</strong>
+				>{ call.Function.Name }</button>
 				if strings.HasSuffix(call.Function.Arguments, "}") {
 					<code><span>{ toolCallArgsBody(call.Function.Arguments) }</span>{ "}" }</code>
 				} else {

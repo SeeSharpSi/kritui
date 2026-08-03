@@ -1,5 +1,6 @@
-.env
+.env*
+!.env.example
 templ/*.go
 run.sh
-data.db
+data.db*
 tmp/

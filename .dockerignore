@@ -1,6 +1,5 @@
 .git/
-.env
-.env.*
+.env*
 !.env.example
 data.db*
 tmp/

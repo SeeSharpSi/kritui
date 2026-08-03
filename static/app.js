@@ -170,7 +170,7 @@ function syncPanelSendButton() {
     }
 }
 
-function togglePanel(panelID) {
+function togglePanel(panelID, panelButton) {
     const selectedPanel = document.getElementById(panelID);
     if (!selectedPanel) {
         return;
@@ -183,10 +183,15 @@ function togglePanel(panelID) {
     document.querySelectorAll('[data-panel-target]').forEach((button) => {
         const active = opening && button.dataset.panelTarget === panelID;
         button.classList.toggle('active', active);
-        button.setAttribute('aria-pressed', String(active));
+        button.setAttribute('aria-expanded', String(active));
     });
     if (opening && panelID === 'history-page') {
         selectedPanel.dispatchEvent(new Event('history-open'));
+    }
+    if (opening) {
+        selectedPanel.querySelector('[data-panel-initial-focus]')?.focus();
+    } else {
+        panelButton?.focus();
     }
     syncPanelSendButton();
 }
@@ -260,7 +265,30 @@ document.addEventListener('htmx:confirm', (event) => {
 document.addEventListener('click', (event) => {
     const panelButton = event.target.closest('[data-panel-target]');
     if (panelButton) {
-        togglePanel(panelButton.dataset.panelTarget);
+        togglePanel(panelButton.dataset.panelTarget, panelButton);
+    }
+
+    const editButton = event.target.closest('.history-edit');
+    if (editButton) {
+        const entry = editButton.closest('.history-entry');
+        entry.classList.add('editing');
+        const input = entry.querySelector('.history-rename input');
+        input.focus();
+        input.select();
+    }
+
+    const cancelButton = event.target.closest('.history-cancel');
+    if (cancelButton) {
+        const entry = cancelButton.closest('.history-entry');
+        entry.querySelector('.history-rename').reset();
+        entry.classList.remove('editing');
+        entry.querySelector('.history-edit').focus();
+    }
+
+    const toolCallToggle = event.target.closest('.tool-call-toggle');
+    if (toolCallToggle) {
+        const expanded = toolCallToggle.closest('.tool-call').classList.toggle('expanded');
+        toolCallToggle.setAttribute('aria-expanded', String(expanded));
     }
 
     document.querySelectorAll('.model-picker[open], .tool-picker[open]').forEach((picker) => {

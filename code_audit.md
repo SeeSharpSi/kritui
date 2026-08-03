@@ -607,7 +607,7 @@ Update Docker health-check tests or container smoke tests to use the new route.
 
 ---
 
-## Finding 16: Sensitive Environment and SQLite Sidecar Files Can Be Committed
+## [x] Finding 16: Sensitive Environment and SQLite Sidecar Files Can Be Committed
 
 **Severity:** Medium
 
@@ -641,7 +641,7 @@ No automated application test is required. A repository policy check can run `gi
 
 ---
 
-## Finding 17: Interactive UI State Has Accessibility Gaps
+## [x] Finding 17: Interactive UI State Has Accessibility Gaps
 
 **Severity:** Medium
 
@@ -677,7 +677,7 @@ Add browser accessibility tests for keyboard activation, Enter and Space behavio
 
 ---
 
-## Finding 18: Tracker Cleanup Is Lazy and Can Retain State
+## [x] Finding 18: Tracker Cleanup Is Lazy and Can Retain State
 
 **Severity:** Low
 
