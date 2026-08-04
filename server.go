@@ -85,6 +85,7 @@ func main() {
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
 	mux.HandleFunc("GET /messages/tools", messageToolStreamHandler(toolCalls))
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
+	mux.HandleFunc("GET /sw.js", serviceWorkerHandler(staticFiles))
 
 	log.Println("listening on http://localhost:8080")
 	server := newHTTPServer(mux)
@@ -116,6 +117,19 @@ func newHTTPServer(handler http.Handler) *http.Server {
 		Handler:           handler,
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
+func serviceWorkerHandler(files embed.FS) http.HandlerFunc {
+	worker, err := files.ReadFile("static/sw.js")
+	if err != nil {
+		panic("embedded service worker missing")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Service-Worker-Allowed", "/")
+		_, _ = w.Write(worker)
 	}
 }
 

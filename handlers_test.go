@@ -35,6 +35,24 @@ func TestHTTPServerConfiguresConnectionTimeouts(t *testing.T) {
 	}
 }
 
+func TestServiceWorkerHandlerServesRootScopeScript(t *testing.T) {
+	response := httptest.NewRecorder()
+	serviceWorkerHandler(staticFiles)(response, httptest.NewRequest(http.MethodGet, "/sw.js", nil))
+
+	if status := response.Code; status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/javascript", got)
+	}
+	if got := response.Header().Get("Service-Worker-Allowed"); got != "/" {
+		t.Errorf("Service-Worker-Allowed = %q, want /", got)
+	}
+	if body := response.Body.String(); !strings.Contains(body, "addEventListener('fetch'") {
+		t.Errorf("body does not register a fetch handler")
+	}
+}
+
 func TestHealthHandlerChecksOnlyDatabase(t *testing.T) {
 	database := openTestDatabase(t)
 	providerCalls := 0

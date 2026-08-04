@@ -220,7 +220,12 @@ function showCompletionNetworkError(event, message) {
     syncPanelSendButton();
 }
 
-document.addEventListener('DOMContentLoaded', () => scrollMessages(document));
+document.addEventListener('DOMContentLoaded', () => {
+    scrollMessages(document);
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js');
+    }
+});
 document.addEventListener('htmx:load', (event) => scrollMessages(event.detail.elt));
 document.addEventListener('htmx:beforeSwap', (event) => rememberMessageScroll(event.detail.target));
 document.addEventListener('htmx:afterSwap', (event) => {
