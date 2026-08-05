@@ -491,6 +491,47 @@ func TestConversationChecksToolRoundLimitBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestConversationRespectsConfiguredToolRoundLimit(t *testing.T) {
+	executions := 0
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = fmt.Fprintf(w, `{
+			"choices":[{"message":{"role":"assistant","tool_calls":[
+				{"id":"call-%d","type":"function","function":{"name":"lookup","arguments":"{}"}}
+			]},"finish_reason":"tool_calls"}]
+		}`, requests)
+	}))
+	defer server.Close()
+
+	conversation := newCountingToolConversation(t, server.URL, &executions)
+	conversation.SetMaxToolRounds(3)
+	_, err := conversation.Send(context.Background(), "question")
+	const wantError = "llm: reached maximum of 3 consecutive tool-call rounds"
+	if err == nil || err.Error() != wantError {
+		t.Fatalf("Send() error = %v, want %q", err, wantError)
+	}
+	if requests != 4 {
+		t.Errorf("model request count = %d, want 4", requests)
+	}
+	if executions != 3 {
+		t.Errorf("tool execution count = %d, want 3", executions)
+	}
+	var limitError *MaxToolRoundsError
+	if !errors.As(err, &limitError) || limitError.Limit != 3 {
+		t.Errorf("error = %#v, want MaxToolRoundsError with limit 3", err)
+	}
+}
+
+func TestConversationIgnoresNonPositiveToolRoundLimit(t *testing.T) {
+	conversation := &Conversation{maxToolRounds: DefaultMaxToolCallRounds}
+	conversation.SetMaxToolRounds(0)
+	conversation.SetMaxToolRounds(-5)
+	if conversation.maxToolRounds != DefaultMaxToolCallRounds {
+		t.Errorf("max tool rounds = %d, want %d", conversation.maxToolRounds, DefaultMaxToolCallRounds)
+	}
+}
+
 func TestCompleteUsesRequestedModelWhenResponseOmitsModel(t *testing.T) {
 	tests := []struct {
 		name     string

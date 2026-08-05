@@ -123,6 +123,13 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to configure conversation.", request.model, request.selected.Names())
 			return
 		}
+		maxToolRounds, err := kritui_db.GetMaxToolRounds(r.Context(), database, llm.DefaultMaxToolCallRounds)
+		if err != nil {
+			log.Printf("get max tool rounds: %v", err)
+			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to load settings.", request.model, request.selected.Names())
+			return
+		}
+		conversation.SetMaxToolRounds(maxToolRounds)
 		conversation.SetToolCallLogger(toolCallLogger)
 		conversation.SetToolCallObserver(tracker.observe)
 		if _, err := conversation.Complete(r.Context()); err != nil {
@@ -332,7 +339,6 @@ func renderMessageError(w http.ResponseWriter, r *http.Request, status int, mess
 
 func completionErrorMessage(err error) string {
 	const fallback = "Failed to complete message."
-	const toolCallLimit = "llm: reached maximum of 16 consecutive tool-call rounds"
 
 	if err == nil {
 		return fallback
@@ -351,8 +357,9 @@ func completionErrorMessage(err error) string {
 		}
 		return fmt.Sprintf("Model endpoint returned HTTP %d: %s.", apiError.StatusCode, status)
 	}
-	if err.Error() == toolCallLimit {
-		return toolCallLimit
+	var limitError *llm.MaxToolRoundsError
+	if errors.As(err, &limitError) {
+		return limitError.Error()
 	}
 	return fallback
 }

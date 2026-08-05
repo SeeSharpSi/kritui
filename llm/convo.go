@@ -12,15 +12,28 @@ import (
 )
 
 const (
-	maxToolCallRounds = 16
-	toolErrorPrefix   = "Tool error: "
+	// DefaultMaxToolCallRounds limits consecutive tool-call rounds when no
+	// explicit limit is configured.
+	DefaultMaxToolCallRounds = 16
+	toolErrorPrefix          = "Tool error: "
 )
+
+// MaxToolRoundsError reports that consecutive tool-call rounds reached the
+// configured limit.
+type MaxToolRoundsError struct {
+	Limit int
+}
+
+func (e *MaxToolRoundsError) Error() string {
+	return fmt.Sprintf("llm: reached maximum of %d consecutive tool-call rounds", e.Limit)
+}
 
 // Conversation retains message history and executes tool calls requested by
 // the model. A Conversation must not be used concurrently.
 type Conversation struct {
 	client           *Client
 	registry         *tools.Registry
+	maxToolRounds    int
 	toolCallLogger   *log.Logger
 	toolCallObserver func(ToolCall, bool, string)
 	messages         []Message
@@ -62,13 +75,22 @@ func NewConversation(client *Client, registry *tools.Registry, promptContext Pro
 	}
 
 	return &Conversation{
-		client:   client,
-		registry: registry,
+		client:        client,
+		registry:      registry,
+		maxToolRounds: DefaultMaxToolCallRounds,
 		messages: append(
 			[]Message{{Role: "system", Content: systemPromptWithContext(promptContext)}},
 			cloneMessages(messages)...,
 		),
 	}, nil
+}
+
+// SetMaxToolRounds limits consecutive tool-call rounds executed before a final
+// response. Values at or below zero keep the default limit.
+func (c *Conversation) SetMaxToolRounds(rounds int) {
+	if c != nil && rounds > 0 {
+		c.maxToolRounds = rounds
+	}
 }
 
 // Messages returns a copy of the conversation history.
@@ -118,8 +140,8 @@ func (c *Conversation) Complete(ctx context.Context) (Completion, error) {
 			c.messages = append(c.messages, cloneMessage(completion.Message))
 			return completion, nil
 		}
-		if toolRounds >= maxToolCallRounds {
-			return Completion{}, fmt.Errorf("llm: reached maximum of %d consecutive tool-call rounds", maxToolCallRounds)
+		if toolRounds >= c.maxToolRounds {
+			return Completion{}, &MaxToolRoundsError{Limit: c.maxToolRounds}
 		}
 		c.messages = append(c.messages, cloneMessage(completion.Message))
 

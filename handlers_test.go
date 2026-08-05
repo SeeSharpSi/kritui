@@ -883,11 +883,11 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 	requireNotContains(t, response.Body.String(), `id="send-button"`, `id="settings-button"`, ` hidden`)
 }
 
-func TestSettingsHandlerStoresDefaultModel(t *testing.T) {
+func TestSettingsHandlerStoresDefaultModelAndMaxToolRounds(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
-	response := postForm(t, settingsHandler(database), "/settings?chat=8", url.Values{"model": {"saved-model"}})
+	response := postForm(t, settingsHandler(database), "/settings?chat=8", url.Values{"model": {"saved-model"}, "max_tool_rounds": {"32"}})
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -899,7 +899,28 @@ func TestSettingsHandlerStoresDefaultModel(t *testing.T) {
 	if model != "saved-model" {
 		t.Errorf("default model = %q, want saved-model", model)
 	}
-	requireContains(t, response.Body.String(), `value="saved-model" selected`, "Default model saved.")
+	maxToolRounds, err := kritui_db.GetMaxToolRounds(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get max tool rounds: %v", err)
+	}
+	if maxToolRounds != 32 {
+		t.Errorf("max tool rounds = %d, want 32", maxToolRounds)
+	}
+	requireContains(t, response.Body.String(), `value="saved-model" selected`, `name="max_tool_rounds"`, `value="32"`)
+}
+
+func TestSettingsHandlerRejectsInvalidMaxToolRounds(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	for _, value := range []string{"0", "101", "abc", ""} {
+		response := postForm(t, settingsHandler(database), "/settings?chat=8", url.Values{"model": {"saved-model"}, "max_tool_rounds": {value}})
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("status for %q = %d, want %d; body = %q", value, response.Code, http.StatusBadRequest, response.Body.String())
+			continue
+		}
+		requireContains(t, response.Body.String(), "Max tool-call rounds")
+	}
 }
 
 func TestHistoryHandlerRejectsInvalidPagination(t *testing.T) {
@@ -1735,7 +1756,7 @@ func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
 		},
 		{
 			name: "tool call limit",
-			err:  errors.New("llm: reached maximum of 16 consecutive tool-call rounds"),
+			err:  &llm.MaxToolRoundsError{Limit: 16},
 			want: "llm: reached maximum of 16 consecutive tool-call rounds",
 		},
 	}

@@ -1,6 +1,8 @@
 package templates
 
-templ SettingsPage(chatID string, models []string, selectedModel string, saved bool, visible bool, errorMessage string) {
+import "strconv"
+
+templ SettingsPage(chatID string, models []string, selectedModel string, maxToolRounds int, saved bool, visible bool, errorMessage string) {
 	<section
 		id="settings-page"
 		class="panel-page settings-page"
@@ -29,8 +31,22 @@ templ SettingsPage(chatID string, models []string, selectedModel string, saved b
 				<button type="submit">Save</button>
 			</div>
 			<p class="settings-help">Preselected for each new chat.</p>
+			<label for="max-tool-rounds">Max tool-call rounds</label>
+			<div class="settings-control">
+				<input
+					id="max-tool-rounds"
+					type="number"
+					name="max_tool_rounds"
+					value={ strconv.Itoa(maxToolRounds) }
+					min="1"
+					max="100"
+					required
+				/>
+				<button type="submit">Save</button>
+			</div>
+			<p class="settings-help">Tool-call chains per response.</p>
 			if saved {
-				<p class="settings-status" role="status">Default model saved.</p>
+				<p class="settings-status" role="status">Settings saved.</p>
 			}
 			if errorMessage != "" {
 				<p class="settings-status settings-error" role="alert">{ errorMessage }</p>

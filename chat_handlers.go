@@ -66,6 +66,12 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
 			return
 		}
+		maxToolRounds, err := kritui_db.GetMaxToolRounds(r.Context(), database, llm.DefaultMaxToolCallRounds)
+		if err != nil {
+			log.Printf("get max tool rounds: %v", err)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
 		selectedModel := defaultModel
 		for index := len(messages) - 1; index >= 0; index-- {
 			if messages[index].Role == "assistant" && strings.TrimSpace(messages[index].Model) != "" {
@@ -79,7 +85,7 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 		}
 
 		var page bytes.Buffer
-		if err := templates.Home(chat, messages, models, selectedModel, defaultModel, registry.Names(), enabledTools).Render(r.Context(), &page); err != nil {
+		if err := templates.Home(chat, messages, models, selectedModel, defaultModel, maxToolRounds, registry.Names(), enabledTools).Render(r.Context(), &page); err != nil {
 			log.Printf("render page: %v", err)
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to render page.")
 			return
@@ -120,14 +126,20 @@ func settingsHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
 		if _, ok := positiveID(chat); !ok {
-			renderSettingsPage(w, r, http.StatusBadRequest, chat, os.Getenv("LLM_MODEL"), false, "A valid chat is required.")
+			renderSettingsPage(w, r, http.StatusBadRequest, chat, os.Getenv("LLM_MODEL"), llm.DefaultMaxToolCallRounds, false, "A valid chat is required.")
 			return
 		}
 
 		selectedModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
 		if err != nil {
 			log.Printf("get default model: %v", err)
-			renderSettingsPage(w, r, http.StatusInternalServerError, chat, os.Getenv("LLM_MODEL"), false, "Failed to load settings.")
+			renderSettingsPage(w, r, http.StatusInternalServerError, chat, os.Getenv("LLM_MODEL"), llm.DefaultMaxToolCallRounds, false, "Failed to load settings.")
+			return
+		}
+		maxToolRounds, err := kritui_db.GetMaxToolRounds(r.Context(), database, llm.DefaultMaxToolCallRounds)
+		if err != nil {
+			log.Printf("get max tool rounds: %v", err)
+			renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, llm.DefaultMaxToolCallRounds, false, "Failed to load settings.")
 			return
 		}
 		saved := false
@@ -135,26 +147,37 @@ func settingsHandler(database *sql.DB) http.HandlerFunc {
 			if err := parseLimitedForm(w, r, maxSettingsBodyBytes); err != nil {
 				var tooLarge *http.MaxBytesError
 				if errors.As(err, &tooLarge) {
-					renderSettingsPage(w, r, http.StatusRequestEntityTooLarge, chat, selectedModel, false, "Request body is too large.")
+					renderSettingsPage(w, r, http.StatusRequestEntityTooLarge, chat, selectedModel, maxToolRounds, false, "Request body is too large.")
 					return
 				}
-				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, false, "Invalid settings form.")
+				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, maxToolRounds, false, "Invalid settings form.")
 				return
 			}
 			selectedModel = strings.TrimSpace(r.FormValue("model"))
 			if selectedModel == "" {
-				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, false, "A model is required.")
+				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, maxToolRounds, false, "A model is required.")
 				return
 			}
+			submittedRounds, parseErr := strconv.Atoi(strings.TrimSpace(r.FormValue("max_tool_rounds")))
+			if parseErr != nil || submittedRounds < 1 || submittedRounds > kritui_db.MaxConfigurableToolRounds {
+				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, maxToolRounds, false, fmt.Sprintf("Max tool-call rounds must be between 1 and %d.", kritui_db.MaxConfigurableToolRounds))
+				return
+			}
+			maxToolRounds = submittedRounds
 			if err := kritui_db.SetDefaultModel(r.Context(), database, selectedModel); err != nil {
 				log.Printf("set default model: %v", err)
-				renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, false, "Failed to save settings.")
+				renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, maxToolRounds, false, "Failed to save settings.")
+				return
+			}
+			if err := kritui_db.SetMaxToolRounds(r.Context(), database, maxToolRounds); err != nil {
+				log.Printf("set max tool rounds: %v", err)
+				renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, maxToolRounds, false, "Failed to save settings.")
 				return
 			}
 			saved = true
 		}
 
-		renderSettingsPage(w, r, http.StatusOK, chat, selectedModel, saved, "")
+		renderSettingsPage(w, r, http.StatusOK, chat, selectedModel, maxToolRounds, saved, "")
 	}
 }
 
@@ -281,10 +304,10 @@ func renderPageError(w http.ResponseWriter, r *http.Request, status int, message
 	_, _ = w.Write(page.Bytes())
 }
 
-func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, chat, selectedModel string, saved bool, errorMessage string) {
+func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, chat, selectedModel string, maxToolRounds int, saved bool, errorMessage string) {
 	models, selectedModel := availableModels(r, selectedModel)
 	var page bytes.Buffer
-	if err := templates.SettingsPage(chat, models, selectedModel, saved, true, errorMessage).Render(r.Context(), &page); err != nil {
+	if err := templates.SettingsPage(chat, models, selectedModel, maxToolRounds, saved, true, errorMessage).Render(r.Context(), &page); err != nil {
 		log.Printf("render settings: %v", err)
 		return
 	}
