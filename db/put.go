@@ -21,15 +21,21 @@ var (
 	ErrChatNotFound = errors.New("chat not found")
 )
 
-// AllocateChat reserves a unique chat ID and removes abandoned empty chats.
-func AllocateChat(ctx context.Context, db *sql.DB) (int64, error) {
+// AllocateChat reserves a unique chat ID, stores the tools enabled by default
+// for new chats, and removes abandoned empty chats.
+func AllocateChat(ctx context.Context, db *sql.DB, tools []string) (int64, error) {
+	encoded, err := encodeToolNames(tools)
+	if err != nil {
+		return 0, fmt.Errorf("encode chat tools: %w", err)
+	}
+
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin chat allocation: %w", err)
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `INSERT INTO chats DEFAULT VALUES`)
+	result, err := tx.ExecContext(ctx, `INSERT INTO chats (tools) VALUES (?)`, encoded)
 	if err != nil {
 		return 0, fmt.Errorf("allocate chat: %w", err)
 	}

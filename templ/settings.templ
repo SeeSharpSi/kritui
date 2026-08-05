@@ -1,8 +1,11 @@
 package templates
 
-import "strconv"
+import (
+	"slices"
+	"strconv"
+)
 
-templ SettingsPage(chatID string, models []string, selectedModel string, maxToolRounds int, saved bool, visible bool, errorMessage string) {
+templ SettingsPage(chatID string, models []string, selectedModel string, maxToolRounds int, toolNames []string, defaultTools []string, saved bool, visible bool, errorMessage string) {
 	<section
 		id="settings-page"
 		class="panel-page settings-page"
@@ -45,6 +48,17 @@ templ SettingsPage(chatID string, models []string, selectedModel string, maxTool
 				<button type="submit">Save</button>
 			</div>
 			<p class="settings-help">Tool-call chains per response.</p>
+			<label>Default tools</label>
+			<div class="settings-control settings-tool-options">
+				for _, tool := range toolNames {
+					<label class="settings-tool-option">
+						<input type="checkbox" name="default_tool" value={ tool } if slices.Contains(defaultTools, tool) { checked } />
+						<span>{ tool }</span>
+					</label>
+				}
+				<button type="submit">Save</button>
+			</div>
+			<p class="settings-help">Preselected for each new chat.</p>
 			if saved {
 				<p class="settings-status" role="status">Settings saved.</p>
 			}

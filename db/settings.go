@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	defaultModelSetting      = "default_model"
-	maxToolRoundsSetting     = "max_tool_rounds"
+	defaultModelSetting       = "default_model"
+	maxToolRoundsSetting      = "max_tool_rounds"
+	defaultToolsSetting       = "default_tools"
 	MaxConfigurableToolRounds = 100
 )
 
@@ -85,6 +86,39 @@ func SetMaxToolRounds(ctx context.Context, db *sql.DB, rounds int) error {
 		ON CONFLICT (name) DO UPDATE SET value = excluded.value
 	`, maxToolRoundsSetting, strconv.Itoa(rounds)); err != nil {
 		return fmt.Errorf("set max tool rounds: %w", err)
+	}
+	return nil
+}
+
+// GetDefaultEnabledTools returns the tools enabled by default in new chats or
+// fallback when no default has been stored.
+func GetDefaultEnabledTools(ctx context.Context, db *sql.DB, fallback []string) ([]string, error) {
+	var value string
+	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE name = ?`, defaultToolsSetting).Scan(&value)
+	if err == sql.ErrNoRows {
+		return fallback, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get default enabled tools: %w", err)
+	}
+	names, decodeErr := decodeToolNames(strings.TrimSpace(value))
+	if decodeErr != nil {
+		return fallback, nil
+	}
+	return names, nil
+}
+
+// SetDefaultEnabledTools stores the tools enabled by default in new chats.
+func SetDefaultEnabledTools(ctx context.Context, db *sql.DB, names []string) error {
+	encoded, err := encodeToolNames(names)
+	if err != nil {
+		return fmt.Errorf("encode default enabled tools: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO settings (name, value) VALUES (?, ?)
+		ON CONFLICT (name) DO UPDATE SET value = excluded.value
+	`, defaultToolsSetting, encoded); err != nil {
+		return fmt.Errorf("set default enabled tools: %w", err)
 	}
 	return nil
 }

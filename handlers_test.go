@@ -637,7 +637,7 @@ func TestHandlersLimitURLFormBodies(t *testing.T) {
 			newHandler: func(t *testing.T) http.Handler {
 				t.Setenv("LLM_MODEL", "test-model")
 				t.Setenv("LLM_ENDPOINT", "")
-				return settingsHandler(openTestDatabase(t))
+				return settingsHandler(openTestDatabase(t), newTestToolRegistry(t))
 			},
 			wantHTML: `id="settings-page"`,
 		},
@@ -865,7 +865,7 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	settingsHandler(database)(response, request)
+	settingsHandler(database, newTestToolRegistry(t))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -887,7 +887,7 @@ func TestSettingsHandlerStoresDefaultModelAndMaxToolRounds(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
-	response := postForm(t, settingsHandler(database), "/settings?chat=8", url.Values{"model": {"saved-model"}, "max_tool_rounds": {"32"}})
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{"model": {"saved-model"}, "max_tool_rounds": {"32"}})
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -914,13 +914,173 @@ func TestSettingsHandlerRejectsInvalidMaxToolRounds(t *testing.T) {
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	for _, value := range []string{"0", "101", "abc", ""} {
-		response := postForm(t, settingsHandler(database), "/settings?chat=8", url.Values{"model": {"saved-model"}, "max_tool_rounds": {value}})
+		response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{"model": {"saved-model"}, "max_tool_rounds": {value}})
 		if response.Code != http.StatusBadRequest {
 			t.Errorf("status for %q = %d, want %d; body = %q", value, response.Code, http.StatusBadRequest, response.Body.String())
 			continue
 		}
 		requireContains(t, response.Body.String(), "Max tool-call rounds")
 	}
+}
+
+func TestSettingsHandlerStoresDefaultTools(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+		"default_tool":    {"websearch", "webfetch"},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	names, err := kritui_db.GetDefaultEnabledTools(context.Background(), database, nil)
+	if err != nil {
+		t.Fatalf("get default enabled tools: %v", err)
+	}
+	if len(names) != 2 || !containsString(names, "webfetch") || !containsString(names, "websearch") {
+		t.Errorf("default enabled tools = %v, want webfetch and websearch", names)
+	}
+	requireContains(t, response.Body.String(),
+		`name="default_tool" value="webfetch" checked`,
+		`name="default_tool" value="websearch" checked`,
+		"Settings saved.")
+}
+
+func TestSettingsHandlerStoresEmptyDefaultTools(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	if err := kritui_db.SetDefaultEnabledTools(context.Background(), database, []string{"webfetch"}); err != nil {
+		t.Fatalf("set default enabled tools: %v", err)
+	}
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	names, err := kritui_db.GetDefaultEnabledTools(context.Background(), database, []string{"fallback"})
+	if err != nil {
+		t.Fatalf("get default enabled tools: %v", err)
+	}
+	if len(names) != 0 {
+		t.Errorf("default enabled tools = %v, want empty list", names)
+	}
+	requireNotContains(t, response.Body.String(), `name="default_tool" value="webfetch" checked`)
+}
+
+func TestSettingsHandlerRejectsInvalidDefaultTools(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+		"default_tool":    {"bogus"},
+	})
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "Tool selection is invalid.")
+	names, err := kritui_db.GetDefaultEnabledTools(context.Background(), database, []string{"fallback"})
+	if err != nil {
+		t.Fatalf("get default enabled tools: %v", err)
+	}
+	if len(names) != 1 || names[0] != "fallback" {
+		t.Errorf("default enabled tools = %v, want fallback [fallback]", names)
+	}
+}
+
+func TestHomeHandlerAllocatesChatWithDefaultTools(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	if err := kritui_db.SetDefaultEnabledTools(context.Background(), database, []string{"websearch"}); err != nil {
+		t.Fatalf("set default enabled tools: %v", err)
+	}
+
+	redirect := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(redirect, httptest.NewRequest(http.MethodGet, "/", nil))
+	if redirect.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", redirect.Code, http.StatusSeeOther)
+	}
+	location, err := url.Parse(redirect.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse location: %v", err)
+	}
+	chatID := location.Query().Get("chat")
+
+	names, err := kritui_db.GetChatTools(context.Background(), database, mustChatID(t, chatID))
+	if err != nil {
+		t.Fatalf("get chat tools: %v", err)
+	}
+	if len(names) != 1 || names[0] != "websearch" {
+		t.Errorf("chat tools = %v, want [websearch]", names)
+	}
+
+	page := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/?chat="+chatID, nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("page status = %d, want %d; body = %q", page.Code, http.StatusOK, page.Body.String())
+	}
+	requireContains(t, page.Body.String(), `name="tool" value="websearch" form="message-form" checked`)
+	requireNotContains(t, page.Body.String(), `name="tool" value="webfetch" form="message-form" checked`)
+}
+
+func TestHomeHandlerAllocatesChatWithoutDefaultToolsWhenUnset(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+
+	redirect := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(redirect, httptest.NewRequest(http.MethodGet, "/", nil))
+	if redirect.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", redirect.Code, http.StatusSeeOther)
+	}
+	location, err := url.Parse(redirect.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse location: %v", err)
+	}
+	chatID := location.Query().Get("chat")
+
+	names, err := kritui_db.GetChatTools(context.Background(), database, mustChatID(t, chatID))
+	if err != nil {
+		t.Fatalf("get chat tools: %v", err)
+	}
+	if len(names) != 0 {
+		t.Errorf("chat tools = %v, want empty list", names)
+	}
+
+	page := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/?chat="+chatID, nil))
+	requireNotContains(t, page.Body.String(),
+		`name="tool" value="webfetch" form="message-form" checked`,
+		`name="tool" value="websearch" form="message-form" checked`,
+	)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func mustChatID(t *testing.T, value string) int64 {
+	t.Helper()
+	chatID, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || chatID <= 0 {
+		t.Fatalf("invalid chat ID %q", value)
+	}
+	return chatID
 }
 
 func TestHistoryHandlerRejectsInvalidPagination(t *testing.T) {
@@ -1085,7 +1245,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 		request := httptest.NewRequest(http.MethodPost, "/settings?chat=1", strings.NewReader("%"))
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		response := httptest.NewRecorder()
-		settingsHandler(database)(response, request)
+		settingsHandler(database, newTestToolRegistry(t))(response, request)
 
 		requireHTMLErrorResponse(t, response, http.StatusBadRequest, `id="settings-page"`, `class="settings-form"`, "Invalid settings form.")
 	})
@@ -1096,7 +1256,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 		t.Setenv("LLM_MODEL", "test-model")
 		t.Setenv("LLM_ENDPOINT", "")
 		response := httptest.NewRecorder()
-		settingsHandler(database)(response, httptest.NewRequest(http.MethodGet, "/settings?chat=1", nil))
+		settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=1", nil))
 
 		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `id="settings-page"`, `class="settings-form"`, "Failed to load settings.")
 	})

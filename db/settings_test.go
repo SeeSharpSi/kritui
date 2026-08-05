@@ -57,3 +57,64 @@ func TestGetMaxToolRoundsFallsBackWhenValueInvalid(t *testing.T) {
 		}
 	}
 }
+
+func TestGetDefaultEnabledToolsFallsBackWhenUnset(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	names, err := GetDefaultEnabledTools(context.Background(), database, []string{"webfetch"})
+	if err != nil {
+		t.Fatalf("GetDefaultEnabledTools() error: %v", err)
+	}
+	if len(names) != 1 || names[0] != "webfetch" {
+		t.Errorf("default enabled tools = %v, want [webfetch]", names)
+	}
+}
+
+func TestSetAndGetDefaultEnabledTools(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if err := SetDefaultEnabledTools(context.Background(), database, []string{"webfetch", "git"}); err != nil {
+		t.Fatalf("SetDefaultEnabledTools() error: %v", err)
+	}
+	names, err := GetDefaultEnabledTools(context.Background(), database, nil)
+	if err != nil {
+		t.Fatalf("GetDefaultEnabledTools() error: %v", err)
+	}
+	if len(names) != 2 || names[0] != "webfetch" || names[1] != "git" {
+		t.Errorf("default enabled tools = %v, want [webfetch git]", names)
+	}
+}
+
+func TestSetDefaultEnabledToolsReplacesValue(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if err := SetDefaultEnabledTools(context.Background(), database, []string{"webfetch"}); err != nil {
+		t.Fatalf("SetDefaultEnabledTools() error: %v", err)
+	}
+	if err := SetDefaultEnabledTools(context.Background(), database, []string{}); err != nil {
+		t.Fatalf("SetDefaultEnabledTools() error: %v", err)
+	}
+	names, err := GetDefaultEnabledTools(context.Background(), database, []string{"fallback"})
+	if err != nil {
+		t.Fatalf("GetDefaultEnabledTools() error: %v", err)
+	}
+	if len(names) != 0 {
+		t.Errorf("default enabled tools = %v, want empty list", names)
+	}
+}
+
+func TestGetDefaultEnabledToolsFallsBackWhenValueInvalid(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	for _, value := range []string{"garbage", `{"name":"webfetch"}`} {
+		if _, err := database.Exec(`INSERT INTO settings (name, value) VALUES (?, ?)`, defaultToolsSetting, value); err != nil {
+			t.Fatalf("insert invalid setting: %v", err)
+		}
+		names, err := GetDefaultEnabledTools(context.Background(), database, []string{"git"})
+		if err != nil {
+			t.Fatalf("GetDefaultEnabledTools() error: %v", err)
+		}
+		if len(names) != 1 || names[0] != "git" {
+			t.Errorf("default enabled tools for %q = %v, want fallback [git]", value, names)
+		}
+		if _, err := database.Exec(`DELETE FROM settings WHERE name = ?`, defaultToolsSetting); err != nil {
+			t.Fatalf("clean up setting: %v", err)
+		}
+	}
+}
