@@ -100,5 +100,7 @@ templ PageError(message string) {
 }
 
 templ SendButton() {
-	<button id="send-button" type="submit">Send</button>
+	<button id="send-button" type="submit" aria-label="Send message" title="Send message">
+		@Icon("M22 2 11 13", "M22 2 15 22 11 13 2 9 22 2")
+	</button>
 }

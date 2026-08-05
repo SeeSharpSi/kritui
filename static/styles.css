@@ -903,6 +903,66 @@ main {
         gap: .75rem;
         margin-top: 1rem;
 
+        &#message-form {
+            position: relative;
+            z-index: 3;
+            display: block;
+            border: 2px solid var(--color-border-strong);
+            border-radius: .5rem;
+            background: var(--color-surface);
+
+            &:focus-within {
+                border-color: var(--color-text);
+            }
+
+            >input {
+                width: 100%;
+                box-sizing: border-box;
+                padding: .75rem 3.5rem .75rem .75rem;
+                border: 0;
+                border-radius: inherit;
+                background: transparent;
+                z-index: auto;
+            }
+
+            >#send-button {
+                position: absolute;
+                top: 50%;
+                right: .4rem;
+                width: 2.25rem;
+                height: 2.25rem;
+                display: grid;
+                box-sizing: border-box;
+                padding: 0;
+                background: transparent;
+                color: var(--color-border-strong);
+                place-items: center;
+                transform: translateY(-50%);
+                line-height: 0;
+                transition: background-color 150ms ease, color 150ms ease;
+
+                svg {
+                    width: 1.25rem;
+                    height: 1.25rem;
+                }
+
+                &:hover:not(:disabled) {
+                    background: var(--color-surface-muted);
+                    color: var(--color-text);
+                }
+
+                &:focus-visible {
+                    outline: 2px solid var(--color-accent);
+                    outline-offset: 2px;
+                }
+
+                &:disabled {
+                    cursor: not-allowed;
+                    opacity: .5;
+                }
+            }
+        }
+
         input {
             flex: 1;
             min-width: 0;
