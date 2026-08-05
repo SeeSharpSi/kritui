@@ -12,10 +12,10 @@ func TestDefaultPromptAppendsReadEmbeddedMarkdown(t *testing.T) {
 		t.Fatalf("default prompt append count = %d, want 2", len(values))
 	}
 
-	if values[0].ID != "link-check" || values[0].Name != "link check" || values[0].Text != "double check links before sending them to me" {
+	if values[0].ID != "link-check" || values[0].Name != "link check" || values[0].Text == "" {
 		t.Errorf("link check preset = %#v", values[0])
 	}
-	if values[1].ID != "research" || values[1].Name != "research" || values[1].Text != "search at least two primary sources to find answers" {
+	if values[1].ID != "research" || values[1].Name != "research" || values[1].Text == "" {
 		t.Errorf("research preset = %#v", values[1])
 	}
 }

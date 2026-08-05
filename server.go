@@ -226,6 +226,15 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 			END
 		)`)
 	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		return addColumnIfMissing(ctx, tx, "messages", "prompt_appends", `TEXT CHECK (
+			prompt_appends IS NULL OR
+			CASE
+				WHEN json_valid(prompt_appends) THEN json_type(prompt_appends) = 'array'
+				ELSE 0
+			END
+		) CHECK (prompt_appends IS NULL OR role = 'user')`)
+	},
 }
 
 func addColumnIfMissing(ctx context.Context, tx *sql.Tx, table, column, definition string) error {

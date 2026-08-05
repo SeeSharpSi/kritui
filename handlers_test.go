@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"html"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -565,19 +566,34 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
+	defaults := kritui_db.DefaultPromptAppends()
 
-	var content, appends string
+	var content, promptAppends, appends string
 	if err := database.QueryRow(`
-		SELECT messages.content, chats.appends
+		SELECT messages.content, messages.prompt_appends, chats.appends
 		FROM messages
 		JOIN chats ON chats.id = messages.chat_id
 		WHERE messages.chat_id = 3
-	`).Scan(&content, &appends); err != nil {
+	`).Scan(&content, &promptAppends, &appends); err != nil {
 		t.Fatalf("query message and append selections: %v", err)
 	}
-	wantContent := "Hello\n\nsearch at least two primary sources to find answers\n\ndouble check links before sending them to me"
-	if content != wantContent {
-		t.Errorf("stored message = %q, want %q", content, wantContent)
+	if content != "Hello" {
+		t.Errorf("stored message = %q, want original Hello", content)
+	}
+	var storedPromptAppends []string
+	if err := json.Unmarshal([]byte(promptAppends), &storedPromptAppends); err != nil {
+		t.Fatalf("decode message prompt appends: %v", err)
+	}
+	wantPromptAppends := []string{defaults[1].Text, defaults[0].Text}
+	if !slices.Equal(storedPromptAppends, wantPromptAppends) {
+		t.Errorf("stored message prompt appends = %v, want %v", storedPromptAppends, wantPromptAppends)
+	}
+	storedMessages, err := kritui_db.GetMessages(context.Background(), database, 3)
+	if err != nil {
+		t.Fatalf("get stored messages: %v", err)
+	}
+	if len(storedMessages) != 1 || !slices.Equal(storedMessages[0].PromptAppends, wantPromptAppends) {
+		t.Errorf("loaded message prompt appends = %#v, want %v", storedMessages, wantPromptAppends)
 	}
 	var selected []string
 	if err := json.Unmarshal([]byte(appends), &selected); err != nil {
@@ -585,6 +601,19 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 	}
 	if !slices.Equal(selected, []string{"research", "link-check"}) {
 		t.Errorf("stored chat appends = %v, want [research link-check]", selected)
+	}
+	body := response.Body.String()
+	requireContains(t, body,
+		`<div class="message-content plain-text">Hello</div>`,
+		`<details class="message-appends">`,
+		`<summary>appends</summary>`,
+		html.EscapeString(defaults[1].Text),
+		html.EscapeString(defaults[0].Text),
+	)
+	appendIndex := strings.Index(body, `<details class="message-appends">`)
+	messageIndex := strings.Index(body, `<article class="message user">`)
+	if appendIndex == -1 || messageIndex == -1 || appendIndex >= messageIndex {
+		t.Errorf("append details index = %d, user message index = %d; want details before message", appendIndex, messageIndex)
 	}
 }
 
@@ -606,6 +635,22 @@ func TestMessageHandlerRejectsUnknownPromptAppend(t *testing.T) {
 	}
 	if messages != 0 {
 		t.Errorf("stored messages = %d, want 0", messages)
+	}
+}
+
+func TestMessagesWithPromptAppendsExpandsCopyForCompletion(t *testing.T) {
+	original := []llm.Message{{
+		Role:          "user",
+		Content:       "Question",
+		PromptAppends: []string{"First instruction", "Second instruction"},
+	}}
+
+	expanded := messagesWithPromptAppends(original)
+	if original[0].Content != "Question" {
+		t.Errorf("original message content = %q, want Question", original[0].Content)
+	}
+	if expanded[0].Content != "Question\n\nFirst instruction\n\nSecond instruction" {
+		t.Errorf("expanded message content = %q", expanded[0].Content)
 	}
 }
 

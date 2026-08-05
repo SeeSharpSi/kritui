@@ -66,8 +66,9 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 				return
 			}
 		}
-		message = appendPromptText(message, selectedAppends)
-		if int64(len([]byte(message))) > maxMessageBodyBytes {
+		appendTexts := promptAppendTexts(selectedAppends)
+		expandedMessage := appendPromptText(message, appendTexts)
+		if int64(len([]byte(expandedMessage))) > maxMessageBodyBytes {
 			renderMessageError(w, r, http.StatusRequestEntityTooLarge, "Message with prompt appends is too large.")
 			return
 		}
@@ -81,7 +82,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 			renderMessageError(w, r, http.StatusInternalServerError, "Failed to prepare message.")
 			return
 		}
-		if err := persistUserMessage(r.Context(), database, request.chatID, message, request.selected.Names(), promptAppendIDs(selectedAppends)); err != nil {
+		if err := persistUserMessage(r.Context(), database, request.chatID, message, request.selected.Names(), selectedAppends); err != nil {
 			toolCalls.delete(requestID)
 			log.Printf("store user message: %v", err)
 			renderMessageError(w, r, http.StatusInternalServerError, "Failed to store message.")
@@ -89,7 +90,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		userMessage := llm.Message{Role: "user", Content: message}
+		userMessage := llm.Message{Role: "user", Content: message, PromptAppends: appendTexts}
 		if err := templates.PendingSubmission(strconv.FormatInt(request.chatID, 10), requestID, userMessage, request.model, request.selected.Names()).Render(r.Context(), w); err != nil {
 			toolCalls.delete(requestID)
 			log.Printf("render pending message: %v", err)
@@ -126,6 +127,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			renderMessageError(w, r, http.StatusConflict, "No message is waiting for completion.")
 			return
 		}
+		conversationMessages := messagesWithPromptAppends(messages)
 		client, err := llm.New(os.Getenv("LLM_KEY"), request.model, os.Getenv("LLM_ENDPOINT"))
 		if err != nil {
 			log.Printf("configure llm: %v", err)
@@ -136,7 +138,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		conversation, err := llm.NewConversation(client, request.selected, llm.PromptContext{
 			CurrentTime:    time.Now(),
 			ClientLocation: clientLocation(r.FormValue("client_timezone")),
-		}, messages...)
+		}, conversationMessages...)
 		if err != nil {
 			log.Printf("configure conversation: %v", err)
 			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to configure conversation.", request.model, request.selected.Names())
@@ -269,18 +271,18 @@ func parseMessageRequest(w http.ResponseWriter, r *http.Request, database *sql.D
 	return messageRequest{chat: chat, chatID: chatID, model: model, selected: selected}, true
 }
 
-func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, tools, appends []string) error {
+func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, tools []string, appends []kritui_db.PromptAppend) error {
 	if tools == nil {
 		tools = []string{}
 	}
 	if appends == nil {
-		appends = []string{}
+		appends = []kritui_db.PromptAppend{}
 	}
 	toolsJSON, err := json.Marshal(tools)
 	if err != nil {
 		return fmt.Errorf("encode chat tools: %w", err)
 	}
-	appendsJSON, err := json.Marshal(appends)
+	appendsJSON, err := json.Marshal(promptAppendIDs(appends))
 	if err != nil {
 		return fmt.Errorf("encode chat appends: %w", err)
 	}
@@ -308,7 +310,11 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	`, chatID).Scan(&position); err != nil {
 		return fmt.Errorf("get user message position: %w", err)
 	}
-	if _, err := kritui_db.InsertMessage(ctx, tx, chatID, position, llm.Message{Role: "user", Content: message}); err != nil {
+	if _, err := kritui_db.InsertMessage(ctx, tx, chatID, position, llm.Message{
+		Role:          "user",
+		Content:       message,
+		PromptAppends: promptAppendTexts(appends),
+	}); err != nil {
 		return fmt.Errorf("insert user message: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -317,7 +323,7 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	return nil
 }
 
-func appendPromptText(message string, appends []kritui_db.PromptAppend) string {
+func appendPromptText(message string, appends []string) string {
 	if len(appends) == 0 {
 		return message
 	}
@@ -326,9 +332,28 @@ func appendPromptText(message string, appends []kritui_db.PromptAppend) string {
 	builder.WriteString(message)
 	for _, value := range appends {
 		builder.WriteString("\n\n")
-		builder.WriteString(value.Text)
+		builder.WriteString(value)
 	}
 	return builder.String()
+}
+
+func messagesWithPromptAppends(messages []llm.Message) []llm.Message {
+	expanded := make([]llm.Message, len(messages))
+	for index, message := range messages {
+		expanded[index] = message
+		if message.Role == "user" && len(message.PromptAppends) > 0 {
+			expanded[index].Content = appendPromptText(message.Content, message.PromptAppends)
+		}
+	}
+	return expanded
+}
+
+func promptAppendTexts(values []kritui_db.PromptAppend) []string {
+	texts := make([]string, 0, len(values))
+	for _, value := range values {
+		texts = append(texts, value.Text)
+	}
+	return texts
 }
 
 func promptAppendIDs(values []kritui_db.PromptAppend) []string {

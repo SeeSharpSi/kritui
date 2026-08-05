@@ -29,11 +29,13 @@ const (
 
 // Message is one message in a chat completion conversation.
 type Message struct {
-	Role             string           `json:"role"`
-	Content          string           `json:"content"`
-	Model            string           `json:"-"`
-	TotalTokens      *int             `json:"-"`
-	Cost             *float64         `json:"-"`
+	Role        string   `json:"role"`
+	Content     string   `json:"content"`
+	Model       string   `json:"-"`
+	TotalTokens *int     `json:"-"`
+	Cost        *float64 `json:"-"`
+	// PromptAppends is UI metadata and is expanded before provider requests.
+	PromptAppends    []string         `json:"-"`
 	ToolCalls        []ToolCall       `json:"tool_calls,omitempty"`
 	ToolCallID       string           `json:"tool_call_id,omitempty"`
 	ProviderMetadata ProviderMetadata `json:"-"`

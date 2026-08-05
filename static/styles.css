@@ -637,6 +637,69 @@ main {
             }
         }
 
+        .message-appends {
+            align-self: flex-end;
+            width: fit-content;
+            max-width: min(100%, 42rem);
+            margin: .75rem 0 -.5rem auto;
+            color: var(--color-border-strong);
+            font-size: .8rem;
+            line-height: 1.35;
+
+            >summary {
+                width: fit-content;
+                max-width: 100%;
+                margin-left: auto;
+                cursor: pointer;
+                color: var(--color-border-strong);
+                font-weight: 600;
+                letter-spacing: .01em;
+                list-style: none;
+                user-select: none;
+
+                &::-webkit-details-marker {
+                    display: none;
+                }
+
+                &::after {
+                    content: "◂";
+                    display: inline-block;
+                    width: 1.1em;
+                    margin-left: .2em;
+                }
+
+                &:hover,
+                &:focus-visible {
+                    color: var(--color-text);
+                }
+
+                &:focus-visible {
+                    outline: 2px solid var(--color-accent);
+                    outline-offset: 2px;
+                }
+            }
+
+            &[open]>summary::after {
+                content: "▾";
+            }
+
+            .message-appends-content {
+                margin: .35rem 1.1em 0 0;
+                padding: .45rem .6rem;
+                border-right: 2px solid var(--color-border);
+                border-radius: .3rem 0 0 .3rem;
+                background: var(--color-surface);
+                color: var(--color-border-strong);
+                text-align: right;
+                white-space: pre-wrap;
+                overflow-wrap: anywhere;
+            }
+
+            .message-append+.message-append {
+                margin-top: .45rem;
+            }
+        }
+
         .completed-tool-calls {
             margin: .75rem 0 .25rem;
             color: var(--color-border-strong);

@@ -238,6 +238,7 @@ func cloneMessages(messages []Message) []Message {
 
 func cloneMessage(message Message) Message {
 	message.ToolCalls = append([]ToolCall(nil), message.ToolCalls...)
+	message.PromptAppends = append([]string(nil), message.PromptAppends...)
 	message.ProviderMetadata = message.ProviderMetadata.clone()
 	return message
 }

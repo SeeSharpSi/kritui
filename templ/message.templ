@@ -71,6 +71,9 @@ templ Messages(messages ...llm.Message) {
 	for _, view := range messagesForView(messages) {
 		@CompletedToolCalls(view.ToolCalls, view.ToolErrors)
 		if view.Message != nil {
+			if view.Message.Role == "user" {
+				@MessageAppends(view.Message.PromptAppends)
+			}
 			<article class={ "message" , templ.KV("user", view.Message.Role=="user" ) }>
 				if view.Message.Role == "assistant" {
 					<strong>{ view.Message.Model }</strong>
@@ -85,6 +88,19 @@ templ Messages(messages ...llm.Message) {
 				}
 			</article>
 		}
+	}
+}
+
+templ MessageAppends(appends []string) {
+	if len(appends) > 0 {
+		<details class="message-appends">
+			<summary>appends</summary>
+			<div class="message-appends-content">
+				for _, value := range appends {
+					<div class="message-append">{ value }</div>
+				}
+			</div>
+		</details>
 	}
 }
 

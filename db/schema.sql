@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS messages (
     position INTEGER NOT NULL CHECK (position >= 0),
     role TEXT NOT NULL CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
     content TEXT NOT NULL DEFAULT '',
+    prompt_appends TEXT CHECK (
+        prompt_appends IS NULL OR
+        CASE
+            WHEN json_valid(prompt_appends) THEN json_type(prompt_appends) = 'array'
+            ELSE 0
+        END
+    ),
     model TEXT,
     total_tokens INTEGER,
     cost REAL,
@@ -41,6 +48,7 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (chat_id, position),
     CHECK (tool_calls IS NULL OR role = 'assistant'),
+    CHECK (prompt_appends IS NULL OR role = 'user'),
     CHECK (
         tool_calls IS NULL OR
         CASE
@@ -88,4 +96,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;

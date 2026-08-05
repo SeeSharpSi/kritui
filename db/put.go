@@ -178,11 +178,22 @@ func InsertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 		}
 		providerMetadata = string(encoded)
 	}
+	var promptAppends any
+	if len(message.PromptAppends) > 0 {
+		if message.Role != "user" {
+			return 0, fmt.Errorf("encode prompt appends: only user messages may contain prompt appends")
+		}
+		encoded, err := json.Marshal(message.PromptAppends)
+		if err != nil {
+			return 0, fmt.Errorf("encode prompt appends: %w", err)
+		}
+		promptAppends = string(encoded)
+	}
 
 	result, err := db.ExecContext(ctx, `
-		INSERT INTO messages (chat_id, position, role, content, model, total_tokens, cost, tool_calls, tool_call_id, provider_metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, chatID, position, message.Role, message.Content, model, totalTokens, cost, toolCalls, toolCallID, providerMetadata)
+		INSERT INTO messages (chat_id, position, role, content, model, total_tokens, cost, tool_calls, tool_call_id, provider_metadata, prompt_appends)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, chatID, position, message.Role, message.Content, model, totalTokens, cost, toolCalls, toolCallID, providerMetadata, promptAppends)
 	if err != nil {
 		return 0, fmt.Errorf("insert message: %w", err)
 	}

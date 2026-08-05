@@ -199,7 +199,8 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 			tool_calls,
 			tool_call_id,
 			provider_metadata,
-			json_array(id, position, role, content, model, total_tokens, cost, tool_calls, tool_call_id, provider_metadata)
+			prompt_appends,
+			json_array(id, position, role, content, model, total_tokens, cost, tool_calls, tool_call_id, provider_metadata, prompt_appends)
 		FROM messages
 		WHERE chat_id = ?
 		ORDER BY position, id
@@ -242,6 +243,7 @@ func scanStoredMessage(row rowScanner) (storedMessage, error) {
 	var toolCalls sql.NullString
 	var toolCallID sql.NullString
 	var providerMetadata sql.NullString
+	var promptAppends sql.NullString
 	if err := row.Scan(
 		&stored.id,
 		&stored.position,
@@ -253,6 +255,7 @@ func scanStoredMessage(row rowScanner) (storedMessage, error) {
 		&toolCalls,
 		&toolCallID,
 		&providerMetadata,
+		&promptAppends,
 		&stored.fingerprint,
 	); err != nil {
 		return storedMessage{}, fmt.Errorf("scan message: %w", err)
@@ -283,6 +286,14 @@ func scanStoredMessage(row rowScanner) (storedMessage, error) {
 		}
 		if err := json.Unmarshal([]byte(providerMetadata.String), &stored.message.ProviderMetadata); err != nil {
 			return storedMessage{}, fmt.Errorf("decode provider metadata: %w", err)
+		}
+	}
+	if promptAppends.Valid {
+		if stored.message.Role != "user" {
+			return storedMessage{}, fmt.Errorf("decode prompt appends: only user messages may contain prompt appends")
+		}
+		if err := json.Unmarshal([]byte(promptAppends.String), &stored.message.PromptAppends); err != nil {
+			return storedMessage{}, fmt.Errorf("decode prompt appends: %w", err)
 		}
 	}
 
