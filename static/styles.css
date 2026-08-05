@@ -159,6 +159,53 @@ main {
                 .settings-error {
                     color: var(--color-gold);
                 }
+
+                .settings-append-list {
+                    display: grid;
+                    gap: .75rem;
+                }
+
+                .settings-append {
+                    display: grid;
+                    gap: .5rem;
+                    min-width: 0;
+                    margin: 0;
+                    padding: .75rem;
+                    border: 2px solid var(--color-border);
+                    border-radius: .5rem;
+
+                    legend {
+                        padding: 0 .35rem;
+                        color: var(--color-border-strong);
+                        font-size: small;
+                    }
+
+                    label {
+                        font-size: small;
+                        font-weight: 600;
+                    }
+
+                    input,
+                    textarea {
+                        box-sizing: border-box;
+                        width: 100%;
+                        padding: .65rem;
+                        border: 2px solid var(--color-border-strong);
+                        border-radius: .5rem;
+                        background: var(--color-surface);
+                        color: var(--color-text);
+                        font: inherit;
+                    }
+
+                    textarea {
+                        min-height: 5rem;
+                        resize: vertical;
+                    }
+                }
+
+                .settings-append-actions {
+                    justify-content: flex-end;
+                }
             }
 
             .history-empty,
@@ -776,7 +823,8 @@ main {
 
             button,
             .model-picker>summary,
-            .tool-picker>summary {
+            .tool-picker>summary,
+            .append-picker>summary {
                 padding: .55rem .75rem;
                 border: 2px solid var(--color-border);
                 border-radius: .5rem;
@@ -796,7 +844,8 @@ main {
             }
 
             .model-picker,
-            .tool-picker {
+            .tool-picker,
+            .append-picker {
                 position: relative;
 
                 >summary {
@@ -816,12 +865,14 @@ main {
             }
 
             .model-picker:not([open]) .model-options,
-            .tool-picker:not([open]) .tool-options {
+            .tool-picker:not([open]) .tool-options,
+            .append-picker:not([open]) .append-options {
                 display: none;
             }
 
             .model-picker .model-options,
-            .tool-picker .tool-options {
+            .tool-picker .tool-options,
+            .append-picker .append-options {
                 position: absolute;
                 z-index: 1;
                 bottom: calc(100% + .5rem);
@@ -869,27 +920,31 @@ main {
                 display: block;
             }
 
-            .tool-picker {
+            .tool-picker,
+            .append-picker {
                 &:has(input:checked)>summary {
                     color: var(--color-accent);
                     font-weight: 600;
                 }
 
-                .tool-options label {
+                .tool-options label,
+                .append-options label {
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
                     gap: 1rem;
                     user-select: none;
 
-                    .tool-state::after {
+                    .tool-state::after,
+                    .append-state::after {
                         content: "Off";
                         color: var(--color-border-strong);
                         font-size: small;
                         font-weight: 400;
                     }
 
-                    &:has(input:checked) .tool-state::after {
+                    &:has(input:checked) .tool-state::after,
+                    &:has(input:checked) .append-state::after {
                         content: "On";
                         color: var(--color-accent);
                     }

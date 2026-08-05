@@ -1,0 +1,1 @@
+Use the websearch tool to find information about a topic, and use the webfetch tool to visit relevant websites produced by the websearch tool. Don't assume info to be true; find up to date information using your tooling. 

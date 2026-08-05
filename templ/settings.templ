@@ -3,9 +3,11 @@ package templates
 import (
 	"slices"
 	"strconv"
+
+	kritui_db "seesharpsi/kritui/db"
 )
 
-templ SettingsPage(chatID string, models []string, selectedModel string, maxToolRounds int, toolNames []string, defaultTools []string, saved bool, visible bool, errorMessage string) {
+templ SettingsPage(chatID string, models []string, selectedModel string, maxToolRounds int, toolNames []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, saved bool, visible bool, errorMessage string) {
 	<section
 		id="settings-page"
 		class="panel-page settings-page"
@@ -24,6 +26,7 @@ templ SettingsPage(chatID string, models []string, selectedModel string, maxTool
 			hx-target="#settings-page"
 			hx-swap="outerHTML"
 		>
+			<input type="hidden" name="append_form" value="1" />
 			<label for="default-model">Default model</label>
 			<div class="settings-control">
 				<select id="default-model" name="model" required>
@@ -59,6 +62,25 @@ templ SettingsPage(chatID string, models []string, selectedModel string, maxTool
 				<button type="submit">Save</button>
 			</div>
 			<p class="settings-help">Preselected for each new chat.</p>
+			<label>Prompt appends</label>
+			<div class="settings-append-list">
+				for _, preset := range promptAppends {
+					<fieldset class="settings-append">
+						<legend>{ preset.Name }</legend>
+						<input type="hidden" name="append_id" value={ preset.ID } />
+						<label for={ "append-name-" + preset.ID }>Name</label>
+						<input id={ "append-name-" + preset.ID } type="text" name={ "append_name_" + preset.ID } value={ preset.Name } maxlength="80" required />
+						<label for={ "append-text-" + preset.ID }>Text</label>
+						<textarea id={ "append-text-" + preset.ID } name={ "append_text_" + preset.ID } rows="3" required>{ preset.Text }</textarea>
+						<button type="submit" name="remove_append" value={ preset.ID } formnovalidate>Remove</button>
+					</fieldset>
+				}
+			</div>
+			<div class="settings-control settings-append-actions">
+				<button type="submit" name="append_action" value="add" formnovalidate>Add append</button>
+				<button type="submit">Save</button>
+			</div>
+			<p class="settings-help">Presets appear in chat options; selected text is added to messages.</p>
 			if saved {
 				<p class="settings-status" role="status">Settings saved.</p>
 			}

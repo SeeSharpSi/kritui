@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -133,7 +134,7 @@ func TestOpenDatabaseSerializesConcurrentWrites(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			errors <- persistUserMessage(context.Background(), database, chatID, "message", []string{})
+			errors <- persistUserMessage(context.Background(), database, chatID, "message", []string{}, nil)
 		}()
 	}
 	close(start)
@@ -498,6 +499,24 @@ func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
 	requireNotContains(t, body, `name="tool" value="webfetch" form="message-form" checked`)
 }
 
+func TestHomeHandlerRendersPromptAppends(t *testing.T) {
+	database := openTestDatabase(t)
+	response := httptest.NewRecorder()
+
+	homeHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/?chat=8", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	requireContains(t, response.Body.String(),
+		`class="append-picker"`,
+		`>Appends</summary>`,
+		`name="append" value="link-check" form="message-form"`,
+		`name="append" value="research" form="message-form"`,
+		`class="append-state"`,
+	)
+}
+
 func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "test-model")
@@ -532,6 +551,61 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 	}
 	if role != "user" || content != "Hello" {
 		t.Errorf("accepted message = %q %q, want user Hello", role, content)
+	}
+}
+
+func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
+	database := openTestDatabase(t)
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages?chat=3", url.Values{
+		"message": {"Hello"},
+		"model":   {"selected-model"},
+		"append":  {"research", "link-check"},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	var content, appends string
+	if err := database.QueryRow(`
+		SELECT messages.content, chats.appends
+		FROM messages
+		JOIN chats ON chats.id = messages.chat_id
+		WHERE messages.chat_id = 3
+	`).Scan(&content, &appends); err != nil {
+		t.Fatalf("query message and append selections: %v", err)
+	}
+	wantContent := "Hello\n\nsearch at least two primary sources to find answers\n\ndouble check links before sending them to me"
+	if content != wantContent {
+		t.Errorf("stored message = %q, want %q", content, wantContent)
+	}
+	var selected []string
+	if err := json.Unmarshal([]byte(appends), &selected); err != nil {
+		t.Fatalf("decode chat appends: %v", err)
+	}
+	if !slices.Equal(selected, []string{"research", "link-check"}) {
+		t.Errorf("stored chat appends = %v, want [research link-check]", selected)
+	}
+}
+
+func TestMessageHandlerRejectsUnknownPromptAppend(t *testing.T) {
+	database := openTestDatabase(t)
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages?chat=3", url.Values{
+		"message": {"Hello"},
+		"model":   {"selected-model"},
+		"append":  {"missing"},
+	})
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	requireContains(t, response.Body.String(), "Prompt append selection is invalid.")
+	var messages int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&messages); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if messages != 0 {
+		t.Errorf("stored messages = %d, want 0", messages)
 	}
 }
 
@@ -844,12 +918,12 @@ func TestHistoryHandlerRefreshesCurrentTitlesAndOrdering(t *testing.T) {
 	}
 
 	requireContains(t, loadHistory(), "No saved chats yet.")
-	if err := persistUserMessage(context.Background(), database, 1, "First title", []string{}); err != nil {
+	if err := persistUserMessage(context.Background(), database, 1, "First title", []string{}, nil); err != nil {
 		t.Fatalf("store first chat: %v", err)
 	}
 	requireContains(t, loadHistory(), "First title")
 
-	if err := persistUserMessage(context.Background(), database, 2, "Newest title", []string{}); err != nil {
+	if err := persistUserMessage(context.Background(), database, 2, "Newest title", []string{}, nil); err != nil {
 		t.Fatalf("store newest chat: %v", err)
 	}
 	refreshed := loadHistory()
@@ -947,6 +1021,57 @@ func TestSettingsHandlerStoresDefaultTools(t *testing.T) {
 		`name="default_tool" value="webfetch" checked`,
 		`name="default_tool" value="websearch" checked`,
 		"Settings saved.")
+}
+
+func TestSettingsHandlerStoresPromptAppends(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":              {"saved-model"},
+		"max_tool_rounds":    {"16"},
+		"append_form":        {"1"},
+		"append_id":          {"custom"},
+		"append_name_custom": {"Custom"},
+		"append_text_custom": {"Use custom instruction."},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	values, err := kritui_db.GetPromptAppends(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get prompt appends: %v", err)
+	}
+	want := []kritui_db.PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction."}}
+	if !slices.Equal(values, want) {
+		t.Errorf("prompt appends = %#v, want %#v", values, want)
+	}
+	requireContains(t, response.Body.String(), `name="append_name_custom"`, `value="Custom"`, "Use custom instruction.", "Settings saved.")
+}
+
+func TestSettingsHandlerRefreshesAppendPickerAfterHTMXSave(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	form := url.Values{
+		"model":              {"saved-model"},
+		"max_tool_rounds":    {"16"},
+		"append_form":        {"1"},
+		"append_id":          {"custom"},
+		"append_name_custom": {"Custom"},
+		"append_text_custom": {"Use custom instruction."},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/settings?chat=8", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("HX-Request", "true")
+	response := httptest.NewRecorder()
+	settingsHandler(database, newTestToolRegistry(t))(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), `id="append-picker"`, `hx-swap-oob="outerHTML"`, `value="custom"`, "Custom")
 }
 
 func TestSettingsHandlerStoresEmptyDefaultTools(t *testing.T) {
@@ -2294,7 +2419,7 @@ func TestResponsesProviderMetadataPersistsAcrossDatabaseReload(t *testing.T) {
 	if len(storedOutput) != 2 {
 		t.Fatalf("stored provider output count = %d, want 2", len(storedOutput))
 	}
-	if err := persistUserMessage(context.Background(), database, 1, "Second question", []string{"lookup"}); err != nil {
+	if err := persistUserMessage(context.Background(), database, 1, "Second question", []string{"lookup"}, nil); err != nil {
 		t.Fatalf("store second user message: %v", err)
 	}
 

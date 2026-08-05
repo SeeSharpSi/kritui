@@ -1,0 +1,1 @@
+When sending me links, double check each link by going to it using the webfetch tool to make sure the information given by that link is what you expect. If it isn't, revise the link / double check your information.

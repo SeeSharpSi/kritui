@@ -153,6 +153,25 @@ func GetChatTools(ctx context.Context, db *sql.DB, chatID int64) ([]string, erro
 	return names, nil
 }
 
+// GetChatAppends returns the selected prompt append IDs for a chat.
+// Missing chats return an empty list.
+func GetChatAppends(ctx context.Context, db *sql.DB, chatID int64) ([]string, error) {
+	var appends string
+	err := db.QueryRowContext(ctx, `SELECT appends FROM chats WHERE id = ?`, chatID).Scan(&appends)
+	if err == sql.ErrNoRows {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get chat appends: %w", err)
+	}
+
+	ids, err := decodePromptAppendIDs(appends)
+	if err != nil {
+		return nil, fmt.Errorf("decode chat appends: %w", err)
+	}
+	return ids, nil
+}
+
 // GetMessages returns a chat's messages in conversation order.
 func GetMessages(ctx context.Context, db *sql.DB, chatID int64) ([]llm.Message, error) {
 	snapshot, err := GetMessageSnapshot(ctx, db, chatID)

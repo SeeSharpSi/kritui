@@ -21,12 +21,16 @@ var (
 	ErrChatNotFound = errors.New("chat not found")
 )
 
-// AllocateChat reserves a unique chat ID, stores the tools enabled by default
+// AllocateChat reserves a unique chat ID, stores options enabled by default
 // for new chats, and removes abandoned empty chats.
-func AllocateChat(ctx context.Context, db *sql.DB, tools []string) (int64, error) {
+func AllocateChat(ctx context.Context, db *sql.DB, tools, appends []string) (int64, error) {
 	encoded, err := encodeToolNames(tools)
 	if err != nil {
 		return 0, fmt.Errorf("encode chat tools: %w", err)
+	}
+	encodedAppends, err := encodePromptAppendIDs(appends)
+	if err != nil {
+		return 0, fmt.Errorf("encode chat appends: %w", err)
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -35,7 +39,7 @@ func AllocateChat(ctx context.Context, db *sql.DB, tools []string) (int64, error
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `INSERT INTO chats (tools) VALUES (?)`, encoded)
+	result, err := tx.ExecContext(ctx, `INSERT INTO chats (tools, appends) VALUES (?, ?)`, encoded, encodedAppends)
 	if err != nil {
 		return 0, fmt.Errorf("allocate chat: %w", err)
 	}
@@ -63,13 +67,17 @@ func AllocateChat(ctx context.Context, db *sql.DB, tools []string) (int64, error
 }
 
 // InsertChat creates a chat and returns its database ID.
-func InsertChat(ctx context.Context, db *sql.DB, title string, tools []string) (int64, error) {
+func InsertChat(ctx context.Context, db *sql.DB, title string, tools, appends []string) (int64, error) {
 	encoded, err := encodeToolNames(tools)
 	if err != nil {
 		return 0, fmt.Errorf("encode chat tools: %w", err)
 	}
+	encodedAppends, err := encodePromptAppendIDs(appends)
+	if err != nil {
+		return 0, fmt.Errorf("encode chat appends: %w", err)
+	}
 
-	result, err := db.ExecContext(ctx, `INSERT INTO chats (title, tools) VALUES (?, ?)`, title, encoded)
+	result, err := db.ExecContext(ctx, `INSERT INTO chats (title, tools, appends) VALUES (?, ?, ?)`, title, encoded, encodedAppends)
 	if err != nil {
 		return 0, fmt.Errorf("insert chat: %w", err)
 	}
@@ -103,6 +111,31 @@ func SetChatTools(ctx context.Context, db *sql.DB, chatID int64, tools []string)
 	}
 	if affected == 0 {
 		return fmt.Errorf("set chat tools: chat %d not found", chatID)
+	}
+	return nil
+}
+
+// SetChatAppends replaces the selected prompt append IDs stored for a chat.
+func SetChatAppends(ctx context.Context, db *sql.DB, chatID int64, appends []string) error {
+	encoded, err := encodePromptAppendIDs(appends)
+	if err != nil {
+		return fmt.Errorf("encode chat appends: %w", err)
+	}
+
+	result, err := db.ExecContext(ctx, `
+		UPDATE chats
+		SET appends = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		WHERE id = ?
+	`, encoded, chatID)
+	if err != nil {
+		return fmt.Errorf("set chat appends: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set chat appends rows affected: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("set chat appends: chat %d not found", chatID)
 	}
 	return nil
 }

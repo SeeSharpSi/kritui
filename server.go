@@ -218,6 +218,14 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 			END
 		)`)
 	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		return addColumnIfMissing(ctx, tx, "chats", "appends", `TEXT NOT NULL DEFAULT '[]' CHECK (
+			CASE
+				WHEN json_valid(appends) THEN json_type(appends) = 'array'
+				ELSE 0
+			END
+		)`)
+	},
 }
 
 func addColumnIfMissing(ctx context.Context, tx *sql.Tx, table, column, definition string) error {

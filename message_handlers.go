@@ -52,6 +52,25 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 		if !ok {
 			return
 		}
+		var selectedAppends []kritui_db.PromptAppend
+		if appendIDs := r.Form["append"]; len(appendIDs) > 0 {
+			promptAppends, err := kritui_db.GetPromptAppends(r.Context(), database)
+			if err != nil {
+				log.Printf("get prompt appends: %v", err)
+				renderMessageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
+				return
+			}
+			selectedAppends, err = kritui_db.SelectPromptAppends(promptAppends, appendIDs)
+			if err != nil {
+				renderMessageError(w, r, http.StatusBadRequest, "Prompt append selection is invalid.")
+				return
+			}
+		}
+		message = appendPromptText(message, selectedAppends)
+		if int64(len([]byte(message))) > maxMessageBodyBytes {
+			renderMessageError(w, r, http.StatusRequestEntityTooLarge, "Message with prompt appends is too large.")
+			return
+		}
 		requestID, err := toolCalls.create(request.chatID)
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
@@ -62,7 +81,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 			renderMessageError(w, r, http.StatusInternalServerError, "Failed to prepare message.")
 			return
 		}
-		if err := persistUserMessage(r.Context(), database, request.chatID, message, request.selected.Names()); err != nil {
+		if err := persistUserMessage(r.Context(), database, request.chatID, message, request.selected.Names(), promptAppendIDs(selectedAppends)); err != nil {
 			toolCalls.delete(requestID)
 			log.Printf("store user message: %v", err)
 			renderMessageError(w, r, http.StatusInternalServerError, "Failed to store message.")
@@ -250,10 +269,20 @@ func parseMessageRequest(w http.ResponseWriter, r *http.Request, database *sql.D
 	return messageRequest{chat: chat, chatID: chatID, model: model, selected: selected}, true
 }
 
-func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, tools []string) error {
+func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, tools, appends []string) error {
+	if tools == nil {
+		tools = []string{}
+	}
+	if appends == nil {
+		appends = []string{}
+	}
 	toolsJSON, err := json.Marshal(tools)
 	if err != nil {
 		return fmt.Errorf("encode chat tools: %w", err)
+	}
+	appendsJSON, err := json.Marshal(appends)
+	if err != nil {
+		return fmt.Errorf("encode chat appends: %w", err)
 	}
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
@@ -262,11 +291,12 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO chats (id, title, tools) VALUES (?, ?, ?)
+		INSERT INTO chats (id, title, tools, appends) VALUES (?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET
 			title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END,
-			tools = excluded.tools
-	`, chatID, normalizeChatTitle(message), string(toolsJSON)); err != nil {
+			tools = excluded.tools,
+			appends = excluded.appends
+	`, chatID, normalizeChatTitle(message), string(toolsJSON), string(appendsJSON)); err != nil {
 		return fmt.Errorf("create chat: %w", err)
 	}
 
@@ -285,6 +315,28 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 		return fmt.Errorf("commit user message: %w", err)
 	}
 	return nil
+}
+
+func appendPromptText(message string, appends []kritui_db.PromptAppend) string {
+	if len(appends) == 0 {
+		return message
+	}
+
+	var builder strings.Builder
+	builder.WriteString(message)
+	for _, value := range appends {
+		builder.WriteString("\n\n")
+		builder.WriteString(value.Text)
+	}
+	return builder.String()
+}
+
+func promptAppendIDs(values []kritui_db.PromptAppend) []string {
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	return ids
 }
 
 func parseLimitedForm(w http.ResponseWriter, r *http.Request, limit int64) error {

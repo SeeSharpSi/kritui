@@ -301,7 +301,7 @@ document.addEventListener('click', (event) => {
         toolCallToggle.setAttribute('aria-expanded', String(expanded));
     }
 
-    document.querySelectorAll('.model-picker[open], .tool-picker[open]').forEach((picker) => {
+    document.querySelectorAll('.model-picker[open], .tool-picker[open], .append-picker[open]').forEach((picker) => {
         if (!picker.contains(event.target)) {
             picker.removeAttribute('open');
         }
