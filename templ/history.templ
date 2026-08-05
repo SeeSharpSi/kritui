@@ -195,8 +195,16 @@ templ HistoryButton() {
 		class="history-button"
 		data-panel-target="history-page"
 		aria-controls="history-page"
+		aria-label="History"
+		title="History"
 		aria-expanded="false"
-	>History</button>
+	>
+		@Icon(
+			"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8",
+			"M3 3v5h5",
+			"M12 7v5l4 2",
+		)
+	</button>
 }
 
 func historyEntriesURL(chatID, beforeUpdatedAt string, beforeID int64) string {

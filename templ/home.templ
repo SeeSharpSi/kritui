@@ -17,6 +17,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 						@HistoryPage(chatID)
 					</div>
 				</div>
+				@SettingsButton()
 				<details class="chat-options">
 					<div class="chat-options-list">
 						<details class="model-picker">
@@ -63,6 +64,7 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 						<span class="visually-hidden">Toggle chat options</span>
 					</summary>
 				</details>
+				@HistoryButton()
 			</section>
 			<form
 				id="message-form"
@@ -75,8 +77,6 @@ templ Home(chatID string, messages []llm.Message, models []string, selectedModel
 			>
 				<label for="message" class="visually-hidden">Message</label>
 				@MessageInput(false)
-				@SettingsButton()
-				@HistoryButton()
 				@SendButton()
 			</form>
 		</main>

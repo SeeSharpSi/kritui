@@ -180,6 +180,11 @@ function togglePanel(panelID, panelButton) {
     document.querySelectorAll('#page-panel > .panel-page').forEach((panel) => {
         panel.hidden = !opening || panel !== selectedPanel;
     });
+    const chatOptionsSummary = document.querySelector('.chat-options > summary');
+    if (chatOptionsSummary) {
+        chatOptionsSummary.inert = opening;
+        chatOptionsSummary.setAttribute('aria-disabled', String(opening));
+    }
     document.querySelectorAll('[data-panel-target]').forEach((button) => {
         const active = opening && button.dataset.panelTarget === panelID;
         button.classList.toggle('active', active);
