@@ -12,6 +12,7 @@ import (
 const (
 	promptAppendsSetting     = "prompt_appends"
 	maxPromptAppends         = 32
+	maxPromptAppendIDBytes   = 64
 	maxPromptAppendNameRunes = 80
 	maxPromptAppendTextBytes = 16 << 10
 	defaultLinkCheckAppendID = "link-check"
@@ -53,11 +54,18 @@ func embeddedAppendText(name string) string {
 	return strings.TrimSpace(string(content))
 }
 
+// rowQueryer is satisfied by both *sql.DB and *sql.Tx so prompt-append
+// resolution can run inside the same transaction that persists a chat and its
+// message.
+type rowQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 // GetPromptAppends returns stored presets, or built-in presets when none have
 // been configured. Stored values that fail to decode or validate return an
 // error instead of falling back, so corruption is never silently replaced by
 // defaults.
-func GetPromptAppends(ctx context.Context, db *sql.DB) ([]PromptAppend, error) {
+func GetPromptAppends(ctx context.Context, db rowQueryer) ([]PromptAppend, error) {
 	var encoded string
 	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE name = ?`, promptAppendsSetting).Scan(&encoded)
 	if err == sql.ErrNoRows {
@@ -82,6 +90,26 @@ func GetPromptAppends(ctx context.Context, db *sql.DB) ([]PromptAppend, error) {
 // happens atomically with pruning removed preset IDs from every chat's
 // selected appends, so stale references never survive a settings change.
 func SetPromptAppends(ctx context.Context, db *sql.DB, values []PromptAppend) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin set prompt appends: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := setPromptAppends(ctx, tx, values); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set prompt appends: %w", err)
+	}
+	return nil
+}
+
+// setPromptAppends writes prompt append definitions and prunes removed IDs
+// from every chat's selected appends. It runs on either a database or an
+// open transaction so a settings save can share one atomic unit of work.
+func setPromptAppends(ctx context.Context, db settingWriter, values []PromptAppend) error {
 	normalized, err := normalizePromptAppends(values)
 	if err != nil {
 		return fmt.Errorf("set prompt appends: %w", err)
@@ -95,20 +123,14 @@ func SetPromptAppends(ctx context.Context, db *sql.DB, values []PromptAppend) er
 		return fmt.Errorf("encode prompt append IDs: %w", err)
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin set prompt appends: %w", err)
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := db.ExecContext(ctx, `
 		INSERT INTO settings (name, value) VALUES (?, ?)
 		ON CONFLICT (name) DO UPDATE SET value = excluded.value
 	`, promptAppendsSetting, string(encoded)); err != nil {
 		return fmt.Errorf("set prompt appends: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := db.ExecContext(ctx, `
 		UPDATE chats
 		SET appends = (
 			SELECT COALESCE(json_group_array(value), '[]')
@@ -123,11 +145,37 @@ func SetPromptAppends(ctx context.Context, db *sql.DB, values []PromptAppend) er
 	`, encodedIDs); err != nil {
 		return fmt.Errorf("prune chat prompt appends: %w", err)
 	}
+	return nil
+}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit set prompt appends: %w", err)
+// ValidatePromptAppendID checks a prompt append ID against the single ID
+// contract shared by every path that persists or re-renders definitions. A
+// valid ID holds at most 64 ASCII bytes; its first and last characters are
+// lowercase ASCII letters or digits; interior characters are lowercase ASCII
+// letters, digits, or hyphens. Single-character alphanumeric IDs are valid.
+// Generated IDs ("append-" plus 16 lowercase hex digits) and built-in IDs
+// ("link-check", "research") satisfy the contract.
+func ValidatePromptAppendID(id string) error {
+	if id == "" {
+		return fmt.Errorf("prompt append ID is required")
+	}
+	if len(id) > maxPromptAppendIDBytes {
+		return fmt.Errorf("prompt append %q exceeds %d bytes", id, maxPromptAppendIDBytes)
+	}
+	for index := 0; index < len(id); index++ {
+		valid := isASCIILetterOrDigit(id[index])
+		if !valid && index > 0 && index < len(id)-1 && id[index] == '-' {
+			valid = true
+		}
+		if !valid {
+			return fmt.Errorf("prompt append %q has an invalid character at byte %d", id, index)
+		}
 	}
 	return nil
+}
+
+func isASCIILetterOrDigit(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9'
 }
 
 // PromptAppendIDs returns append IDs in their input order.
@@ -203,8 +251,8 @@ func normalizePromptAppends(values []PromptAppend) ([]PromptAppend, error) {
 		value.ID = strings.TrimSpace(value.ID)
 		value.Name = strings.TrimSpace(value.Name)
 		value.Text = strings.TrimSpace(value.Text)
-		if value.ID == "" {
-			return nil, fmt.Errorf("prompt append ID is required")
+		if err := ValidatePromptAppendID(value.ID); err != nil {
+			return nil, err
 		}
 		if value.Name == "" {
 			return nil, fmt.Errorf("prompt append %q name is required", value.ID)

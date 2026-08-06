@@ -250,6 +250,10 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				return
 			}
 			if removeID := strings.TrimSpace(r.FormValue("remove_append")); removeID != "" {
+				if err := kritui_db.ValidatePromptAppendID(removeID); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("Prompt append remove is invalid: %v.", err))
+					return
+				}
 				filtered := submittedAppends[:0]
 				for _, value := range submittedAppends {
 					if value.ID != removeID {
@@ -288,27 +292,18 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			}
 			page.maxToolRounds = submittedRounds
 			page.promptAppends = submittedAppends
-			if err := kritui_db.SetDefaultModel(r.Context(), database, page.selectedModel); err != nil {
-				log.Printf("set default model: %v", err)
-				render(http.StatusInternalServerError, "Failed to save settings.")
-				return
-			}
-			if err := kritui_db.SetMaxToolRounds(r.Context(), database, page.maxToolRounds); err != nil {
-				log.Printf("set max tool rounds: %v", err)
-				render(http.StatusInternalServerError, "Failed to save settings.")
-				return
-			}
-			if err := kritui_db.SetDefaultEnabledTools(r.Context(), database, page.defaultTools); err != nil {
-				log.Printf("set default tools: %v", err)
-				render(http.StatusInternalServerError, "Failed to save settings.")
-				return
+			update := kritui_db.SettingsUpdate{
+				Model:         page.selectedModel,
+				MaxToolRounds: page.maxToolRounds,
+				DefaultTools:  page.defaultTools,
 			}
 			if r.FormValue("append_form") == "1" {
-				if err := kritui_db.SetPromptAppends(r.Context(), database, submittedAppends); err != nil {
-					log.Printf("set prompt appends: %v", err)
-					render(http.StatusInternalServerError, "Failed to save settings.")
-					return
-				}
+				update.PromptAppends = submittedAppends
+			}
+			if err := kritui_db.SaveSettings(r.Context(), database, update); err != nil {
+				log.Printf("save settings: %v", err)
+				render(http.StatusInternalServerError, "Failed to save settings.")
+				return
 			}
 			page.saved = true
 		}
@@ -482,6 +477,9 @@ func promptAppendsFromForm(r *http.Request) ([]kritui_db.PromptAppend, error) {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			return nil, fmt.Errorf("prompt append ID is required")
+		}
+		if err := kritui_db.ValidatePromptAppendID(id); err != nil {
+			return nil, err
 		}
 		if _, ok := seen[id]; ok {
 			return nil, fmt.Errorf("prompt append %q is duplicated", id)

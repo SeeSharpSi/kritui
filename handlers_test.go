@@ -135,7 +135,8 @@ func TestOpenDatabaseSerializesConcurrentWrites(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			errors <- persistUserMessage(context.Background(), database, chatID, "message", []string{}, nil)
+			_, err := persistUserMessage(context.Background(), database, chatID, "message", []string{}, nil)
+			errors <- err
 		}()
 	}
 	close(start)
@@ -638,6 +639,75 @@ func TestMessageHandlerRejectsUnknownPromptAppend(t *testing.T) {
 	}
 }
 
+func TestMessageRejectsAppendRemovedBeforePersistence(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	values := []kritui_db.PromptAppend{
+		{ID: "keep", Name: "Keep", Text: "Keep it."},
+		{ID: "gone", Name: "Gone", Text: "Gone."},
+	}
+	if err := kritui_db.SetPromptAppends(ctx, database, values); err != nil {
+		t.Fatalf("SetPromptAppends(): %v", err)
+	}
+	// A settings save commits first and removes "gone", then the message is
+	// submitted. Resolution happens inside the message transaction, so the
+	// removed ID must be rejected against the current definitions.
+	if err := kritui_db.SetPromptAppends(ctx, database, values[:1]); err != nil {
+		t.Fatalf("SetPromptAppends(remove gone): %v", err)
+	}
+	_, err := persistUserMessage(ctx, database, 1, "Use gone", []string{}, []string{"gone", "keep"})
+	if !errors.Is(err, errInvalidAppendSelection) {
+		t.Fatalf("persistUserMessage() error = %v, want errInvalidAppendSelection", err)
+	}
+
+	var chats int
+	if check := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&chats); check != nil {
+		t.Fatalf("count chats: %v", check)
+	}
+	if chats != 0 {
+		t.Errorf("stored chats = %d, want 0", chats)
+	}
+	var messages int
+	if check := database.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&messages); check != nil {
+		t.Fatalf("count messages: %v", check)
+	}
+	if messages != 0 {
+		t.Errorf("stored messages = %d, want 0", messages)
+	}
+}
+
+func TestMessageSelectionThenSettingsPruneNeverLeavesStaleAppends(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	keep := kritui_db.PromptAppend{ID: "keep", Name: "Keep", Text: "Keep it."}
+	gone := kritui_db.PromptAppend{ID: "gone", Name: "Gone", Text: "Gone."}
+	if err := kritui_db.SetPromptAppends(ctx, database, []kritui_db.PromptAppend{keep, gone}); err != nil {
+		t.Fatalf("SetPromptAppends(): %v", err)
+	}
+	// The message transaction resolves both appends and persists the selection
+	// before the settings save that follows.
+	selected, err := persistUserMessage(ctx, database, 90, "Use both", []string{}, []string{"keep", "gone"})
+	if err != nil {
+		t.Fatalf("persistUserMessage(): %v", err)
+	}
+	if got := kritui_db.PromptAppendIDs(selected); !slices.Equal(got, []string{"keep", "gone"}) {
+		t.Errorf("selected append IDs = %v, want [keep gone]", got)
+	}
+
+	// A later settings save removes "gone"; SetPromptAppends prunes it from
+	// the chat selection so no stale reference survives.
+	if err := kritui_db.SetPromptAppends(ctx, database, []kritui_db.PromptAppend{keep}); err != nil {
+		t.Fatalf("SetPromptAppends(remove gone): %v", err)
+	}
+	ids, err := kritui_db.GetChatPromptAppendIDs(ctx, database, 90)
+	if err != nil {
+		t.Fatalf("GetChatPromptAppendIDs(): %v", err)
+	}
+	if !slices.Equal(ids, []string{"keep"}) {
+		t.Errorf("chat prompt append IDs = %v, want [keep]", ids)
+	}
+}
+
 func TestMessagesWithPromptAppendTextsExpandsCopyForCompletion(t *testing.T) {
 	original := []llm.Message{{
 		Role:              "user",
@@ -963,12 +1033,12 @@ func TestHistoryHandlerRefreshesCurrentTitlesAndOrdering(t *testing.T) {
 	}
 
 	requireContains(t, loadHistory(), "No saved chats yet.")
-	if err := persistUserMessage(context.Background(), database, 1, "First title", []string{}, nil); err != nil {
+	if _, err := persistUserMessage(context.Background(), database, 1, "First title", []string{}, nil); err != nil {
 		t.Fatalf("store first chat: %v", err)
 	}
 	requireContains(t, loadHistory(), "First title")
 
-	if err := persistUserMessage(context.Background(), database, 2, "Newest title", []string{}, nil); err != nil {
+	if _, err := persistUserMessage(context.Background(), database, 2, "Newest title", []string{}, nil); err != nil {
 		t.Fatalf("store newest chat: %v", err)
 	}
 	refreshed := loadHistory()
@@ -1119,6 +1189,90 @@ func TestSettingsHandlerStoresLargePromptAppend(t *testing.T) {
 	want := []kritui_db.PromptAppend{{ID: "large", Name: "Large", Text: largeText}}
 	if !slices.Equal(values, want) {
 		t.Errorf("prompt appends = %#v, want %#v", values, want)
+	}
+}
+
+func TestSettingsHandlerRejectsMalformedAppendIDOnAdd(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	seeded := []kritui_db.PromptAppend{{ID: "existing", Name: "Existing", Text: "Keep it."}}
+	if err := kritui_db.SetPromptAppends(context.Background(), database, seeded); err != nil {
+		t.Fatalf("set prompt appends: %v", err)
+	}
+
+	for _, malformed := range []string{"bad char!", strings.Repeat("a", 65)} {
+		response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+			"model":           {"saved-model"},
+			"max_tool_rounds": {"16"},
+			"append_form":     {"1"},
+			"append_id":       {"existing", malformed},
+			"append_action":   {"add"},
+		})
+
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("status for %q = %d, want %d; body = %q", malformed, response.Code, http.StatusBadRequest, response.Body.String())
+			continue
+		}
+		body := response.Body.String()
+		for _, context := range []string{
+			`name="append_name_` + malformed,
+			`name="append_text_` + malformed,
+			`id="append-name-` + malformed,
+		} {
+			if strings.Contains(body, context) {
+				t.Errorf("add response rendered malformed ID %q into attribute %q", malformed, context)
+			}
+		}
+		got, err := kritui_db.GetPromptAppends(context.Background(), database)
+		if err != nil {
+			t.Fatalf("get prompt appends: %v", err)
+		}
+		if !slices.Equal(got, seeded) {
+			t.Errorf("prompt appends after rejected add with %q = %#v, want seeded %#v", malformed, got, seeded)
+		}
+	}
+}
+
+func TestSettingsHandlerRejectsMalformedRemoveAppendID(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	seeded := []kritui_db.PromptAppend{{ID: "existing", Name: "Existing", Text: "Keep it."}}
+	if err := kritui_db.SetPromptAppends(context.Background(), database, seeded); err != nil {
+		t.Fatalf("set prompt appends: %v", err)
+	}
+
+	malformed := "bad char"
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":                {"saved-model"},
+		"max_tool_rounds":      {"16"},
+		"append_form":          {"1"},
+		"append_id":            {"existing"},
+		"append_name_existing": {"Existing"},
+		"append_text_existing": {"Keep it."},
+		"remove_append":        {malformed},
+	})
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, context := range []string{
+		`name="append_name_` + malformed,
+		`name="append_text_` + malformed,
+		`id="append-name-` + malformed,
+	} {
+		if strings.Contains(body, context) {
+			t.Errorf("remove response rendered malformed ID %q into attribute %q", malformed, context)
+		}
+	}
+	got, err := kritui_db.GetPromptAppends(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get prompt appends: %v", err)
+	}
+	if !slices.Equal(got, seeded) {
+		t.Errorf("prompt appends after malformed remove = %v, want seeded %v", got, seeded)
 	}
 }
 
@@ -1303,6 +1457,31 @@ func TestSettingsHandlerStoresEmptyDefaultTools(t *testing.T) {
 		t.Errorf("default enabled tools = %v, want empty list", names)
 	}
 	requireNotContains(t, response.Body.String(), `name="default_tool" value="webfetch" checked`)
+}
+
+func TestSettingsHandlerPreservesPromptAppendsWithoutAppendForm(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	appends := []kritui_db.PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction."}}
+	if err := kritui_db.SetPromptAppends(context.Background(), database, appends); err != nil {
+		t.Fatalf("set prompt appends: %v", err)
+	}
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	got, err := kritui_db.GetPromptAppends(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get prompt appends: %v", err)
+	}
+	if !slices.Equal(got, appends) {
+		t.Errorf("prompt appends after save without append_form = %#v, want preserved %#v", got, appends)
+	}
 }
 
 func TestSettingsHandlerRejectsInvalidDefaultTools(t *testing.T) {
@@ -2013,6 +2192,161 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	}
 }
 
+func TestMessageCompletionHandlerExpandsStoredPromptAppendsExactlyOnce(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	firstAppend := kritui_db.PromptAppend{ID: "append-one", Name: "First", Text: "First append text."}
+	secondAppend := kritui_db.PromptAppend{ID: "append-two", Name: "Second", Text: "Second append text."}
+	if err := kritui_db.SetPromptAppends(ctx, database, []kritui_db.PromptAppend{firstAppend, secondAppend}); err != nil {
+		t.Fatalf("SetPromptAppends(): %v", err)
+	}
+
+	registry, err := tools.NewRegistry(responsePersistenceTestTool{})
+	if err != nil {
+		t.Fatalf("create legacy registry: %v", err)
+	}
+
+	toolCalls := newToolCallStore()
+	message := postForm(t, messageHandler(database, registry, toolCalls), "/messages?chat=3", url.Values{
+		"message": {"Original question"},
+		"model":   {"selected-model"},
+		"tool":    {"lookup"},
+		"append":  {"append-one", "append-two"},
+	})
+	if message.Code != http.StatusOK {
+		t.Fatalf("message status = %d, want %d; body = %q", message.Code, http.StatusOK, message.Body.String())
+	}
+	const requestField = `name="request" value="`
+	_, requestID, ok := strings.Cut(message.Body.String(), requestField)
+	if !ok {
+		t.Fatalf("message response does not contain %q: %s", requestField, message.Body.String())
+	}
+	requestID, _, ok = strings.Cut(requestID, `"`)
+	if !ok {
+		t.Fatalf("message response request field is unterminated: %s", message.Body.String())
+	}
+
+	requestNumber := 0
+	type providerRequest struct {
+		Model    string        `json:"model"`
+		Messages []llm.Message `json:"messages"`
+		Tools    []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	requests := make(chan providerRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request providerRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		requestNumber++
+		requests <- request
+		w.Header().Set("Content-Type", "application/json")
+		if requestNumber == 1 {
+			arguments, _ := json.Marshal(map[string]string{"key": "value"})
+			_, _ = w.Write([]byte(`{
+				"model":"response-model",
+				"choices":[{"message":{"role":"assistant","tool_calls":[{
+					"id":"call-1",
+					"type":"function",
+					"function":{"name":"lookup","arguments":` + strconv.Quote(string(arguments)) + `}
+				}]},"finish_reason":"tool_calls"}]
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"Final answer."},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	completion := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil),
+		"/messages/complete?chat=3", url.Values{
+			"model":   {"selected-model"},
+			"request": {requestID},
+			"tool":    {"lookup"},
+		})
+	if completion.Code != http.StatusOK {
+		t.Fatalf("completion status = %d, want %d; body = %q", completion.Code, http.StatusOK, completion.Body.String())
+	}
+	requireContains(t, completion.Body.String(), "Final answer.")
+
+	const (
+		original     = "Original question"
+		firstText    = "First append text."
+		secondText   = "Second append text."
+		wantExpanded = original + "\n\n" + firstText + "\n\n" + secondText
+	)
+
+	for index := 0; index < 2; index++ {
+		request := <-requests
+		if len(request.Messages) < 2 || request.Messages[0].Role != "system" {
+			t.Fatalf("provider request %d messages = %#v, want system lead", index+1, request.Messages)
+		}
+		requireContains(t, request.Messages[0].Content, "Current UTC datetime:")
+
+		systemCount := 0
+		originalCount := 0
+		firstCount := 0
+		secondCount := 0
+		for _, message := range request.Messages {
+			switch message.Role {
+			case "system":
+				systemCount++
+			case "user":
+				originalCount += strings.Count(message.Content, original)
+				firstCount += strings.Count(message.Content, firstText)
+				secondCount += strings.Count(message.Content, secondText)
+				if message.Content != wantExpanded {
+					t.Errorf("request %d user message = %q, want %q", index+1, message.Content, wantExpanded)
+				}
+			}
+		}
+		if index == 0 {
+			if systemCount != 1 {
+				t.Errorf("request %d system message count = %d, want 1", index+1, systemCount)
+			}
+		}
+		if originalCount != 1 {
+			t.Errorf("request %d original text occurrences = %d, want 1", index+1, originalCount)
+		}
+		if firstCount != 1 {
+			t.Errorf("request %d first append occurrences = %d, want 1", index+1, firstCount)
+		}
+		if secondCount != 1 {
+			t.Errorf("request %d second append occurrences = %d, want 1", index+1, secondCount)
+		}
+	}
+	if requestNumber != 2 {
+		t.Errorf("provider request count = %d, want 2", requestNumber)
+	}
+
+	var storedContent, storedAppendTexts string
+	if err := database.QueryRow(`
+		SELECT content, prompt_appends FROM messages WHERE chat_id = 3 AND role = 'user'
+	`).Scan(&storedContent, &storedAppendTexts); err != nil {
+		t.Fatalf("query stored user message: %v", err)
+	}
+	if storedContent != original {
+		t.Errorf("stored user content = %q, want raw %q", storedContent, original)
+	}
+	var snapshots []string
+	if err := json.Unmarshal([]byte(storedAppendTexts), &snapshots); err != nil {
+		t.Fatalf("decode stored prompt append texts: %v", err)
+	}
+	if !slices.Equal(snapshots, []string{firstText, secondText}) {
+		t.Errorf("stored append snapshots = %v, want %v", snapshots, []string{firstText, secondText})
+	}
+}
+
 func TestClientLocation(t *testing.T) {
 	location := clientLocation(" America/New_York ")
 	if location == nil || location.String() != "America/New_York" {
@@ -2625,7 +2959,7 @@ func TestResponsesProviderMetadataPersistsAcrossDatabaseReload(t *testing.T) {
 	if len(storedOutput) != 2 {
 		t.Fatalf("stored provider output count = %d, want 2", len(storedOutput))
 	}
-	if err := persistUserMessage(context.Background(), database, 1, "Second question", []string{"lookup"}, nil); err != nil {
+	if _, err := persistUserMessage(context.Background(), database, 1, "Second question", []string{"lookup"}, nil); err != nil {
 		t.Fatalf("store second user message: %v", err)
 	}
 

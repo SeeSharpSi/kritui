@@ -115,27 +115,30 @@ func SetChatTools(ctx context.Context, db *sql.DB, chatID int64, tools []string)
 	return nil
 }
 
-// SetChatPromptAppendIDs replaces the selected prompt append IDs stored for a chat.
-func SetChatPromptAppendIDs(ctx context.Context, db *sql.DB, chatID int64, appendIDs []string) error {
-	encoded, err := encodePromptAppendIDs(appendIDs)
+// UpsertChat inserts a chat with the supplied title, tools, and prompt-append
+// IDs, or updates the existing chat when that ID is already present. An
+// existing non-empty title is preserved; only an empty title is replaced with
+// the supplied one. Tools and prompt-append IDs are always replaced with the
+// supplied values. It runs on either a database or an open transaction so a
+// chat can be created in the same atomic unit of work as its first message.
+func UpsertChat(ctx context.Context, db databaseExecutor, chatID int64, title string, tools, appendIDs []string) error {
+	encoded, err := encodeToolNames(tools)
+	if err != nil {
+		return fmt.Errorf("encode chat tools: %w", err)
+	}
+	encodedAppendIDs, err := encodePromptAppendIDs(appendIDs)
 	if err != nil {
 		return fmt.Errorf("encode chat prompt append IDs: %w", err)
 	}
 
-	result, err := db.ExecContext(ctx, `
-		UPDATE chats
-		SET appends = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		WHERE id = ?
-	`, encoded, chatID)
-	if err != nil {
-		return fmt.Errorf("set chat prompt append IDs: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("set chat prompt append IDs rows affected: %w", err)
-	}
-	if affected == 0 {
-		return fmt.Errorf("set chat prompt append IDs: chat %d not found", chatID)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO chats (id, title, tools, appends) VALUES (?, ?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET
+			title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END,
+			tools = excluded.tools,
+			appends = excluded.appends
+	`, chatID, title, encoded, encodedAppendIDs); err != nil {
+		return fmt.Errorf("upsert chat: %w", err)
 	}
 	return nil
 }

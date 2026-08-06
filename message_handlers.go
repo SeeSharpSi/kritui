@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -38,6 +37,14 @@ const (
 	maxChatTitleRunes          = 120
 )
 
+var (
+	// errInvalidAppendSelection means a submitted prompt-append ID is unknown
+	// or repeated against the definitions read inside the message transaction.
+	errInvalidAppendSelection = errors.New("prompt append selection is invalid")
+	// errPromptAppendTooLarge means the expanded message exceeds the body limit.
+	errPromptAppendTooLarge = errors.New("message with prompt appends is too large")
+)
+
 func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !parseMessageForm(w, r, maxMessageBodyBytes) {
@@ -53,26 +60,6 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 		if !ok {
 			return
 		}
-		var selectedAppends []kritui_db.PromptAppend
-		if appendIDs := r.Form["append"]; len(appendIDs) > 0 {
-			promptAppends, err := kritui_db.GetPromptAppends(r.Context(), database)
-			if err != nil {
-				log.Printf("get prompt appends: %v", err)
-				renderMessageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
-				return
-			}
-			selectedAppends, err = kritui_db.SelectPromptAppends(promptAppends, appendIDs)
-			if err != nil {
-				renderMessageError(w, r, http.StatusBadRequest, "Prompt append selection is invalid.")
-				return
-			}
-		}
-		appendTexts := promptAppendTexts(selectedAppends)
-		expandedMessage := appendPromptText(message, appendTexts)
-		if int64(len([]byte(expandedMessage))) > maxMessageBodyBytes {
-			renderMessageError(w, r, http.StatusRequestEntityTooLarge, "Message with prompt appends is too large.")
-			return
-		}
 		requestID, err := toolCalls.create(request.chatID)
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
@@ -83,13 +70,22 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 			renderMessageError(w, r, http.StatusInternalServerError, "Failed to prepare message.")
 			return
 		}
-		if err := persistUserMessage(r.Context(), database, request.chatID, message, request.selected.Names(), selectedAppends); err != nil {
+		selectedAppends, err := persistUserMessage(r.Context(), database, request.chatID, message, request.selected.Names(), r.Form["append"])
+		if err != nil {
 			toolCalls.delete(requestID)
-			log.Printf("store user message: %v", err)
-			renderMessageError(w, r, http.StatusInternalServerError, "Failed to store message.")
+			switch {
+			case errors.Is(err, errInvalidAppendSelection):
+				renderMessageError(w, r, http.StatusBadRequest, "Prompt append selection is invalid.")
+			case errors.Is(err, errPromptAppendTooLarge):
+				renderMessageError(w, r, http.StatusRequestEntityTooLarge, "Message with prompt appends is too large.")
+			default:
+				log.Printf("store user message: %v", err)
+				renderMessageError(w, r, http.StatusInternalServerError, "Failed to store message.")
+			}
 			return
 		}
 
+		appendTexts := promptAppendTexts(selectedAppends)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		userMessage := llm.Message{Role: "user", Content: message, PromptAppendTexts: appendTexts}
 		if err := templates.PendingSubmission(strconv.FormatInt(request.chatID, 10), requestID, userMessage, request.model, request.selected.Names()).Render(r.Context(), w); err != nil {
@@ -272,35 +268,36 @@ func parseMessageRequest(w http.ResponseWriter, r *http.Request, database *sql.D
 	return messageRequest{chat: chat, chatID: chatID, model: model, selected: selected}, true
 }
 
-func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, tools []string, selectedAppends []kritui_db.PromptAppend) error {
-	if tools == nil {
-		tools = []string{}
-	}
-	if selectedAppends == nil {
-		selectedAppends = []kritui_db.PromptAppend{}
-	}
-	toolsJSON, err := json.Marshal(tools)
-	if err != nil {
-		return fmt.Errorf("encode chat tools: %w", err)
-	}
-	appendIDsJSON, err := json.Marshal(kritui_db.PromptAppendIDs(selectedAppends))
-	if err != nil {
-		return fmt.Errorf("encode chat prompt append IDs: %w", err)
-	}
+// persistUserMessage resolves submitted prompt-append IDs against the current
+// definitions inside the same transaction that writes the chat and inserts the
+// message. Resolving in-transaction means a settings save that removes an ID
+// cannot slip between validation and persistence, so stale references are never
+// reintroduced into chats.appends. It returns the resolved append definitions,
+// which the caller uses for render and prompt-append text snapshots.
+func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, tools []string, appendIDs []string) ([]kritui_db.PromptAppend, error) {
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin user message transaction: %w", err)
+		return nil, fmt.Errorf("begin user message transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO chats (id, title, tools, appends) VALUES (?, ?, ?, ?)
-		ON CONFLICT (id) DO UPDATE SET
-			title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END,
-			tools = excluded.tools,
-			appends = excluded.appends
-	`, chatID, normalizeChatTitle(message), string(toolsJSON), string(appendIDsJSON)); err != nil {
-		return fmt.Errorf("create chat: %w", err)
+	var selectedAppends []kritui_db.PromptAppend
+	if len(appendIDs) > 0 {
+		promptAppends, err := kritui_db.GetPromptAppends(ctx, tx)
+		if err != nil {
+			return nil, fmt.Errorf("get prompt appends: %w", err)
+		}
+		selectedAppends, err = kritui_db.SelectPromptAppends(promptAppends, appendIDs)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errInvalidAppendSelection, err)
+		}
+	}
+	if oversized := appendPromptText(message, promptAppendTexts(selectedAppends)); int64(len([]byte(oversized))) > maxMessageBodyBytes {
+		return nil, errPromptAppendTooLarge
+	}
+
+	if err := kritui_db.UpsertChat(ctx, tx, chatID, normalizeChatTitle(message), tools, kritui_db.PromptAppendIDs(selectedAppends)); err != nil {
+		return nil, err
 	}
 
 	var position int
@@ -309,19 +306,19 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 		FROM messages
 		WHERE chat_id = ?
 	`, chatID).Scan(&position); err != nil {
-		return fmt.Errorf("get user message position: %w", err)
+		return nil, fmt.Errorf("get user message position: %w", err)
 	}
 	if _, err := kritui_db.InsertMessage(ctx, tx, chatID, position, llm.Message{
 		Role:              "user",
 		Content:           message,
 		PromptAppendTexts: promptAppendTexts(selectedAppends),
 	}); err != nil {
-		return fmt.Errorf("insert user message: %w", err)
+		return nil, fmt.Errorf("insert user message: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit user message: %w", err)
+		return nil, fmt.Errorf("commit user message: %w", err)
 	}
-	return nil
+	return selectedAppends, nil
 }
 
 func appendPromptText(message string, texts []string) string {
