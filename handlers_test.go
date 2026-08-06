@@ -568,39 +568,39 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 	}
 	defaults := kritui_db.DefaultPromptAppends()
 
-	var content, promptAppends, appends string
+	var content, encodedPromptAppendTexts, encodedAppendIDs string
 	if err := database.QueryRow(`
 		SELECT messages.content, messages.prompt_appends, chats.appends
 		FROM messages
 		JOIN chats ON chats.id = messages.chat_id
 		WHERE messages.chat_id = 3
-	`).Scan(&content, &promptAppends, &appends); err != nil {
+	`).Scan(&content, &encodedPromptAppendTexts, &encodedAppendIDs); err != nil {
 		t.Fatalf("query message and append selections: %v", err)
 	}
 	if content != "Hello" {
 		t.Errorf("stored message = %q, want original Hello", content)
 	}
-	var storedPromptAppends []string
-	if err := json.Unmarshal([]byte(promptAppends), &storedPromptAppends); err != nil {
-		t.Fatalf("decode message prompt appends: %v", err)
+	var storedPromptAppendTexts []string
+	if err := json.Unmarshal([]byte(encodedPromptAppendTexts), &storedPromptAppendTexts); err != nil {
+		t.Fatalf("decode message prompt append texts: %v", err)
 	}
-	wantPromptAppends := []string{defaults[1].Text, defaults[0].Text}
-	if !slices.Equal(storedPromptAppends, wantPromptAppends) {
-		t.Errorf("stored message prompt appends = %v, want %v", storedPromptAppends, wantPromptAppends)
+	wantPromptAppendTexts := []string{defaults[1].Text, defaults[0].Text}
+	if !slices.Equal(storedPromptAppendTexts, wantPromptAppendTexts) {
+		t.Errorf("stored message prompt append texts = %v, want %v", storedPromptAppendTexts, wantPromptAppendTexts)
 	}
 	storedMessages, err := kritui_db.GetMessages(context.Background(), database, 3)
 	if err != nil {
 		t.Fatalf("get stored messages: %v", err)
 	}
-	if len(storedMessages) != 1 || !slices.Equal(storedMessages[0].PromptAppends, wantPromptAppends) {
-		t.Errorf("loaded message prompt appends = %#v, want %v", storedMessages, wantPromptAppends)
+	if len(storedMessages) != 1 || !slices.Equal(storedMessages[0].PromptAppendTexts, wantPromptAppendTexts) {
+		t.Errorf("loaded message prompt append texts = %#v, want %v", storedMessages, wantPromptAppendTexts)
 	}
 	var selected []string
-	if err := json.Unmarshal([]byte(appends), &selected); err != nil {
-		t.Fatalf("decode chat appends: %v", err)
+	if err := json.Unmarshal([]byte(encodedAppendIDs), &selected); err != nil {
+		t.Fatalf("decode chat prompt append IDs: %v", err)
 	}
 	if !slices.Equal(selected, []string{"research", "link-check"}) {
-		t.Errorf("stored chat appends = %v, want [research link-check]", selected)
+		t.Errorf("stored chat prompt append IDs = %v, want [research link-check]", selected)
 	}
 	body := response.Body.String()
 	requireContains(t, body,
@@ -638,14 +638,14 @@ func TestMessageHandlerRejectsUnknownPromptAppend(t *testing.T) {
 	}
 }
 
-func TestMessagesWithPromptAppendsExpandsCopyForCompletion(t *testing.T) {
+func TestMessagesWithPromptAppendTextsExpandsCopyForCompletion(t *testing.T) {
 	original := []llm.Message{{
-		Role:          "user",
-		Content:       "Question",
-		PromptAppends: []string{"First instruction", "Second instruction"},
+		Role:              "user",
+		Content:           "Question",
+		PromptAppendTexts: []string{"First instruction", "Second instruction"},
 	}}
 
-	expanded := messagesWithPromptAppends(original)
+	expanded := messagesWithPromptAppendTexts(original)
 	if original[0].Content != "Question" {
 		t.Errorf("original message content = %q, want Question", original[0].Content)
 	}
@@ -1095,6 +1095,33 @@ func TestSettingsHandlerStoresPromptAppends(t *testing.T) {
 	requireContains(t, response.Body.String(), `name="append_name_custom"`, `value="Custom"`, "Use custom instruction.", "Settings saved.")
 }
 
+func TestSettingsHandlerStoresLargePromptAppend(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	largeText := strings.Repeat("x", 16*1024)
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":             {"saved-model"},
+		"max_tool_rounds":   {"16"},
+		"append_form":       {"1"},
+		"append_id":         {"large"},
+		"append_name_large": {"Large"},
+		"append_text_large": {largeText},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	values, err := kritui_db.GetPromptAppends(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get prompt appends: %v", err)
+	}
+	want := []kritui_db.PromptAppend{{ID: "large", Name: "Large", Text: largeText}}
+	if !slices.Equal(values, want) {
+		t.Errorf("prompt appends = %#v, want %#v", values, want)
+	}
+}
+
 func TestSettingsHandlerRefreshesAppendPickerAfterHTMXSave(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
@@ -1117,6 +1144,140 @@ func TestSettingsHandlerRefreshesAppendPickerAfterHTMXSave(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	requireContains(t, response.Body.String(), `id="append-picker"`, `hx-swap-oob="outerHTML"`, `value="custom"`, "Custom")
+}
+
+func TestSettingsHandlerReportsChatAppendsLoadFailureAfterHTMXSave(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	if _, err := database.Exec(`PRAGMA ignore_check_constraints = ON`); err != nil {
+		t.Fatalf("enable ignoring check constraints: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO chats (id, appends) VALUES (8, 'not-json')`); err != nil {
+		t.Fatalf("insert corrupt chat appends: %v", err)
+	}
+	if _, err := database.Exec(`PRAGMA ignore_check_constraints = OFF`); err != nil {
+		t.Fatalf("disable ignoring check constraints: %v", err)
+	}
+	form := url.Values{
+		"model":              {"saved-model"},
+		"max_tool_rounds":    {"16"},
+		"append_form":        {"1"},
+		"append_id":          {"custom"},
+		"append_name_custom": {"Custom"},
+		"append_text_custom": {"Use custom instruction."},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/settings?chat=8", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("HX-Request", "true")
+	response := httptest.NewRecorder()
+	settingsHandler(database, newTestToolRegistry(t))(response, request)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusInternalServerError, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "Failed to load chat appends.")
+	requireNotContains(t, response.Body.String(), `hx-swap-oob="outerHTML"`)
+}
+
+func TestSettingsHandlerAppendActionsIgnoreInvalidUnrelatedSettings(t *testing.T) {
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	defaults := kritui_db.DefaultPromptAppends()
+	for _, test := range []struct {
+		name   string
+		action url.Values
+		want   []kritui_db.PromptAppend
+	}{
+		{
+			name: "add",
+			action: url.Values{
+				"model":              {""},
+				"max_tool_rounds":    {"not-a-number"},
+				"append_form":        {"1"},
+				"append_id":          {"custom"},
+				"append_name_custom": {"Custom"},
+				"append_text_custom": {"Use custom instruction."},
+				"append_action":      {"add"},
+			},
+			want: defaults,
+		},
+		{
+			name: "remove",
+			action: url.Values{
+				"model":              {""},
+				"max_tool_rounds":    {"not-a-number"},
+				"append_form":        {"1"},
+				"append_id":          {"custom"},
+				"append_name_custom": {"Custom"},
+				"append_text_custom": {"Use custom instruction."},
+				"remove_append":      {"custom"},
+			},
+			want: defaults,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database := openTestDatabase(t)
+			response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", test.action)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+			}
+			requireNotContains(t, response.Body.String(), "A model is required.", "Max tool-call rounds must be between", "Tool selection is invalid.")
+			if test.name == "add" {
+				requireContains(t, response.Body.String(), "new append", `name="append_name_`)
+			}
+			if test.name == "remove" {
+				requireNotContains(t, response.Body.String(), "append_name_custom")
+			}
+
+			values, err := kritui_db.GetPromptAppends(context.Background(), database)
+			if err != nil {
+				t.Fatalf("get prompt appends: %v", err)
+			}
+			if !slices.Equal(values, defaults) {
+				t.Errorf("prompt appends persisted = %#v, want defaults %#v", values, defaults)
+			}
+		})
+	}
+}
+
+func TestSettingsHandlerReportsPromptAppendValidationError(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":              {"saved-model"},
+		"max_tool_rounds":    {"16"},
+		"append_form":        {"1"},
+		"append_id":          {"custom"},
+		"append_name_custom": {""},
+		"append_text_custom": {"Use custom instruction."},
+	})
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), `Prompt append settings are invalid: prompt append &#34;custom&#34; name is required.`)
+}
+
+func TestSettingsHandlerReportsPromptAppendFormError(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":              {"saved-model"},
+		"max_tool_rounds":    {"16"},
+		"append_form":        {"1"},
+		"append_id":          {"custom", "custom"},
+		"append_name_custom": {"Custom"},
+		"append_text_custom": {"Use custom instruction."},
+	})
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), `Prompt append form is invalid: prompt append &#34;custom&#34; is duplicated.`)
 }
 
 func TestSettingsHandlerStoresEmptyDefaultTools(t *testing.T) {

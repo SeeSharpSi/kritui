@@ -68,9 +68,9 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat tools.")
 			return
 		}
-		enabledAppends, err := kritui_db.GetChatAppends(r.Context(), database, chatID)
+		enabledAppendIDs, err := kritui_db.GetChatPromptAppendIDs(r.Context(), database, chatID)
 		if err != nil {
-			log.Printf("get chat appends: %v", err)
+			log.Printf("get chat prompt append IDs: %v", err)
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat appends.")
 			return
 		}
@@ -111,7 +111,7 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 		}
 
 		var page bytes.Buffer
-		if err := templates.Home(chat, messages, models, selectedModel, defaultModel, maxToolRounds, registry.Names(), enabledTools, defaultTools, promptAppends, enabledAppends).Render(r.Context(), &page); err != nil {
+		if err := templates.Home(chat, messages, models, selectedModel, defaultModel, maxToolRounds, registry.Names(), enabledTools, defaultTools, promptAppends, enabledAppendIDs).Render(r.Context(), &page); err != nil {
 			log.Printf("render page: %v", err)
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to render page.")
 			return
@@ -150,80 +150,103 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 
 func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		chat := r.URL.Query().Get("chat")
-		toolNames := registry.Names()
-		if _, ok := positiveID(chat); !ok {
-			renderSettingsPage(w, r, http.StatusBadRequest, chat, os.Getenv("LLM_MODEL"), llm.DefaultMaxToolCallRounds, toolNames, nil, kritui_db.DefaultPromptAppends(), false, "A valid chat is required.")
+		page := settingsPageData{
+			chat:          r.URL.Query().Get("chat"),
+			selectedModel: os.Getenv("LLM_MODEL"),
+			maxToolRounds: llm.DefaultMaxToolCallRounds,
+			toolNames:     registry.Names(),
+			promptAppends: kritui_db.DefaultPromptAppends(),
+		}
+		render := func(status int, message string) {
+			page.errorMessage = message
+			renderSettingsPage(w, r, status, page)
+		}
+		if _, ok := positiveID(page.chat); !ok {
+			render(http.StatusBadRequest, "A valid chat is required.")
 			return
 		}
 
-		selectedModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
+		selectedModel, err := kritui_db.GetDefaultModel(r.Context(), database, page.selectedModel)
 		if err != nil {
 			log.Printf("get default model: %v", err)
-			renderSettingsPage(w, r, http.StatusInternalServerError, chat, os.Getenv("LLM_MODEL"), llm.DefaultMaxToolCallRounds, toolNames, nil, kritui_db.DefaultPromptAppends(), false, "Failed to load settings.")
+			render(http.StatusInternalServerError, "Failed to load settings.")
 			return
 		}
-		maxToolRounds, err := kritui_db.GetMaxToolRounds(r.Context(), database, llm.DefaultMaxToolCallRounds)
+		page.selectedModel = selectedModel
+		maxToolRounds, err := kritui_db.GetMaxToolRounds(r.Context(), database, page.maxToolRounds)
 		if err != nil {
 			log.Printf("get max tool rounds: %v", err)
-			renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, llm.DefaultMaxToolCallRounds, toolNames, nil, kritui_db.DefaultPromptAppends(), false, "Failed to load settings.")
+			render(http.StatusInternalServerError, "Failed to load settings.")
 			return
 		}
+		page.maxToolRounds = maxToolRounds
 		defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 		if err != nil {
 			log.Printf("get default tools: %v", err)
-			renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, maxToolRounds, toolNames, nil, kritui_db.DefaultPromptAppends(), false, "Failed to load settings.")
+			render(http.StatusInternalServerError, "Failed to load settings.")
 			return
 		}
+		page.defaultTools = defaultTools
 		promptAppends, err := kritui_db.GetPromptAppends(r.Context(), database)
 		if err != nil {
 			log.Printf("get prompt appends: %v", err)
-			renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, maxToolRounds, toolNames, defaultTools, kritui_db.DefaultPromptAppends(), false, "Failed to load settings.")
+			render(http.StatusInternalServerError, "Failed to load settings.")
 			return
 		}
-		saved := false
+		page.promptAppends = promptAppends
 		if r.Method == http.MethodPost {
 			if err := parseLimitedForm(w, r, maxSettingsBodyBytes); err != nil {
 				var tooLarge *http.MaxBytesError
 				if errors.As(err, &tooLarge) {
-					renderSettingsPage(w, r, http.StatusRequestEntityTooLarge, chat, selectedModel, maxToolRounds, toolNames, defaultTools, promptAppends, false, "Request body is too large.")
+					render(http.StatusRequestEntityTooLarge, "Request body is too large.")
 					return
 				}
-				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, maxToolRounds, toolNames, defaultTools, promptAppends, false, "Invalid settings form.")
+				render(http.StatusBadRequest, "Invalid settings form.")
 				return
 			}
-			selectedModel = strings.TrimSpace(r.FormValue("model"))
-			if selectedModel == "" {
-				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, maxToolRounds, toolNames, defaultTools, promptAppends, false, "A model is required.")
-				return
-			}
-			submittedRounds, parseErr := strconv.Atoi(strings.TrimSpace(r.FormValue("max_tool_rounds")))
-			if parseErr != nil || submittedRounds < 1 || submittedRounds > kritui_db.MaxConfigurableToolRounds {
-				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, maxToolRounds, toolNames, defaultTools, promptAppends, false, fmt.Sprintf("Max tool-call rounds must be between 1 and %d.", kritui_db.MaxConfigurableToolRounds))
-				return
-			}
-			defaultTools, err = selectedDefaultTools(registry, r.Form["default_tool"])
-			if err != nil {
-				renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, maxToolRounds, toolNames, defaultTools, promptAppends, false, "Tool selection is invalid.")
-				return
-			}
-			submittedAppends := promptAppends
+			submittedModel := strings.TrimSpace(r.FormValue("model"))
+			submittedRounds, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("max_tool_rounds")))
+			submittedTools, submittedToolsErr := selectedDefaultTools(registry, r.Form["default_tool"])
+			submittedAppends := page.promptAppends
 			if r.FormValue("append_form") == "1" {
 				submittedAppends, err = promptAppendsFromForm(r)
 				if err != nil {
-					renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, maxToolRounds, toolNames, defaultTools, submittedAppends, false, "Prompt append form is invalid.")
+					page.selectedModel = submittedModel
+					page.promptAppends = submittedAppends
+					render(http.StatusBadRequest, fmt.Sprintf("Prompt append form is invalid: %v.", err))
 					return
 				}
+			}
+			actionModel, actionRounds, actionTools := page.selectedModel, page.maxToolRounds, page.defaultTools
+			if submittedModel != "" {
+				actionModel = submittedModel
+			}
+			if submittedRounds >= 1 && submittedRounds <= kritui_db.MaxConfigurableToolRounds {
+				actionRounds = submittedRounds
+			}
+			if submittedToolsErr == nil {
+				actionTools = submittedTools
 			}
 			if r.FormValue("append_action") == "add" {
 				id, err := newPromptAppendID()
 				if err != nil {
 					log.Printf("create prompt append ID: %v", err)
-					renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, maxToolRounds, toolNames, defaultTools, submittedAppends, false, "Failed to add prompt append.")
+					actionPage := page
+					actionPage.errorMessage = "Failed to add prompt append."
+					actionPage.selectedModel = actionModel
+					actionPage.maxToolRounds = actionRounds
+					actionPage.defaultTools = actionTools
+					actionPage.promptAppends = submittedAppends
+					renderSettingsPage(w, r, http.StatusInternalServerError, actionPage)
 					return
 				}
 				submittedAppends = append(submittedAppends, kritui_db.PromptAppend{ID: id, Name: "new append"})
-				renderSettingsPage(w, r, http.StatusOK, chat, selectedModel, submittedRounds, toolNames, defaultTools, submittedAppends, false, "")
+				actionPage := page
+				actionPage.selectedModel = actionModel
+				actionPage.maxToolRounds = actionRounds
+				actionPage.defaultTools = actionTools
+				actionPage.promptAppends = submittedAppends
+				renderSettingsPage(w, r, http.StatusOK, actionPage)
 				return
 			}
 			if removeID := strings.TrimSpace(r.FormValue("remove_append")); removeID != "" {
@@ -233,51 +256,76 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 						filtered = append(filtered, value)
 					}
 				}
-				renderSettingsPage(w, r, http.StatusOK, chat, selectedModel, submittedRounds, toolNames, defaultTools, filtered, false, "")
+				actionPage := page
+				actionPage.selectedModel = actionModel
+				actionPage.maxToolRounds = actionRounds
+				actionPage.defaultTools = actionTools
+				actionPage.promptAppends = filtered
+				renderSettingsPage(w, r, http.StatusOK, actionPage)
 				return
 			}
+			page.selectedModel = submittedModel
+			if page.selectedModel == "" {
+				render(http.StatusBadRequest, "A model is required.")
+				return
+			}
+			if submittedRounds < 1 || submittedRounds > kritui_db.MaxConfigurableToolRounds {
+				render(http.StatusBadRequest, fmt.Sprintf("Max tool-call rounds must be between 1 and %d.", kritui_db.MaxConfigurableToolRounds))
+				return
+			}
+			if submittedToolsErr != nil {
+				render(http.StatusBadRequest, "Tool selection is invalid.")
+				return
+			}
+			page.defaultTools = submittedTools
 			if r.FormValue("append_form") == "1" {
+				page.maxToolRounds = submittedRounds
+				page.promptAppends = submittedAppends
 				if err := kritui_db.ValidatePromptAppends(submittedAppends); err != nil {
-					renderSettingsPage(w, r, http.StatusBadRequest, chat, selectedModel, submittedRounds, toolNames, defaultTools, submittedAppends, false, "Prompt append settings are invalid.")
+					render(http.StatusBadRequest, fmt.Sprintf("Prompt append settings are invalid: %v.", err))
 					return
 				}
 			}
-			maxToolRounds = submittedRounds
-			if err := kritui_db.SetDefaultModel(r.Context(), database, selectedModel); err != nil {
+			page.maxToolRounds = submittedRounds
+			page.promptAppends = submittedAppends
+			if err := kritui_db.SetDefaultModel(r.Context(), database, page.selectedModel); err != nil {
 				log.Printf("set default model: %v", err)
-				renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, maxToolRounds, toolNames, defaultTools, submittedAppends, false, "Failed to save settings.")
+				render(http.StatusInternalServerError, "Failed to save settings.")
 				return
 			}
-			if err := kritui_db.SetMaxToolRounds(r.Context(), database, maxToolRounds); err != nil {
+			if err := kritui_db.SetMaxToolRounds(r.Context(), database, page.maxToolRounds); err != nil {
 				log.Printf("set max tool rounds: %v", err)
-				renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, maxToolRounds, toolNames, defaultTools, submittedAppends, false, "Failed to save settings.")
+				render(http.StatusInternalServerError, "Failed to save settings.")
 				return
 			}
-			if err := kritui_db.SetDefaultEnabledTools(r.Context(), database, defaultTools); err != nil {
+			if err := kritui_db.SetDefaultEnabledTools(r.Context(), database, page.defaultTools); err != nil {
 				log.Printf("set default tools: %v", err)
-				renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, maxToolRounds, toolNames, defaultTools, submittedAppends, false, "Failed to save settings.")
+				render(http.StatusInternalServerError, "Failed to save settings.")
 				return
 			}
 			if r.FormValue("append_form") == "1" {
 				if err := kritui_db.SetPromptAppends(r.Context(), database, submittedAppends); err != nil {
 					log.Printf("set prompt appends: %v", err)
-					renderSettingsPage(w, r, http.StatusInternalServerError, chat, selectedModel, maxToolRounds, toolNames, defaultTools, submittedAppends, false, "Failed to save settings.")
+					render(http.StatusInternalServerError, "Failed to save settings.")
 					return
 				}
-				promptAppends = submittedAppends
 			}
-			saved = true
+			page.saved = true
 		}
 
-		var enabledAppends []string
-		if saved && r.Header.Get("HX-Request") == "true" {
-			chatID, _ := positiveID(chat)
-			enabledAppends, err = kritui_db.GetChatAppends(r.Context(), database, chatID)
+		if page.saved && r.Header.Get("HX-Request") == "true" {
+			chatID, _ := positiveID(page.chat)
+			page.enabledAppendIDs, err = kritui_db.GetChatPromptAppendIDs(r.Context(), database, chatID)
 			if err != nil {
-				log.Printf("get chat appends after settings save: %v", err)
+				log.Printf("get chat prompt append IDs after settings save: %v", err)
+				failurePage := page
+				failurePage.saved = false
+				failurePage.errorMessage = "Failed to load chat appends."
+				renderSettingsPage(w, r, http.StatusInternalServerError, failurePage)
+				return
 			}
 		}
-		renderSettingsPage(w, r, http.StatusOK, chat, selectedModel, maxToolRounds, toolNames, defaultTools, promptAppends, saved, "", enabledAppends)
+		render(http.StatusOK, "")
 	}
 }
 
@@ -456,19 +504,27 @@ func newPromptAppendID() (string, error) {
 	return "append-" + hex.EncodeToString(value[:]), nil
 }
 
-func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, chat, selectedModel string, maxToolRounds int, toolNames []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, saved bool, errorMessage string, enabledAppends ...[]string) {
-	models, selectedModel := availableModels(r, selectedModel)
+type settingsPageData struct {
+	chat             string
+	selectedModel    string
+	maxToolRounds    int
+	toolNames        []string
+	defaultTools     []string
+	promptAppends    []kritui_db.PromptAppend
+	saved            bool
+	errorMessage     string
+	enabledAppendIDs []string
+}
+
+func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data settingsPageData) {
+	models, selectedModel := availableModels(r, data.selectedModel)
 	var page bytes.Buffer
-	if err := templates.SettingsPage(chat, models, selectedModel, maxToolRounds, toolNames, defaultTools, promptAppends, saved, true, errorMessage).Render(r.Context(), &page); err != nil {
+	if err := templates.SettingsPage(data.chat, models, selectedModel, data.maxToolRounds, data.toolNames, data.defaultTools, data.promptAppends, data.saved, true, data.errorMessage).Render(r.Context(), &page); err != nil {
 		log.Printf("render settings: %v", err)
 		return
 	}
-	if saved && r.Header.Get("HX-Request") == "true" {
-		var selected []string
-		if len(enabledAppends) > 0 {
-			selected = enabledAppends[0]
-		}
-		if err := templates.AppendsPicker(promptAppends, selected, true).Render(r.Context(), &page); err != nil {
+	if data.saved && r.Header.Get("HX-Request") == "true" {
+		if err := templates.AppendsPicker(data.promptAppends, data.enabledAppendIDs, true).Render(r.Context(), &page); err != nil {
 			log.Printf("render prompt appends: %v", err)
 			return
 		}

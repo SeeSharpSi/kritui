@@ -231,6 +231,28 @@ document.addEventListener('DOMContentLoaded', () => {
         navigator.serviceWorker.register('/sw.js');
     }
 });
+
+let appendPickerSelection = null;
+
+document.addEventListener('htmx:oobBeforeSwap', (event) => {
+    if (event.target.id !== 'append-picker') {
+        return;
+    }
+    appendPickerSelection = Array.from(event.target.querySelectorAll('input[name="append"]:checked'))
+        .map((input) => input.value);
+});
+
+document.addEventListener('htmx:oobAfterSwap', (event) => {
+    if (event.target.id !== 'append-picker' || appendPickerSelection === null) {
+        return;
+    }
+    const selection = appendPickerSelection;
+    appendPickerSelection = null;
+    event.target.querySelectorAll('input[name="append"]').forEach((input) => {
+        input.checked = selection.includes(input.value);
+    });
+});
+
 document.addEventListener('htmx:load', (event) => scrollMessages(event.detail.elt));
 document.addEventListener('htmx:beforeSwap', (event) => rememberMessageScroll(event.detail.target));
 document.addEventListener('htmx:afterSwap', (event) => {

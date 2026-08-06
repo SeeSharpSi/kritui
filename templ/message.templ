@@ -72,7 +72,7 @@ templ Messages(messages ...llm.Message) {
 		@CompletedToolCalls(view.ToolCalls, view.ToolErrors)
 		if view.Message != nil {
 			if view.Message.Role == "user" {
-				@MessageAppends(view.Message.PromptAppends)
+				@MessageAppendTexts(view.Message.PromptAppendTexts)
 			}
 			<article class={ "message" , templ.KV("user", view.Message.Role=="user" ) }>
 				if view.Message.Role == "assistant" {
@@ -91,13 +91,13 @@ templ Messages(messages ...llm.Message) {
 	}
 }
 
-templ MessageAppends(appends []string) {
-	if len(appends) > 0 {
+templ MessageAppendTexts(texts []string) {
+	if len(texts) > 0 {
 		<details class="message-appends">
 			<summary>appends</summary>
 			<div class="message-appends-content">
-				for _, value := range appends {
-					<div class="message-append">{ value }</div>
+				for _, text := range texts {
+					<div class="message-append">{ text }</div>
 				}
 			</div>
 		</details>

@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
     tools TEXT NOT NULL DEFAULT '[]',
+    -- JSON array of selected prompt append IDs.
     appends TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS messages (
     position INTEGER NOT NULL CHECK (position >= 0),
     role TEXT NOT NULL CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
     content TEXT NOT NULL DEFAULT '',
+    -- JSON array of prompt append text snapshots applied to this user message.
     prompt_appends TEXT CHECK (
         prompt_appends IS NULL OR
         CASE

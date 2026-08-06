@@ -32,9 +32,10 @@ const (
 	maxMessageBodyBytes    int64 = 1 << 20
 	maxCompletionBodyBytes int64 = 16 << 10
 	maxRetryBodyBytes      int64 = 16 << 10
-	maxSettingsBodyBytes   int64 = 16 << 10
-	maxRenameBodyBytes     int64 = 16 << 10
-	maxChatTitleRunes            = 120
+	// accommodates 32 prompt appends of 16 KiB each plus form overhead
+	maxSettingsBodyBytes int64 = 1 << 20
+	maxRenameBodyBytes   int64 = 16 << 10
+	maxChatTitleRunes          = 120
 )
 
 func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
@@ -90,7 +91,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		userMessage := llm.Message{Role: "user", Content: message, PromptAppends: appendTexts}
+		userMessage := llm.Message{Role: "user", Content: message, PromptAppendTexts: appendTexts}
 		if err := templates.PendingSubmission(strconv.FormatInt(request.chatID, 10), requestID, userMessage, request.model, request.selected.Names()).Render(r.Context(), w); err != nil {
 			toolCalls.delete(requestID)
 			log.Printf("render pending message: %v", err)
@@ -127,7 +128,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 			renderMessageError(w, r, http.StatusConflict, "No message is waiting for completion.")
 			return
 		}
-		conversationMessages := messagesWithPromptAppends(messages)
+		conversationMessages := messagesWithPromptAppendTexts(messages)
 		client, err := llm.New(os.Getenv("LLM_KEY"), request.model, os.Getenv("LLM_ENDPOINT"))
 		if err != nil {
 			log.Printf("configure llm: %v", err)
@@ -271,20 +272,20 @@ func parseMessageRequest(w http.ResponseWriter, r *http.Request, database *sql.D
 	return messageRequest{chat: chat, chatID: chatID, model: model, selected: selected}, true
 }
 
-func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, tools []string, appends []kritui_db.PromptAppend) error {
+func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, tools []string, selectedAppends []kritui_db.PromptAppend) error {
 	if tools == nil {
 		tools = []string{}
 	}
-	if appends == nil {
-		appends = []kritui_db.PromptAppend{}
+	if selectedAppends == nil {
+		selectedAppends = []kritui_db.PromptAppend{}
 	}
 	toolsJSON, err := json.Marshal(tools)
 	if err != nil {
 		return fmt.Errorf("encode chat tools: %w", err)
 	}
-	appendsJSON, err := json.Marshal(promptAppendIDs(appends))
+	appendIDsJSON, err := json.Marshal(kritui_db.PromptAppendIDs(selectedAppends))
 	if err != nil {
-		return fmt.Errorf("encode chat appends: %w", err)
+		return fmt.Errorf("encode chat prompt append IDs: %w", err)
 	}
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
@@ -298,7 +299,7 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 			title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END,
 			tools = excluded.tools,
 			appends = excluded.appends
-	`, chatID, normalizeChatTitle(message), string(toolsJSON), string(appendsJSON)); err != nil {
+	`, chatID, normalizeChatTitle(message), string(toolsJSON), string(appendIDsJSON)); err != nil {
 		return fmt.Errorf("create chat: %w", err)
 	}
 
@@ -311,9 +312,9 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 		return fmt.Errorf("get user message position: %w", err)
 	}
 	if _, err := kritui_db.InsertMessage(ctx, tx, chatID, position, llm.Message{
-		Role:          "user",
-		Content:       message,
-		PromptAppends: promptAppendTexts(appends),
+		Role:              "user",
+		Content:           message,
+		PromptAppendTexts: promptAppendTexts(selectedAppends),
 	}); err != nil {
 		return fmt.Errorf("insert user message: %w", err)
 	}
@@ -323,26 +324,26 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	return nil
 }
 
-func appendPromptText(message string, appends []string) string {
-	if len(appends) == 0 {
+func appendPromptText(message string, texts []string) string {
+	if len(texts) == 0 {
 		return message
 	}
 
 	var builder strings.Builder
 	builder.WriteString(message)
-	for _, value := range appends {
+	for _, text := range texts {
 		builder.WriteString("\n\n")
-		builder.WriteString(value)
+		builder.WriteString(text)
 	}
 	return builder.String()
 }
 
-func messagesWithPromptAppends(messages []llm.Message) []llm.Message {
+func messagesWithPromptAppendTexts(messages []llm.Message) []llm.Message {
 	expanded := make([]llm.Message, len(messages))
 	for index, message := range messages {
 		expanded[index] = message
-		if message.Role == "user" && len(message.PromptAppends) > 0 {
-			expanded[index].Content = appendPromptText(message.Content, message.PromptAppends)
+		if message.Role == "user" && len(message.PromptAppendTexts) > 0 {
+			expanded[index].Content = appendPromptText(message.Content, message.PromptAppendTexts)
 		}
 	}
 	return expanded
@@ -354,14 +355,6 @@ func promptAppendTexts(values []kritui_db.PromptAppend) []string {
 		texts = append(texts, value.Text)
 	}
 	return texts
-}
-
-func promptAppendIDs(values []kritui_db.PromptAppend) []string {
-	ids := make([]string, 0, len(values))
-	for _, value := range values {
-		ids = append(ids, value.ID)
-	}
-	return ids
 }
 
 func parseLimitedForm(w http.ResponseWriter, r *http.Request, limit int64) error {

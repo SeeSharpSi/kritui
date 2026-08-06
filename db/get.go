@@ -153,21 +153,21 @@ func GetChatTools(ctx context.Context, db *sql.DB, chatID int64) ([]string, erro
 	return names, nil
 }
 
-// GetChatAppends returns the selected prompt append IDs for a chat.
+// GetChatPromptAppendIDs returns the selected prompt append IDs for a chat.
 // Missing chats return an empty list.
-func GetChatAppends(ctx context.Context, db *sql.DB, chatID int64) ([]string, error) {
-	var appends string
-	err := db.QueryRowContext(ctx, `SELECT appends FROM chats WHERE id = ?`, chatID).Scan(&appends)
+func GetChatPromptAppendIDs(ctx context.Context, db *sql.DB, chatID int64) ([]string, error) {
+	var encodedAppendIDs string
+	err := db.QueryRowContext(ctx, `SELECT appends FROM chats WHERE id = ?`, chatID).Scan(&encodedAppendIDs)
 	if err == sql.ErrNoRows {
 		return []string{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get chat appends: %w", err)
+		return nil, fmt.Errorf("get chat prompt append IDs: %w", err)
 	}
 
-	ids, err := decodePromptAppendIDs(appends)
+	ids, err := decodePromptAppendIDs(encodedAppendIDs)
 	if err != nil {
-		return nil, fmt.Errorf("decode chat appends: %w", err)
+		return nil, fmt.Errorf("decode chat prompt append IDs: %w", err)
 	}
 	return ids, nil
 }
@@ -243,7 +243,7 @@ func scanStoredMessage(row rowScanner) (storedMessage, error) {
 	var toolCalls sql.NullString
 	var toolCallID sql.NullString
 	var providerMetadata sql.NullString
-	var promptAppends sql.NullString
+	var promptAppendTexts sql.NullString
 	if err := row.Scan(
 		&stored.id,
 		&stored.position,
@@ -255,7 +255,7 @@ func scanStoredMessage(row rowScanner) (storedMessage, error) {
 		&toolCalls,
 		&toolCallID,
 		&providerMetadata,
-		&promptAppends,
+		&promptAppendTexts,
 		&stored.fingerprint,
 	); err != nil {
 		return storedMessage{}, fmt.Errorf("scan message: %w", err)
@@ -288,12 +288,12 @@ func scanStoredMessage(row rowScanner) (storedMessage, error) {
 			return storedMessage{}, fmt.Errorf("decode provider metadata: %w", err)
 		}
 	}
-	if promptAppends.Valid {
+	if promptAppendTexts.Valid {
 		if stored.message.Role != "user" {
-			return storedMessage{}, fmt.Errorf("decode prompt appends: only user messages may contain prompt appends")
+			return storedMessage{}, fmt.Errorf("decode prompt append texts: only user messages may contain prompt append texts")
 		}
-		if err := json.Unmarshal([]byte(promptAppends.String), &stored.message.PromptAppends); err != nil {
-			return storedMessage{}, fmt.Errorf("decode prompt appends: %w", err)
+		if err := json.Unmarshal([]byte(promptAppendTexts.String), &stored.message.PromptAppendTexts); err != nil {
+			return storedMessage{}, fmt.Errorf("decode prompt append texts: %w", err)
 		}
 	}
 

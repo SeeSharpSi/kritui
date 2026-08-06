@@ -54,7 +54,9 @@ func embeddedAppendText(name string) string {
 }
 
 // GetPromptAppends returns stored presets, or built-in presets when none have
-// been configured.
+// been configured. Stored values that fail to decode or validate return an
+// error instead of falling back, so corruption is never silently replaced by
+// defaults.
 func GetPromptAppends(ctx context.Context, db *sql.DB) ([]PromptAppend, error) {
 	var encoded string
 	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE name = ?`, promptAppendsSetting).Scan(&encoded)
@@ -67,16 +69,18 @@ func GetPromptAppends(ctx context.Context, db *sql.DB) ([]PromptAppend, error) {
 
 	var values []PromptAppend
 	if err := json.Unmarshal([]byte(encoded), &values); err != nil {
-		return DefaultPromptAppends(), nil
+		return nil, fmt.Errorf("decode prompt appends: %w", err)
 	}
 	normalized, err := normalizePromptAppends(values)
 	if err != nil {
-		return DefaultPromptAppends(), nil
+		return nil, fmt.Errorf("normalize prompt appends: %w", err)
 	}
 	return normalized, nil
 }
 
-// SetPromptAppends replaces all configurable prompt presets.
+// SetPromptAppends replaces all configurable prompt presets. Replacement
+// happens atomically with pruning removed preset IDs from every chat's
+// selected appends, so stale references never survive a settings change.
 func SetPromptAppends(ctx context.Context, db *sql.DB, values []PromptAppend) error {
 	normalized, err := normalizePromptAppends(values)
 	if err != nil {
@@ -86,13 +90,53 @@ func SetPromptAppends(ctx context.Context, db *sql.DB, values []PromptAppend) er
 	if err != nil {
 		return fmt.Errorf("encode prompt appends: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, `
+	encodedIDs, err := encodePromptAppendIDs(PromptAppendIDs(normalized))
+	if err != nil {
+		return fmt.Errorf("encode prompt append IDs: %w", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin set prompt appends: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO settings (name, value) VALUES (?, ?)
 		ON CONFLICT (name) DO UPDATE SET value = excluded.value
 	`, promptAppendsSetting, string(encoded)); err != nil {
 		return fmt.Errorf("set prompt appends: %w", err)
 	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE chats
+		SET appends = (
+			SELECT COALESCE(json_group_array(value), '[]')
+			FROM (
+				SELECT value
+				FROM json_each(chats.appends)
+				WHERE value IN (SELECT value FROM json_each(?))
+				ORDER BY CAST(key AS INTEGER)
+			)
+		)
+		WHERE json_valid(appends)
+	`, encodedIDs); err != nil {
+		return fmt.Errorf("prune chat prompt appends: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set prompt appends: %w", err)
+	}
 	return nil
+}
+
+// PromptAppendIDs returns append IDs in their input order.
+func PromptAppendIDs(values []PromptAppend) []string {
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	return ids
 }
 
 // ValidatePromptAppends checks preset IDs, names, text, and collection size.

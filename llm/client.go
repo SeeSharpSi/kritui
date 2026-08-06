@@ -34,11 +34,12 @@ type Message struct {
 	Model       string   `json:"-"`
 	TotalTokens *int     `json:"-"`
 	Cost        *float64 `json:"-"`
-	// PromptAppends is UI metadata and is expanded before provider requests.
-	PromptAppends    []string         `json:"-"`
-	ToolCalls        []ToolCall       `json:"tool_calls,omitempty"`
-	ToolCallID       string           `json:"tool_call_id,omitempty"`
-	ProviderMetadata ProviderMetadata `json:"-"`
+	// PromptAppendTexts contains snapshotted append text expanded before
+	// provider requests.
+	PromptAppendTexts []string         `json:"-"`
+	ToolCalls         []ToolCall       `json:"tool_calls,omitempty"`
+	ToolCallID        string           `json:"tool_call_id,omitempty"`
+	ProviderMetadata  ProviderMetadata `json:"-"`
 }
 
 // ProviderMetadata retains provider-specific state needed for later requests.
