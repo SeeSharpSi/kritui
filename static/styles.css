@@ -705,6 +705,12 @@ main {
             &:not(:empty)+.chat-empty {
                 display: none;
             }
+
+            &:has(.loading-message) .message-edit-toggle,
+            &:has(.message-edit-form.htmx-request) .message-edit-toggle {
+                visibility: hidden;
+                pointer-events: none;
+            }
         }
 
         .chat-empty {
@@ -780,9 +786,92 @@ main {
             }
 
             &.user {
+                position: relative;
                 margin-left: auto;
                 background: var(--color-accent);
                 color: var(--color-on-accent);
+
+                &:has(.message-edit-toggle) {
+                    margin-bottom: 2.4rem;
+                }
+
+                .message-edit-form {
+                    display: none;
+                    width: min(32rem, calc(100vw - 6rem));
+                    max-width: 100%;
+                    margin: 0;
+
+                    .message-edit-input {
+                        box-sizing: border-box;
+                        width: 100%;
+                        min-width: min(18rem, calc(100vw - 6rem));
+                        padding: 0;
+                        border: 0;
+                        background: transparent;
+                        color: inherit;
+                        font: inherit;
+                        outline: none;
+
+                        &:focus-visible {
+                            outline: 2px solid currentColor;
+                            outline-offset: 3px;
+                        }
+                    }
+
+                    .message-edit-input:disabled {
+                        opacity: .6;
+                    }
+
+                    .message-edit-error {
+                        margin: .45rem 0 0;
+                        color: color-mix(in srgb, var(--color-error) 72%, var(--color-on-accent));
+                        font-size: .8rem;
+                    }
+                }
+
+                .message-edit-toggle,
+                .message-edit-cancel {
+                    position: absolute;
+                    top: calc(100% + .15rem);
+                    right: 0;
+                    display: grid;
+                    width: 2rem;
+                    height: 1.8rem;
+                    padding: 0;
+                    border: 0;
+                    place-items: center;
+                    background: transparent;
+                    color: var(--color-border-strong);
+                    cursor: pointer;
+                    opacity: .75;
+
+                    svg {
+                        width: 15px;
+                        height: 15px;
+                    }
+
+                    &:hover,
+                    &:focus-visible {
+                        color: var(--color-text);
+                        opacity: 1;
+                    }
+                }
+
+                .message-edit-cancel {
+                    display: none;
+                }
+
+                &.editing {
+                    >.message-content,
+                    >.message-edit-toggle {
+                        display: none;
+                    }
+
+                    >.message-edit-form,
+                    >.message-edit-cancel {
+                        display: grid;
+                    }
+                }
             }
 
             &.loading-message {

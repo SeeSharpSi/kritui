@@ -11,6 +11,7 @@ import (
 
 type databaseExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 var (
@@ -18,6 +19,10 @@ var (
 	ErrConversationConflict = errors.New("conversation changed")
 	// ErrChatNotFound means completion target was deleted before persistence.
 	ErrChatNotFound = errors.New("chat not found")
+	// ErrMessageNotFound means an edit target does not belong to the chat.
+	ErrMessageNotFound = errors.New("message not found")
+	// ErrMessageNotEditable means an edit target is not a user message.
+	ErrMessageNotEditable = errors.New("message is not editable")
 )
 
 // AllocateChat reserves a unique chat ID, stores options enabled by default
@@ -243,6 +248,67 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 		}
 	}
 	return id, nil
+}
+
+// ReplaceUserMessage atomically replaces one user message and deletes every
+// later message in the chat. The target keeps its database ID and position.
+func ReplaceUserMessage(ctx context.Context, db databaseExecutor, chatID, messageID int64, message llm.Message) error {
+	if message.Role != "user" {
+		return ErrMessageNotEditable
+	}
+	if message.Model != "" || message.TotalTokens != nil || message.Cost != nil || len(message.ToolCalls) > 0 || message.ToolCallID != "" || !message.ProviderMetadata.IsZero() {
+		return fmt.Errorf("replace user message: invalid user message metadata")
+	}
+
+	return executeAtomically(ctx, db, func(executor databaseExecutor) error {
+		// First write reserves the SQLite writer lock before locating the target.
+		result, err := executor.ExecContext(ctx, `UPDATE chats SET id = id WHERE id = ?`, chatID)
+		if err != nil {
+			return fmt.Errorf("reserve chat for message edit: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("reserve edited chat rows affected: %w", err)
+		}
+		if affected == 0 {
+			return ErrChatNotFound
+		}
+
+		var position int
+		var role string
+		if err := executor.QueryRowContext(ctx, `
+			SELECT position, role
+			FROM messages
+			WHERE id = ? AND chat_id = ?
+		`, messageID, chatID).Scan(&position, &role); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrMessageNotFound
+			}
+			return fmt.Errorf("get edited message: %w", err)
+		}
+		if role != "user" {
+			return ErrMessageNotEditable
+		}
+
+		if _, err := executor.ExecContext(ctx, `DELETE FROM messages WHERE chat_id = ? AND position > ?`, chatID, position); err != nil {
+			return fmt.Errorf("truncate messages after edit: %w", err)
+		}
+		if _, err := executor.ExecContext(ctx, `UPDATE messages SET content = ? WHERE id = ?`, message.Content, messageID); err != nil {
+			return fmt.Errorf("replace edited message: %w", err)
+		}
+		if _, err := executor.ExecContext(ctx, `DELETE FROM message_prompt_appends WHERE message_id = ?`, messageID); err != nil {
+			return fmt.Errorf("clear edited message prompt appends: %w", err)
+		}
+		for position, text := range message.PromptAppendTexts {
+			if _, err := executor.ExecContext(ctx, `
+				INSERT INTO message_prompt_appends (message_id, message_role, position, text)
+				VALUES (?, 'user', ?, ?)
+			`, messageID, position, text); err != nil {
+				return fmt.Errorf("store edited message prompt append %d: %w", position, err)
+			}
+		}
+		return nil
+	})
 }
 
 func executeAtomically(ctx context.Context, db databaseExecutor, operation func(databaseExecutor) error) error {

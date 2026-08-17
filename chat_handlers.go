@@ -382,7 +382,7 @@ func deleteChatHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 		if chatID == currentChatID {
-			if err := templates.MessageList(nil, true).Render(r.Context(), w); err != nil {
+			if err := templates.MessageList("", nil, true).Render(r.Context(), w); err != nil {
 				log.Printf("clear deleted chat: %v", err)
 			}
 		}

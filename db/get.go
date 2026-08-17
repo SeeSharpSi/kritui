@@ -332,6 +332,7 @@ func scanStoredMessage(row rowScanner) (storedMessage, error) {
 	); err != nil {
 		return storedMessage{}, fmt.Errorf("scan message: %w", err)
 	}
+	stored.message.ID = stored.id
 	if stored.model.Valid {
 		stored.message.Model = stored.model.String
 	}

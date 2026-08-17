@@ -301,6 +301,125 @@ func TestAppendCompletionRollsBackPartialWrite(t *testing.T) {
 	}
 }
 
+func TestReplaceUserMessageKeepsTargetAndTruncatesLaterMessages(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 0, llm.Message{Role: "user", Content: "earlier"}); err != nil {
+		t.Fatalf("insert earlier user: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 1, llm.Message{Role: "assistant", Content: "earlier answer"}); err != nil {
+		t.Fatalf("insert earlier assistant: %v", err)
+	}
+	targetID, err := InsertMessage(context.Background(), database, 1, 2, llm.Message{
+		Role:              "user",
+		Content:           "original",
+		PromptAppendTexts: []string{"old append"},
+	})
+	if err != nil {
+		t.Fatalf("insert edit target: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 3, llm.Message{
+		Role:    "assistant",
+		Content: "discarded answer",
+		ToolCalls: []llm.ToolCall{{
+			ID: "call-1", Type: "function", Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`},
+		}},
+	}); err != nil {
+		t.Fatalf("insert discarded assistant: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 4, llm.Message{Role: "tool", Content: "discarded result", ToolCallID: "call-1"}); err != nil {
+		t.Fatalf("insert discarded tool: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 5, llm.Message{
+		Role:              "user",
+		Content:           "discarded follow-up",
+		PromptAppendTexts: []string{"discarded append"},
+	}); err != nil {
+		t.Fatalf("insert discarded user: %v", err)
+	}
+
+	if err := ReplaceUserMessage(context.Background(), database, 1, targetID, llm.Message{
+		Role:              "user",
+		Content:           "edited",
+		PromptAppendTexts: []string{"new append"},
+	}); err != nil {
+		t.Fatalf("ReplaceUserMessage() error: %v", err)
+	}
+
+	messages, err := GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("GetMessages() error: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("message count = %d, want 3: %#v", len(messages), messages)
+	}
+	if messages[0].Content != "earlier" || messages[1].Content != "earlier answer" {
+		t.Errorf("earlier messages changed: %#v", messages[:2])
+	}
+	if messages[2].ID != targetID || messages[2].Content != "edited" || !slices.Equal(messages[2].PromptAppendTexts, []string{"new append"}) {
+		t.Errorf("edited message = %#v, want stable ID %d, edited content, and new append", messages[2], targetID)
+	}
+	var position, toolCalls, promptAppends int
+	if err := database.QueryRow(`
+		SELECT
+			(SELECT position FROM messages WHERE id = ?),
+			(SELECT COUNT(*) FROM message_tool_calls),
+			(SELECT COUNT(*) FROM message_prompt_appends)
+	`, targetID).Scan(&position, &toolCalls, &promptAppends); err != nil {
+		t.Fatalf("query edited rows: %v", err)
+	}
+	if position != 2 || toolCalls != 0 || promptAppends != 1 {
+		t.Errorf("edited rows = position %d, tool calls %d, appends %d; want 2, 0, 1", position, toolCalls, promptAppends)
+	}
+}
+
+func TestReplaceUserMessageInvalidatesEarlierSnapshot(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	insertMessagesTestUser(t, database)
+	snapshot, err := GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get message snapshot: %v", err)
+	}
+	targetID := snapshot.Messages[0].ID
+	if err := ReplaceUserMessage(context.Background(), database, 1, targetID, llm.Message{Role: "user", Content: "edited"}); err != nil {
+		t.Fatalf("ReplaceUserMessage() error: %v", err)
+	}
+
+	err = AppendCompletion(context.Background(), database, 1, snapshot, []llm.Message{{Role: "assistant", Content: "stale"}})
+	if !errors.Is(err, ErrConversationConflict) {
+		t.Fatalf("AppendCompletion() error = %v, want conversation conflict", err)
+	}
+}
+
+func TestReplaceUserMessageRejectsInvalidTargets(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (id, chat_id, position, role, content) VALUES (10, 1, 0, 'assistant', 'answer');
+	`); err != nil {
+		t.Fatalf("insert target: %v", err)
+	}
+
+	if err := ReplaceUserMessage(context.Background(), database, 1, 99, llm.Message{Role: "user", Content: "missing"}); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("missing target error = %v, want ErrMessageNotFound", err)
+	}
+	if err := ReplaceUserMessage(context.Background(), database, 1, 10, llm.Message{Role: "user", Content: "invalid"}); !errors.Is(err, ErrMessageNotEditable) {
+		t.Errorf("assistant target error = %v, want ErrMessageNotEditable", err)
+	}
+	if err := ReplaceUserMessage(context.Background(), database, 2, 10, llm.Message{Role: "user", Content: "missing chat"}); !errors.Is(err, ErrChatNotFound) {
+		t.Errorf("missing chat error = %v, want ErrChatNotFound", err)
+	}
+	var content string
+	if err := database.QueryRow(`SELECT content FROM messages WHERE id = 10`).Scan(&content); err != nil {
+		t.Fatalf("query unchanged target: %v", err)
+	}
+	if content != "answer" {
+		t.Errorf("target content = %q, want unchanged answer", content)
+	}
+}
+
 func openSharedMessagesTestDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "data.db")

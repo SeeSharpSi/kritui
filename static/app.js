@@ -336,6 +336,14 @@ document.addEventListener('focusin', (event) => {
 
 document.addEventListener('keydown', (event) => {
     const input = event.target;
+
+    if (input.matches('.message-edit-input')) {
+        if (event.key === 'Escape' && !event.isComposing) {
+            event.preventDefault();
+            closeMessageEditor(input.closest('.message.user'));
+        }
+        return;
+    }
     if (!input.matches('#message') || event.isComposing) {
         return;
     }
@@ -373,6 +381,24 @@ document.addEventListener('keydown', (event) => {
         break;
     }
 });
+
+function closeMessageEditor(message, restoreFocus = true) {
+    if (!message) {
+        return;
+    }
+    message.querySelector('.message-edit-form')?.reset();
+    const error = message.querySelector('.message-edit-error');
+    if (error) {
+        error.textContent = '';
+        error.hidden = true;
+    }
+    message.classList.remove('editing');
+    const button = message.querySelector('.message-edit-toggle');
+    button?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) {
+        button?.focus();
+    }
+}
 
 let appendPickerSelection = null;
 
@@ -420,6 +446,9 @@ document.addEventListener('kritui:command', (event) => {
     if (panel?.hidden) {
         togglePanel(panelID, button);
     }
+});
+document.addEventListener('kritui:message-edited', () => {
+    document.querySelector('#message')?.focus();
 });
 document.addEventListener('htmx:beforeCleanupElement', (event) => {
     const root = event.detail.elt;
@@ -485,6 +514,24 @@ document.addEventListener('click', (event) => {
         entry.querySelector('.history-rename').reset();
         entry.classList.remove('editing');
         entry.querySelector('.history-edit').focus();
+    }
+
+    const messageEditButton = event.target.closest('.message-edit-toggle');
+    if (messageEditButton) {
+        document.querySelectorAll('.message.user.editing').forEach((message) => {
+            closeMessageEditor(message, false);
+        });
+        const message = messageEditButton.closest('.message.user');
+        message.classList.add('editing');
+        messageEditButton.setAttribute('aria-expanded', 'true');
+        const input = message.querySelector('.message-edit-input');
+        input.focus();
+        input.select();
+    }
+
+    const messageCancelButton = event.target.closest('.message-edit-cancel');
+    if (messageCancelButton) {
+        closeMessageEditor(messageCancelButton.closest('.message.user'));
     }
 
     const toolCallToggle = event.target.closest('.tool-call-toggle');

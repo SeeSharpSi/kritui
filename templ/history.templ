@@ -10,7 +10,7 @@ import (
 	"seesharpsi/kritui/llm"
 )
 
-templ MessageList(messages []llm.Message, outOfBand bool) {
+templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
 	<div
 		id="message-list"
 		class="message-list"
@@ -20,7 +20,7 @@ templ MessageList(messages []llm.Message, outOfBand bool) {
 		}
 	>
 		<div id="messages" class="message-thread">
-			@Messages(messages...)
+			@Messages(chatID, messages...)
 		</div>
 		if len(messages) == 0 {
 			<p class="chat-empty">begin a convo...</p>

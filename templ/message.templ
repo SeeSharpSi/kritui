@@ -2,10 +2,15 @@ package templates
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/markdown"
 )
+
+func messageEditErrorID(messageID int64) string {
+	return "message-edit-error-" + strconv.FormatInt(messageID, 10)
+}
 
 func messageModelMeta(message llm.Message) string {
 	var parts []string
@@ -67,28 +72,90 @@ func messagesForView(messages []llm.Message) []messageView {
 	return views
 }
 
-templ Messages(messages ...llm.Message) {
+templ Messages(chatID string, messages ...llm.Message) {
 	for _, view := range messagesForView(messages) {
 		@CompletedToolCalls(view.ToolCalls, view.ToolErrors)
 		if view.Message != nil {
 			if view.Message.Role == "user" {
 				@MessageAppendTexts(view.Message.PromptAppendTexts)
 			}
-			<article class={ "message" , templ.KV("user", view.Message.Role=="user" ) }>
-				if view.Message.Role == "assistant" {
-					<strong>{ view.Message.Model }</strong>
-					if meta := messageModelMeta(*view.Message); meta != "" {
-						<span class="message-meta"> · { meta }</span>
+			if view.Message.Role == "user" {
+				@UserMessage(chatID, *view.Message)
+			} else {
+				<article class="message">
+					if view.Message.Role == "assistant" {
+						<strong>{ view.Message.Model }</strong>
+						if meta := messageModelMeta(*view.Message); meta != "" {
+							<span class="message-meta"> · { meta }</span>
+						}
+						<div class="message-content markdown">
+							@markdown.Render(view.Message.Content)
+						</div>
+					} else {
+						<div class="message-content plain-text">{ view.Message.Content }</div>
 					}
-					<div class="message-content markdown">
-						@markdown.Render(view.Message.Content)
-					</div>
-				} else {
-					<div class="message-content plain-text">{ view.Message.Content }</div>
-				}
-			</article>
+				</article>
+			}
 		}
 	}
+}
+
+templ UserMessage(chatID string, message llm.Message) {
+	<article class="message user" id={ "message-" + strconv.FormatInt(message.ID, 10) }>
+		<div class="message-content plain-text">{ message.Content }</div>
+		if message.ID > 0 && chatID != "" {
+			<form
+				class="message-edit-form"
+				hx-put={ "/chats/" + chatID + "/messages/" + strconv.FormatInt(message.ID, 10) }
+				hx-target={ "#" + messageEditErrorID(message.ID) }
+				hx-swap="outerHTML"
+				hx-sync="#messages:drop"
+				hx-disabled-elt="find input"
+				hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"
+			>
+				<label class="visually-hidden" for={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }>Edit message</label>
+				<input
+					id={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }
+					class="message-edit-input"
+					type="text"
+					name="message"
+					value={ message.Content }
+					required
+					autocomplete="off"
+				/>
+				@MessageEditError(message.ID, "")
+			</form>
+			<button
+				type="button"
+				class="message-edit-toggle"
+				aria-controls={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }
+				aria-expanded="false"
+				aria-label="Edit message"
+				title="Edit message"
+			>
+				@Icon("M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z")
+			</button>
+			<button
+				type="button"
+				class="message-edit-cancel"
+				aria-label="Cancel message edit"
+				title="Cancel message edit"
+			>
+				@Icon("M18 6 6 18", "m6 6 12 12")
+			</button>
+		}
+	</article>
+}
+
+templ MessageEditError(messageID int64, message string) {
+	<p
+		id={ messageEditErrorID(messageID) }
+		class="message-edit-error"
+		role="alert"
+		if message == "" {
+			hidden
+		}
+	>{ message }</p>
 }
 
 templ MessageAppendTexts(texts []string) {
@@ -162,14 +229,19 @@ templ CompletedToolCalls(calls []llm.ToolCall, toolErrors map[string]string) {
 	}
 }
 
-templ CompletedMessage(messages ...llm.Message) {
-	@Messages(messages...)
+templ CompletedMessage(chatID string, messages ...llm.Message) {
+	@Messages(chatID, messages...)
 }
 
 templ PendingSubmission(chatID string, requestID string, message llm.Message, model string, tools []string) {
-	@Messages(message)
+	@Messages(chatID, message)
 	@PendingCompletion(chatID, requestID, model, tools)
 	@MessageInput(true)
+}
+
+templ EditedSubmission(chatID string, requestID string, messages []llm.Message, model string, tools []string) {
+	@Messages(chatID, messages...)
+	@PendingCompletion(chatID, requestID, model, tools)
 }
 
 templ PendingCompletion(chatID string, requestID string, model string, tools []string) {

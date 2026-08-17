@@ -325,6 +325,9 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		"Earlier question",
 		"Earlier answer",
+		`class="message-edit-toggle"`,
+		`hx-put="/chats/8/messages/1"`,
+		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
 		`/static/htmx-ext-sse.min.js`,
 		`/static/app.js`,
 		`reportValidityOfForms`,
@@ -336,6 +339,9 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="tool-call-toggle"`,
 		`aria-expanded="false"`,
 	)
+	if count := strings.Count(response.Body.String(), `class="message-edit-toggle"`); count != 1 {
+		t.Errorf("message edit button count = %d, want 1", count)
+	}
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>", `role="button"`, `hx-replace-url`)
 }
 
@@ -799,7 +805,7 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 		html.EscapeString(defaults[0].Text),
 	)
 	appendIndex := strings.Index(body, `<details class="message-appends">`)
-	messageIndex := strings.Index(body, `<article class="message user">`)
+	messageIndex := strings.Index(body, `<article class="message user"`)
 	if appendIndex == -1 || messageIndex == -1 || appendIndex >= messageIndex {
 		t.Errorf("append details index = %d, user message index = %d; want details before message", appendIndex, messageIndex)
 	}
@@ -877,7 +883,7 @@ func TestMessageSelectionThenSettingsPruneNeverLeavesStaleAppends(t *testing.T) 
 	if err != nil {
 		t.Fatalf("persistUserMessage(): %v", err)
 	}
-	if got := kritui_db.PromptAppendIDs(selected); !slices.Equal(got, []string{"keep", "gone"}) {
+	if got := kritui_db.PromptAppendIDs(selected.appends); !slices.Equal(got, []string{"keep", "gone"}) {
 		t.Errorf("selected append IDs = %v, want [keep gone]", got)
 	}
 
@@ -982,6 +988,26 @@ func TestHandlersLimitURLFormBodies(t *testing.T) {
 				return messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
 			},
 			wantHTML: `<article class="message" role="alert">`,
+		},
+		{
+			name:   "message edit",
+			method: http.MethodPut,
+			target: "/chats/1/messages/8",
+			base:   "message=edited&model=test-model",
+			limit:  maxMessageBodyBytes,
+			newHandler: func(t *testing.T) http.Handler {
+				database := openTestDatabase(t)
+				if _, err := database.Exec(`
+					INSERT INTO chats (id) VALUES (1);
+					INSERT INTO messages (id, chat_id, position, role, content) VALUES (8, 1, 0, 'user', 'Original');
+				`); err != nil {
+					t.Fatalf("insert edit target: %v", err)
+				}
+				mux := http.NewServeMux()
+				mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, newTestToolRegistry(t), newToolCallStore()))
+				return mux
+			},
+			wantHTML: `id="message-edit-error-8"`,
 		},
 		{
 			name:   "completion",
@@ -2005,6 +2031,8 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		"Hello",
 		"selected-model",
+		`class="message-edit-toggle"`,
+		`hx-put="/chats/1/messages/1"`,
 		`hx-post="/messages/complete?chat=1"`,
 		`hx-trigger="load"`,
 		`hx-sync="#messages:queue last"`,
@@ -2027,6 +2055,167 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	}
 	if count := strings.Count(response.Body.String(), `name="tool" value="webfetch"`); count != 1 {
 		t.Errorf("tool input count = %d, want 1", count)
+	}
+}
+
+func TestMessageEditHandlerTruncatesAndRestartsCompletion(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, title) VALUES (7, 'Preserved title');
+		INSERT INTO messages (id, chat_id, position, role, content, model) VALUES
+			(10, 7, 0, 'user', 'Earlier question', NULL),
+			(11, 7, 1, 'assistant', 'Earlier answer', 'old-model'),
+			(12, 7, 2, 'user', 'Original question', NULL),
+			(13, 7, 3, 'assistant', 'Discarded answer', 'old-model');
+		INSERT INTO message_prompt_appends (message_id, message_role, position, text)
+		VALUES (12, 'user', 0, 'Old append');
+	`); err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+	toolCalls := newToolCallStore()
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, newTestToolRegistry(t), toolCalls))
+	response := serveRawForm(mux, http.MethodPut, "/chats/7/messages/12", url.Values{
+		"message": {"Edited question"},
+		"model":   {"selected-model"},
+		"tool":    {"webfetch"},
+		"append":  {"research"},
+	}.Encode())
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	if target := response.Header().Get("HX-Retarget"); target != "#messages" {
+		t.Errorf("HX-Retarget = %q, want #messages", target)
+	}
+	if swap := response.Header().Get("HX-Reswap"); swap != "innerHTML" {
+		t.Errorf("HX-Reswap = %q, want innerHTML", swap)
+	}
+	if trigger := response.Header().Get("HX-Trigger-After-Settle"); trigger != "kritui:message-edited" {
+		t.Errorf("HX-Trigger-After-Settle = %q, want kritui:message-edited", trigger)
+	}
+	requireContains(t, response.Body.String(),
+		"Earlier question",
+		"Earlier answer",
+		"Edited question",
+		"selected-model",
+		`hx-post="/messages/complete?chat=7"`,
+		`hx-trigger="load"`,
+		`hx-put="/chats/7/messages/12"`,
+		`name="model" value="selected-model"`,
+		`name="tool" value="webfetch"`,
+	)
+	requireNotContains(t, response.Body.String(), "Original question", "Discarded answer", `hx-swap-oob="outerHTML"`)
+
+	rows, err := database.Query(`SELECT id, content FROM messages WHERE chat_id = 7 ORDER BY position`)
+	if err != nil {
+		t.Fatalf("query edited messages: %v", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	var contents []string
+	for rows.Next() {
+		var id int64
+		var content string
+		if err := rows.Scan(&id, &content); err != nil {
+			t.Fatalf("scan edited message: %v", err)
+		}
+		ids = append(ids, id)
+		contents = append(contents, content)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate edited messages: %v", err)
+	}
+	if !slices.Equal(ids, []int64{10, 11, 12}) || !slices.Equal(contents, []string{"Earlier question", "Earlier answer", "Edited question"}) {
+		t.Errorf("edited messages = IDs %v content %v", ids, contents)
+	}
+	defaults := kritui_db.DefaultPromptAppends()
+	var appendText, title string
+	if err := database.QueryRow(`
+		SELECT appends.text, chats.title
+		FROM message_prompt_appends AS appends
+		JOIN messages ON messages.id = appends.message_id
+		JOIN chats ON chats.id = messages.chat_id
+		WHERE messages.id = 12
+	`).Scan(&appendText, &title); err != nil {
+		t.Fatalf("query edited append and title: %v", err)
+	}
+	if appendText != defaults[1].Text || title != "Preserved title" {
+		t.Errorf("edited append/title = %q, %q; want research append and preserved title", appendText, title)
+	}
+	tools, err := kritui_db.GetChatTools(context.Background(), database, 7)
+	if err != nil {
+		t.Fatalf("get edited chat tools: %v", err)
+	}
+	appends, err := kritui_db.GetChatPromptAppendIDs(context.Background(), database, 7)
+	if err != nil {
+		t.Fatalf("get edited chat appends: %v", err)
+	}
+	if !slices.Equal(tools, []string{"webfetch"}) || !slices.Equal(appends, []string{"research"}) {
+		t.Errorf("edited options = tools %v appends %v", tools, appends)
+	}
+}
+
+func TestMessageEditHandlerKeepsValidationErrorsInline(t *testing.T) {
+	tests := []struct {
+		name    string
+		role    string
+		form    url.Values
+		status  int
+		message string
+	}{
+		{name: "blank", role: "user", form: url.Values{"message": {" "}}, status: http.StatusBadRequest, message: "Message is required."},
+		{name: "unknown append", role: "user", form: url.Values{"message": {"Edited"}, "append": {"missing"}}, status: http.StatusBadRequest, message: "Prompt append selection is invalid."},
+		{name: "assistant", role: "assistant", form: url.Values{"message": {"Edited"}}, status: http.StatusConflict, message: "Only user messages can be edited."},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			database := openTestDatabase(t)
+			if _, err := database.Exec(`
+				INSERT INTO chats (id) VALUES (1);
+				INSERT INTO messages (id, chat_id, position, role, content) VALUES (8, 1, 0, ?, 'Original');
+			`, test.role); err != nil {
+				t.Fatalf("insert edit target: %v", err)
+			}
+			mux := http.NewServeMux()
+			mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, newTestToolRegistry(t), newToolCallStore()))
+			response := serveRawForm(mux, http.MethodPut, "/chats/1/messages/8", test.form.Encode())
+
+			requireHTMLErrorResponse(t, response, test.status, `id="message-edit-error-8"`, test.message)
+			requireNotContains(t, response.Body.String(), `id="messages"`)
+			var content string
+			if err := database.QueryRow(`SELECT content FROM messages WHERE id = 8`).Scan(&content); err != nil {
+				t.Fatalf("query unchanged target: %v", err)
+			}
+			if content != "Original" {
+				t.Errorf("stored content = %q, want unchanged Original", content)
+			}
+		})
+	}
+}
+
+func TestMessageEditHandlerRejectsActiveCompletion(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (id, chat_id, position, role, content) VALUES (8, 1, 0, 'user', 'Original');
+	`); err != nil {
+		t.Fatalf("insert edit target: %v", err)
+	}
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	defer toolCalls.delete(requestID)
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, newTestToolRegistry(t), toolCalls))
+	response := serveRawForm(mux, http.MethodPut, "/chats/1/messages/8", "message=Edited")
+
+	requireHTMLErrorResponse(t, response, http.StatusConflict, `id="message-edit-error-8"`, "A response is already in progress.")
+	var content string
+	if err := database.QueryRow(`SELECT content FROM messages WHERE id = 8`).Scan(&content); err != nil {
+		t.Fatalf("query unchanged target: %v", err)
+	}
+	if content != "Original" {
+		t.Errorf("stored content = %q, want unchanged Original", content)
 	}
 }
 
