@@ -169,7 +169,7 @@ func TestOpenDatabaseAcceptsRelativePath(t *testing.T) {
 	}
 }
 
-func TestHomeHandlerAllocatesNextChatID(t *testing.T) {
+func TestHomeHandlerAllocatesNextChatIDAtIndex(t *testing.T) {
 	database := openTestDatabase(t)
 	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (2, ''), (5, '')`); err != nil {
 		t.Fatalf("insert chats: %v", err)
@@ -179,12 +179,13 @@ func TestHomeHandlerAllocatesNextChatID(t *testing.T) {
 	response := httptest.NewRecorder()
 	homeHandler(database, newTestToolRegistry(t))(response, request)
 
-	if response.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusSeeOther)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if location := response.Header().Get("Location"); location != "/?chat=6&view=compact" {
-		t.Errorf("Location = %q, want %q", location, "/?chat=6&view=compact")
+	if location := response.Header().Get("Location"); location != "" {
+		t.Errorf("unexpected Location header %q", location)
 	}
+	requireContains(t, response.Body.String(), `hx-post="/messages?chat=6"`, `hx-replace-url="/?chat=6&amp;view=compact"`)
 
 	var count int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&count); err != nil {
@@ -195,16 +196,17 @@ func TestHomeHandlerAllocatesNextChatID(t *testing.T) {
 	}
 }
 
-func TestHomeHandlerUsesFirstChatIDForEmptyDatabase(t *testing.T) {
+func TestHomeHandlerRendersFirstChatIDAtIndexForEmptyDatabase(t *testing.T) {
 	database := openTestDatabase(t)
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()
 
 	homeHandler(database, newTestToolRegistry(t))(response, request)
 
-	if location := response.Header().Get("Location"); location != "/?chat=1" {
-		t.Errorf("Location = %q, want %q", location, "/?chat=1")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
+	requireContains(t, response.Body.String(), `hx-post="/messages?chat=1"`, `hx-replace-url="/?chat=1"`)
 }
 
 func TestHomeHandlerAllocatesConcurrentChatsWithIsolatedMessages(t *testing.T) {
@@ -226,14 +228,10 @@ func TestHomeHandlerAllocatesConcurrentChatsWithIsolatedMessages(t *testing.T) {
 
 	chatIDs := make([]int64, len(responses))
 	for index, response := range responses {
-		if response.Code != http.StatusSeeOther {
-			t.Fatalf("response %d status = %d, want %d", index, response.Code, http.StatusSeeOther)
+		if response.Code != http.StatusOK {
+			t.Fatalf("response %d status = %d, want %d", index, response.Code, http.StatusOK)
 		}
-		location, err := url.Parse(response.Header().Get("Location"))
-		if err != nil {
-			t.Fatalf("parse response %d location: %v", index, err)
-		}
-		chatIDs[index], _ = strconv.ParseInt(location.Query().Get("chat"), 10, 64)
+		chatIDs[index] = messageFormChatID(t, response.Body.String())
 	}
 	if chatIDs[0] == chatIDs[1] || chatIDs[0] == 0 || chatIDs[1] == 0 {
 		t.Fatalf("allocated chat IDs = %v, want distinct positive IDs", chatIDs)
@@ -290,9 +288,7 @@ func TestAllocatedChatsStayHiddenAndAbandonedRowsAreRemoved(t *testing.T) {
 	if count != 1 {
 		t.Errorf("allocated chat count = %d, want one current allocation", count)
 	}
-	if second.Header().Get("Location") != "/?chat=2" {
-		t.Errorf("second allocation location = %q, want /?chat=2", second.Header().Get("Location"))
-	}
+	requireContains(t, second.Body.String(), `hx-post="/messages?chat=2"`, `hx-replace-url="/?chat=2"`)
 }
 
 func TestHomeHandlerRendersStoredMessages(t *testing.T) {
@@ -333,7 +329,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="tool-call-toggle"`,
 		`aria-expanded="false"`,
 	)
-	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>", `role="button"`)
+	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>", `role="button"`, `hx-replace-url`)
 }
 
 func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
@@ -1515,18 +1511,14 @@ func TestHomeHandlerAllocatesChatWithDefaultTools(t *testing.T) {
 		t.Fatalf("set default enabled tools: %v", err)
 	}
 
-	redirect := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(redirect, httptest.NewRequest(http.MethodGet, "/", nil))
-	if redirect.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", redirect.Code, http.StatusSeeOther)
+	page := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
-	location, err := url.Parse(redirect.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("parse location: %v", err)
-	}
-	chatID := location.Query().Get("chat")
+	chatID := messageFormChatID(t, page.Body.String())
 
-	names, err := kritui_db.GetChatTools(context.Background(), database, mustChatID(t, chatID))
+	names, err := kritui_db.GetChatTools(context.Background(), database, chatID)
 	if err != nil {
 		t.Fatalf("get chat tools: %v", err)
 	}
@@ -1534,11 +1526,6 @@ func TestHomeHandlerAllocatesChatWithDefaultTools(t *testing.T) {
 		t.Errorf("chat tools = %v, want [websearch]", names)
 	}
 
-	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/?chat="+chatID, nil))
-	if page.Code != http.StatusOK {
-		t.Fatalf("page status = %d, want %d; body = %q", page.Code, http.StatusOK, page.Body.String())
-	}
 	requireContains(t, page.Body.String(), `name="tool" value="websearch" form="message-form" checked`)
 	requireNotContains(t, page.Body.String(), `name="tool" value="webfetch" form="message-form" checked`)
 }
@@ -1548,18 +1535,14 @@ func TestHomeHandlerAllocatesChatWithoutDefaultToolsWhenUnset(t *testing.T) {
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 
-	redirect := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(redirect, httptest.NewRequest(http.MethodGet, "/", nil))
-	if redirect.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", redirect.Code, http.StatusSeeOther)
+	page := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
-	location, err := url.Parse(redirect.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("parse location: %v", err)
-	}
-	chatID := location.Query().Get("chat")
+	chatID := messageFormChatID(t, page.Body.String())
 
-	names, err := kritui_db.GetChatTools(context.Background(), database, mustChatID(t, chatID))
+	names, err := kritui_db.GetChatTools(context.Background(), database, chatID)
 	if err != nil {
 		t.Fatalf("get chat tools: %v", err)
 	}
@@ -1567,8 +1550,6 @@ func TestHomeHandlerAllocatesChatWithoutDefaultToolsWhenUnset(t *testing.T) {
 		t.Errorf("chat tools = %v, want empty list", names)
 	}
 
-	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/?chat="+chatID, nil))
 	requireNotContains(t, page.Body.String(),
 		`name="tool" value="webfetch" form="message-form" checked`,
 		`name="tool" value="websearch" form="message-form" checked`,
@@ -1591,6 +1572,20 @@ func mustChatID(t *testing.T, value string) int64 {
 		t.Fatalf("invalid chat ID %q", value)
 	}
 	return chatID
+}
+
+func messageFormChatID(t *testing.T, body string) int64 {
+	t.Helper()
+	const prefix = `hx-post="/messages?chat=`
+	_, value, ok := strings.Cut(body, prefix)
+	if !ok {
+		t.Fatalf("message form action not found: %s", body)
+	}
+	value, _, ok = strings.Cut(value, `"`)
+	if !ok {
+		t.Fatalf("invalid message form action: %s", body)
+	}
+	return mustChatID(t, value)
 }
 
 func TestHistoryHandlerRejectsInvalidPagination(t *testing.T) {

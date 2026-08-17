@@ -29,6 +29,7 @@ const (
 func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
+		chatURL := ""
 		if chat == "" {
 			defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 			if err != nil {
@@ -43,12 +44,12 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 				return
 			}
 
+			chat = strconv.FormatInt(chatID, 10)
 			query := r.URL.Query()
-			query.Set("chat", strconv.FormatInt(chatID, 10))
+			query.Set("chat", chat)
 			target := *r.URL
 			target.RawQuery = query.Encode()
-			http.Redirect(w, r, target.String(), http.StatusSeeOther)
-			return
+			chatURL = target.String()
 		}
 
 		chatID, ok := positiveID(chat)
@@ -111,7 +112,7 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 		}
 
 		var page bytes.Buffer
-		if err := templates.Home(chat, messages, models, selectedModel, defaultModel, maxToolRounds, registry.Names(), enabledTools, defaultTools, promptAppends, enabledAppendIDs).Render(r.Context(), &page); err != nil {
+		if err := templates.Home(chat, chatURL, messages, models, selectedModel, defaultModel, maxToolRounds, registry.Names(), enabledTools, defaultTools, promptAppends, enabledAppendIDs).Render(r.Context(), &page); err != nil {
 			log.Printf("render page: %v", err)
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to render page.")
 			return
