@@ -4,15 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	kritui_db "seesharpsi/kritui/db"
+	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/tools"
 
 	_ "modernc.org/sqlite"
@@ -235,6 +239,260 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 			END
 		) CHECK (prompt_appends IS NULL OR role = 'user')`)
 	},
+	migrateNormalizedDatabaseStorage,
+}
+
+type legacyChatCollections struct {
+	id      int64
+	tools   []string
+	appends []string
+}
+
+type legacyMessageCollections struct {
+	id             int64
+	toolCalls      []llm.ToolCall
+	promptAppends  []string
+	providerOutput []json.RawMessage
+}
+
+func migrateNormalizedDatabaseStorage(ctx context.Context, tx *sql.Tx) error {
+	settingsValues := make(map[string]string)
+	rows, err := tx.QueryContext(ctx, `SELECT name, value FROM settings`)
+	if err != nil {
+		return fmt.Errorf("read legacy settings: %w", err)
+	}
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan legacy setting: %w", err)
+		}
+		settingsValues[name] = value
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close legacy settings: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate legacy settings: %w", err)
+	}
+
+	var defaultTools []string
+	defaultToolsConfigured := false
+	if encoded, ok := settingsValues["default_tools"]; ok {
+		// The legacy getter treated malformed tool JSON as unset and returned
+		// its caller-provided fallback.
+		if err := json.Unmarshal([]byte(encoded), &defaultTools); err == nil {
+			defaultToolsConfigured = true
+		}
+	}
+	if defaultTools == nil {
+		defaultTools = []string{}
+	}
+
+	var promptAppends []kritui_db.PromptAppend
+	promptAppendsConfigured := false
+	if encoded, ok := settingsValues["prompt_appends"]; ok {
+		if err := json.Unmarshal([]byte(encoded), &promptAppends); err != nil {
+			return fmt.Errorf("decode legacy prompt appends: %w", err)
+		}
+		if err := kritui_db.ValidatePromptAppends(promptAppends); err != nil {
+			return fmt.Errorf("validate legacy prompt appends: %w", err)
+		}
+		promptAppendsConfigured = true
+	}
+	if promptAppends == nil {
+		promptAppends = []kritui_db.PromptAppend{}
+	}
+
+	var chats []legacyChatCollections
+	rows, err = tx.QueryContext(ctx, `SELECT id, tools, appends FROM chats ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("read legacy chat collections: %w", err)
+	}
+	for rows.Next() {
+		var chat legacyChatCollections
+		var encodedTools, encodedAppends string
+		if err := rows.Scan(&chat.id, &encodedTools, &encodedAppends); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan legacy chat collections: %w", err)
+		}
+		if err := json.Unmarshal([]byte(encodedTools), &chat.tools); err != nil {
+			rows.Close()
+			return fmt.Errorf("decode tools for legacy chat %d: %w", chat.id, err)
+		}
+		if err := json.Unmarshal([]byte(encodedAppends), &chat.appends); err != nil {
+			rows.Close()
+			return fmt.Errorf("decode prompt appends for legacy chat %d: %w", chat.id, err)
+		}
+		if chat.tools == nil {
+			chat.tools = []string{}
+		}
+		if chat.appends == nil {
+			chat.appends = []string{}
+		}
+		chats = append(chats, chat)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close legacy chat collections: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate legacy chat collections: %w", err)
+	}
+
+	var messages []legacyMessageCollections
+	rows, err = tx.QueryContext(ctx, `
+		SELECT id, tool_calls, provider_metadata, prompt_appends
+		FROM messages
+		ORDER BY id
+	`)
+	if err != nil {
+		return fmt.Errorf("read legacy message collections: %w", err)
+	}
+	for rows.Next() {
+		var message legacyMessageCollections
+		var encodedToolCalls, encodedProviderMetadata, encodedPromptAppends sql.NullString
+		if err := rows.Scan(&message.id, &encodedToolCalls, &encodedProviderMetadata, &encodedPromptAppends); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan legacy message collections: %w", err)
+		}
+		if encodedToolCalls.Valid {
+			if err := json.Unmarshal([]byte(encodedToolCalls.String), &message.toolCalls); err != nil {
+				rows.Close()
+				return fmt.Errorf("decode tool calls for legacy message %d: %w", message.id, err)
+			}
+		}
+		if encodedPromptAppends.Valid {
+			if err := json.Unmarshal([]byte(encodedPromptAppends.String), &message.promptAppends); err != nil {
+				rows.Close()
+				return fmt.Errorf("decode prompt appends for legacy message %d: %w", message.id, err)
+			}
+		}
+		if encodedProviderMetadata.Valid {
+			var metadata llm.ProviderMetadata
+			if err := json.Unmarshal([]byte(encodedProviderMetadata.String), &metadata); err != nil {
+				rows.Close()
+				return fmt.Errorf("decode provider metadata for legacy message %d: %w", message.id, err)
+			}
+			message.providerOutput = metadata.ResponsesOutput()
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close legacy message collections: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate legacy message collections: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DROP TRIGGER IF EXISTS messages_touch_chat_after_insert;
+		DROP TRIGGER IF EXISTS messages_touch_chat_after_update;
+		DROP TRIGGER IF EXISTS messages_touch_chat_after_delete;
+		DROP INDEX IF EXISTS messages_chat_created_at_idx;
+		ALTER TABLE messages RENAME TO legacy_messages;
+		ALTER TABLE chats RENAME TO legacy_chats;
+		ALTER TABLE settings RENAME TO legacy_settings;
+	`); err != nil {
+		return fmt.Errorf("rename legacy tables: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, schema); err != nil {
+		return fmt.Errorf("create normalized schema: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO chats (id, title, created_at, updated_at)
+		SELECT id, title, created_at, updated_at FROM legacy_chats;
+
+		INSERT INTO messages (id, chat_id, position, role, content, model, total_tokens, cost, tool_call_id, created_at)
+		SELECT id, chat_id, position, role, content, model, total_tokens, cost, tool_call_id, created_at
+		FROM legacy_messages;
+
+		UPDATE chats
+		SET updated_at = (SELECT updated_at FROM legacy_chats WHERE legacy_chats.id = chats.id);
+	`); err != nil {
+		return fmt.Errorf("copy normalized records: %w", err)
+	}
+
+	var defaultModel any
+	if value, ok := settingsValues["default_model"]; ok {
+		defaultModel = value
+	}
+	var maxToolRounds any
+	if value, ok := settingsValues["max_tool_rounds"]; ok {
+		if rounds, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil && rounds >= 1 && rounds <= kritui_db.MaxConfigurableToolRounds {
+			maxToolRounds = rounds
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE settings
+		SET default_model = ?, max_tool_rounds = ?, default_tools_configured = ?, prompt_appends_configured = ?
+		WHERE id = 1
+	`, defaultModel, maxToolRounds, defaultToolsConfigured, promptAppendsConfigured); err != nil {
+		return fmt.Errorf("migrate typed settings: %w", err)
+	}
+	for position, name := range defaultTools {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO default_tools (position, name) VALUES (?, ?)`, position, name); err != nil {
+			return fmt.Errorf("migrate default tool %d: %w", position, err)
+		}
+	}
+	for position, value := range promptAppends {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO prompt_appends (id, position, name, text, enabled_by_default)
+			VALUES (?, ?, ?, ?, ?)
+		`, value.ID, position, value.Name, value.Text, value.EnabledByDefault); err != nil {
+			return fmt.Errorf("migrate prompt append %q: %w", value.ID, err)
+		}
+	}
+	for _, chat := range chats {
+		for position, name := range chat.tools {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO chat_tools (chat_id, position, name) VALUES (?, ?, ?)`, chat.id, position, name); err != nil {
+				return fmt.Errorf("migrate tool %d for chat %d: %w", position, chat.id, err)
+			}
+		}
+		for position, id := range chat.appends {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO chat_prompt_appends (chat_id, position, prompt_append_id)
+				VALUES (?, ?, ?)
+			`, chat.id, position, id); err != nil {
+				return fmt.Errorf("migrate prompt append %d for chat %d: %w", position, chat.id, err)
+			}
+		}
+	}
+	for _, message := range messages {
+		for position, call := range message.toolCalls {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO message_tool_calls
+					(message_id, message_role, position, call_id, call_type, function_name, arguments)
+				VALUES (?, 'assistant', ?, ?, ?, ?, ?)
+			`, message.id, position, call.ID, call.Type, call.Function.Name, call.Function.Arguments); err != nil {
+				return fmt.Errorf("migrate tool call %d for message %d: %w", position, message.id, err)
+			}
+		}
+		for position, text := range message.promptAppends {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO message_prompt_appends (message_id, message_role, position, text)
+				VALUES (?, 'user', ?, ?)
+			`, message.id, position, text); err != nil {
+				return fmt.Errorf("migrate prompt append %d for message %d: %w", position, message.id, err)
+			}
+		}
+		for position, output := range message.providerOutput {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO message_provider_outputs (message_id, message_role, position, payload)
+				VALUES (?, 'assistant', ?, ?)
+			`, message.id, position, string(output)); err != nil {
+				return fmt.Errorf("migrate provider output %d for message %d: %w", position, message.id, err)
+			}
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DROP TABLE legacy_messages;
+		DROP TABLE legacy_chats;
+		DROP TABLE legacy_settings;
+	`); err != nil {
+		return fmt.Errorf("remove legacy tables: %w", err)
+	}
+	return nil
 }
 
 func addColumnIfMissing(ctx context.Context, tx *sql.Tx, table, column, definition string) error {

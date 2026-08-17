@@ -4,19 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strconv"
 	"strings"
 )
 
-const (
-	defaultModelSetting       = "default_model"
-	maxToolRoundsSetting      = "max_tool_rounds"
-	defaultToolsSetting       = "default_tools"
-	MaxConfigurableToolRounds = 100
-)
+const MaxConfigurableToolRounds = 100
 
-// settingWriter is satisfied by both *sql.DB and *sql.Tx so setting
-// upserts can run inside a shared transaction.
+// settingWriter is satisfied by both *sql.DB and *sql.Tx so setting writes can
+// run inside a shared transaction.
 type settingWriter interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
@@ -31,10 +25,7 @@ type SettingsUpdate struct {
 	PromptAppends []PromptAppend
 }
 
-// SaveSettings stores the default model, max tool rounds, default tools, and,
-// when PromptAppends is non-nil, the prompt append definitions together in one
-// transaction. Prompt-append upsert and chat-selection pruning share that same
-// transaction, so any failure rolls back every value changed by the request.
+// SaveSettings stores all submitted settings in one transaction.
 func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -62,17 +53,16 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 	return nil
 }
 
-// GetDefaultModel returns the stored default model or fallback when no default has been stored.
+// GetDefaultModel returns the stored default model or fallback when unset.
 func GetDefaultModel(ctx context.Context, db *sql.DB, fallback string) (string, error) {
-	var model string
-	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE name = ?`, defaultModelSetting).Scan(&model)
-	if err == sql.ErrNoRows {
-		return strings.TrimSpace(fallback), nil
-	}
-	if err != nil {
+	var model sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT default_model FROM settings WHERE id = 1`).Scan(&model); err != nil {
 		return "", fmt.Errorf("get default model: %w", err)
 	}
-	return strings.TrimSpace(model), nil
+	if !model.Valid {
+		return strings.TrimSpace(fallback), nil
+	}
+	return strings.TrimSpace(model.String), nil
 }
 
 // EnsureDefaultModel stores model only when no default has been configured yet.
@@ -82,9 +72,9 @@ func EnsureDefaultModel(ctx context.Context, db *sql.DB, model string) error {
 		return nil
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO settings (name, value) VALUES (?, ?)
-		ON CONFLICT (name) DO NOTHING
-	`, defaultModelSetting, model); err != nil {
+		UPDATE settings SET default_model = ?
+		WHERE id = 1 AND default_model IS NULL
+	`, model); err != nil {
 		return fmt.Errorf("ensure default model: %w", err)
 	}
 	return nil
@@ -100,31 +90,23 @@ func setDefaultModel(ctx context.Context, db settingWriter, model string) error 
 	if model == "" {
 		return fmt.Errorf("set default model: model is required")
 	}
-	if _, err := db.ExecContext(ctx, `
-		INSERT INTO settings (name, value) VALUES (?, ?)
-		ON CONFLICT (name) DO UPDATE SET value = excluded.value
-	`, defaultModelSetting, model); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET default_model = ? WHERE id = 1`, model); err != nil {
 		return fmt.Errorf("set default model: %w", err)
 	}
 	return nil
 }
 
 // GetMaxToolRounds returns the stored maximum consecutive tool-call rounds or
-// fallback when no valid value has been stored.
+// fallback when unset.
 func GetMaxToolRounds(ctx context.Context, db *sql.DB, fallback int) (int, error) {
-	var value string
-	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE name = ?`, maxToolRoundsSetting).Scan(&value)
-	if err == sql.ErrNoRows {
-		return fallback, nil
-	}
-	if err != nil {
+	var rounds sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT max_tool_rounds FROM settings WHERE id = 1`).Scan(&rounds); err != nil {
 		return 0, fmt.Errorf("get max tool rounds: %w", err)
 	}
-	rounds, parseErr := strconv.Atoi(strings.TrimSpace(value))
-	if parseErr != nil || rounds < 1 {
+	if !rounds.Valid {
 		return fallback, nil
 	}
-	return rounds, nil
+	return int(rounds.Int64), nil
 }
 
 // SetMaxToolRounds stores the maximum consecutive tool-call rounds.
@@ -136,10 +118,7 @@ func setMaxToolRounds(ctx context.Context, db settingWriter, rounds int) error {
 	if err := validateMaxToolRounds(rounds); err != nil {
 		return err
 	}
-	if _, err := db.ExecContext(ctx, `
-		INSERT INTO settings (name, value) VALUES (?, ?)
-		ON CONFLICT (name) DO UPDATE SET value = excluded.value
-	`, maxToolRoundsSetting, strconv.Itoa(rounds)); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET max_tool_rounds = ? WHERE id = 1`, rounds); err != nil {
 		return fmt.Errorf("set max tool rounds: %w", err)
 	}
 	return nil
@@ -152,39 +131,63 @@ func validateMaxToolRounds(rounds int) error {
 	return nil
 }
 
-// GetDefaultEnabledTools returns the tools enabled by default in new chats or
-// fallback when no default has been stored.
+// GetDefaultEnabledTools returns tools enabled by default or fallback when the
+// collection has never been configured.
 func GetDefaultEnabledTools(ctx context.Context, db *sql.DB, fallback []string) ([]string, error) {
-	var value string
-	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE name = ?`, defaultToolsSetting).Scan(&value)
-	if err == sql.ErrNoRows {
+	var configured bool
+	if err := db.QueryRowContext(ctx, `SELECT default_tools_configured FROM settings WHERE id = 1`).Scan(&configured); err != nil {
+		return nil, fmt.Errorf("get default enabled tools state: %w", err)
+	}
+	if !configured {
 		return fallback, nil
 	}
+
+	rows, err := db.QueryContext(ctx, `SELECT name FROM default_tools ORDER BY position`)
 	if err != nil {
 		return nil, fmt.Errorf("get default enabled tools: %w", err)
 	}
-	names, decodeErr := decodeToolNames(strings.TrimSpace(value))
-	if decodeErr != nil {
-		return fallback, nil
+	defer rows.Close()
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan default enabled tool: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate default enabled tools: %w", err)
 	}
 	return names, nil
 }
 
-// SetDefaultEnabledTools stores the tools enabled by default in new chats.
+// SetDefaultEnabledTools replaces tools enabled by default for new chats.
 func SetDefaultEnabledTools(ctx context.Context, db *sql.DB, names []string) error {
-	return setDefaultEnabledTools(ctx, db, names)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin set default enabled tools: %w", err)
+	}
+	defer tx.Rollback()
+	if err := setDefaultEnabledTools(ctx, tx, names); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set default enabled tools: %w", err)
+	}
+	return nil
 }
 
 func setDefaultEnabledTools(ctx context.Context, db settingWriter, names []string) error {
-	encoded, err := encodeToolNames(names)
-	if err != nil {
-		return fmt.Errorf("encode default enabled tools: %w", err)
+	if _, err := db.ExecContext(ctx, `DELETE FROM default_tools`); err != nil {
+		return fmt.Errorf("clear default enabled tools: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, `
-		INSERT INTO settings (name, value) VALUES (?, ?)
-		ON CONFLICT (name) DO UPDATE SET value = excluded.value
-	`, defaultToolsSetting, encoded); err != nil {
-		return fmt.Errorf("set default enabled tools: %w", err)
+	for position, name := range names {
+		if _, err := db.ExecContext(ctx, `INSERT INTO default_tools (position, name) VALUES (?, ?)`, position, name); err != nil {
+			return fmt.Errorf("store default enabled tool %d: %w", position, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET default_tools_configured = 1 WHERE id = 1`); err != nil {
+		return fmt.Errorf("mark default enabled tools configured: %w", err)
 	}
 	return nil
 }

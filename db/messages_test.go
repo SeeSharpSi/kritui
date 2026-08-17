@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -103,6 +104,109 @@ func TestAppendCompletionRejectsEditedConversation(t *testing.T) {
 	err = AppendCompletion(context.Background(), database, 1, snapshot, []llm.Message{{Role: "assistant", Content: "stale"}})
 	if !errors.Is(err, ErrConversationConflict) {
 		t.Fatalf("AppendCompletion() error = %v, want conversation conflict", err)
+	}
+}
+
+func TestAppendCompletionRejectsEditedMessageCollections(t *testing.T) {
+	metadata, err := llm.NewResponsesProviderMetadata([]json.RawMessage{json.RawMessage(`{"type":"reasoning","id":"reasoning-1"}`)})
+	if err != nil {
+		t.Fatalf("create provider metadata: %v", err)
+	}
+	tests := []struct {
+		name    string
+		message llm.Message
+		update  string
+	}{
+		{
+			name: "tool call",
+			message: llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{
+				ID: "call-1", Type: "function", Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`},
+			}}},
+			update: `UPDATE message_tool_calls SET arguments = '{"changed":true}'`,
+		},
+		{
+			name:    "prompt append",
+			message: llm.Message{Role: "user", Content: "question", PromptAppendTexts: []string{"Original instruction."}},
+			update:  `UPDATE message_prompt_appends SET text = 'Changed instruction.'`,
+		},
+		{
+			name:    "prompt append position",
+			message: llm.Message{Role: "user", Content: "question", PromptAppendTexts: []string{"Original instruction."}},
+			update:  `UPDATE message_prompt_appends SET position = 2`,
+		},
+		{
+			name:    "provider output",
+			message: llm.Message{Role: "assistant", ProviderMetadata: metadata},
+			update:  `UPDATE message_provider_outputs SET payload = '{"type":"reasoning","id":"reasoning-2"}'`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			database := openMessagesTestDatabase(t, "")
+			if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+				t.Fatalf("insert chat: %v", err)
+			}
+			if _, err := InsertMessage(context.Background(), database, 1, 0, test.message); err != nil {
+				t.Fatalf("insert message: %v", err)
+			}
+			snapshot, err := GetMessageSnapshot(context.Background(), database, 1)
+			if err != nil {
+				t.Fatalf("get message snapshot: %v", err)
+			}
+			if _, err := database.Exec(test.update); err != nil {
+				t.Fatalf("edit message collection: %v", err)
+			}
+			err = AppendCompletion(context.Background(), database, 1, snapshot, []llm.Message{{Role: "assistant", Content: "stale"}})
+			if !errors.Is(err, ErrConversationConflict) {
+				t.Fatalf("AppendCompletion() error = %v, want conversation conflict", err)
+			}
+		})
+	}
+}
+
+func TestInsertMessageRollsBackWhenChildInsertFails(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	_, err := InsertMessage(context.Background(), database, 1, 0, llm.Message{
+		Role: "assistant",
+		ToolCalls: []llm.ToolCall{
+			{ID: "call-1", Type: "function", Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`}},
+			{ID: "call-2", Type: "function", Function: llm.FunctionCall{Name: "", Arguments: `{}`}},
+		},
+	})
+	if err == nil {
+		t.Fatal("InsertMessage() error = nil, want invalid function name error")
+	}
+	var count int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&count); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("stored message count = %d, want 0 after rollback", count)
+	}
+}
+
+func TestInsertMessagePreservesOpaqueToolArguments(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 0, llm.Message{
+		Role: "assistant",
+		ToolCalls: []llm.ToolCall{{
+			ID: "call-1", Type: "function", Function: llm.FunctionCall{Name: "lookup", Arguments: `opaque-provider-text`},
+		}},
+	}); err != nil {
+		t.Fatalf("InsertMessage() error: %v", err)
+	}
+	messages, err := GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("GetMessages() error: %v", err)
+	}
+	if len(messages) != 1 || len(messages[0].ToolCalls) != 1 || messages[0].ToolCalls[0].Function.Arguments != "opaque-provider-text" {
+		t.Errorf("stored messages = %#v, want opaque tool arguments preserved", messages)
 	}
 }
 

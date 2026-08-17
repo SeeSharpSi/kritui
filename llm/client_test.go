@@ -709,11 +709,11 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 }
 
 func TestProviderMetadataJSONRoundTrip(t *testing.T) {
-	metadata, err := newResponsesProviderMetadata([]json.RawMessage{
+	metadata, err := NewResponsesProviderMetadata([]json.RawMessage{
 		json.RawMessage(`{"type":"reasoning","id":"reasoning-1","encrypted_content":"opaque"}`),
 	})
 	if err != nil {
-		t.Fatalf("newResponsesProviderMetadata() error: %v", err)
+		t.Fatalf("NewResponsesProviderMetadata() error: %v", err)
 	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {

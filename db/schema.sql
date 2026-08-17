@@ -1,30 +1,47 @@
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS settings (
-    name TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    default_model TEXT,
+    max_tool_rounds INTEGER CHECK (max_tool_rounds IS NULL OR max_tool_rounds BETWEEN 1 AND 100),
+    default_tools_configured INTEGER NOT NULL DEFAULT 0 CHECK (default_tools_configured IN (0, 1)),
+    prompt_appends_configured INTEGER NOT NULL DEFAULT 0 CHECK (prompt_appends_configured IN (0, 1))
+) STRICT;
+
+INSERT OR IGNORE INTO settings (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS default_tools (
+    position INTEGER PRIMARY KEY CHECK (position >= 0),
+    name TEXT NOT NULL CHECK (name <> '')
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS prompt_appends (
+    id TEXT PRIMARY KEY CHECK (id <> ''),
+    position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+    name TEXT NOT NULL CHECK (name <> ''),
+    text TEXT NOT NULL CHECK (text <> ''),
+    enabled_by_default INTEGER NOT NULL DEFAULT 0 CHECK (enabled_by_default IN (0, 1))
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
-    tools TEXT NOT NULL DEFAULT '[]',
-    -- JSON array of selected prompt append IDs.
-    appends TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    CHECK (
-        CASE
-            WHEN json_valid(tools) THEN json_type(tools) = 'array'
-            ELSE 0
-        END
-    ),
-    CHECK (
-        CASE
-            WHEN json_valid(appends) THEN json_type(appends) = 'array'
-            ELSE 0
-        END
-    )
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS chat_tools (
+    chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    name TEXT NOT NULL CHECK (name <> ''),
+    PRIMARY KEY (chat_id, position)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS chat_prompt_appends (
+    chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    prompt_append_id TEXT NOT NULL CHECK (prompt_append_id <> ''),
+    PRIMARY KEY (chat_id, position)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -33,42 +50,53 @@ CREATE TABLE IF NOT EXISTS messages (
     position INTEGER NOT NULL CHECK (position >= 0),
     role TEXT NOT NULL CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
     content TEXT NOT NULL DEFAULT '',
-    -- JSON array of prompt append text snapshots applied to this user message.
-    prompt_appends TEXT CHECK (
-        prompt_appends IS NULL OR
-        CASE
-            WHEN json_valid(prompt_appends) THEN json_type(prompt_appends) = 'array'
-            ELSE 0
-        END
-    ),
     model TEXT,
     total_tokens INTEGER,
     cost REAL,
-    tool_calls TEXT,
     tool_call_id TEXT,
-    provider_metadata TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (chat_id, position),
-    CHECK (tool_calls IS NULL OR role = 'assistant'),
-    CHECK (prompt_appends IS NULL OR role = 'user'),
-    CHECK (
-        tool_calls IS NULL OR
-        CASE
-            WHEN json_valid(tool_calls) THEN json_type(tool_calls) = 'array'
-            ELSE 0
-        END
-    ),
+    UNIQUE (id, role),
     CHECK (
         (role = 'tool' AND tool_call_id IS NOT NULL) OR
         (role <> 'tool' AND tool_call_id IS NULL)
-    ),
-    CHECK (
-        provider_metadata IS NULL OR
+    )
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS message_prompt_appends (
+    message_id INTEGER NOT NULL,
+    message_role TEXT NOT NULL DEFAULT 'user' CHECK (message_role = 'user'),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    text TEXT NOT NULL,
+    PRIMARY KEY (message_id, position),
+    FOREIGN KEY (message_id, message_role) REFERENCES messages(id, role) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS message_tool_calls (
+    message_id INTEGER NOT NULL,
+    message_role TEXT NOT NULL DEFAULT 'assistant' CHECK (message_role = 'assistant'),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    call_id TEXT NOT NULL CHECK (call_id <> ''),
+    call_type TEXT NOT NULL CHECK (call_type <> ''),
+    function_name TEXT NOT NULL CHECK (function_name <> ''),
+    arguments TEXT NOT NULL,
+    PRIMARY KEY (message_id, position),
+    UNIQUE (message_id, call_id),
+    FOREIGN KEY (message_id, message_role) REFERENCES messages(id, role) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS message_provider_outputs (
+    message_id INTEGER NOT NULL,
+    message_role TEXT NOT NULL DEFAULT 'assistant' CHECK (message_role = 'assistant'),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    payload TEXT NOT NULL CHECK (
         CASE
-            WHEN role = 'assistant' AND json_valid(provider_metadata) THEN json_type(provider_metadata) = 'object'
+            WHEN json_valid(payload) THEN json_type(payload) = 'object'
             ELSE 0
         END
-    )
+    ),
+    PRIMARY KEY (message_id, position),
+    FOREIGN KEY (message_id, message_role) REFERENCES messages(id, role) ON DELETE CASCADE
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS messages_chat_created_at_idx
@@ -98,4 +126,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;

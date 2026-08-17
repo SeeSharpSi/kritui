@@ -40,21 +40,11 @@ func TestSetMaxToolRoundsRejectsInvalidValues(t *testing.T) {
 	}
 }
 
-func TestGetMaxToolRoundsFallsBackWhenValueInvalid(t *testing.T) {
+func TestMaxToolRoundsColumnRejectsInvalidValues(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
-	for _, value := range []string{"garbage", "0", "-3"} {
-		if _, err := database.Exec(`INSERT INTO settings (name, value) VALUES (?, ?)`, maxToolRoundsSetting, value); err != nil {
-			t.Fatalf("insert invalid setting: %v", err)
-		}
-		rounds, err := GetMaxToolRounds(context.Background(), database, 9)
-		if err != nil {
-			t.Fatalf("GetMaxToolRounds() error: %v", err)
-		}
-		if rounds != 9 {
-			t.Errorf("max tool rounds for %q = %d, want fallback 9", value, rounds)
-		}
-		if _, err := database.Exec(`DELETE FROM settings WHERE name = ?`, maxToolRoundsSetting); err != nil {
-			t.Fatalf("clean up setting: %v", err)
+	for _, rounds := range []int{0, -3, MaxConfigurableToolRounds + 1} {
+		if _, err := database.Exec(`UPDATE settings SET max_tool_rounds = ? WHERE id = 1`, rounds); err == nil {
+			t.Errorf("store invalid max tool rounds %d error = nil", rounds)
 		}
 	}
 }
@@ -65,7 +55,7 @@ func TestGetDefaultEnabledToolsFallsBackWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDefaultEnabledTools() error: %v", err)
 	}
-	if len(names) != 1 || names[0] != "webfetch" {
+	if !slices.Equal(names, []string{"webfetch"}) {
 		t.Errorf("default enabled tools = %v, want [webfetch]", names)
 	}
 }
@@ -79,12 +69,37 @@ func TestSetAndGetDefaultEnabledTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDefaultEnabledTools() error: %v", err)
 	}
-	if len(names) != 2 || names[0] != "webfetch" || names[1] != "git" {
+	if !slices.Equal(names, []string{"webfetch", "git"}) {
 		t.Errorf("default enabled tools = %v, want [webfetch git]", names)
 	}
 }
 
-func TestSetDefaultEnabledToolsReplacesValue(t *testing.T) {
+func TestSetDefaultEnabledToolsStoresOrderedRows(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if err := SetDefaultEnabledTools(context.Background(), database, []string{"webfetch", "git"}); err != nil {
+		t.Fatalf("SetDefaultEnabledTools() error: %v", err)
+	}
+	rows, err := database.Query(`SELECT position, name FROM default_tools ORDER BY position`)
+	if err != nil {
+		t.Fatalf("query default tools: %v", err)
+	}
+	defer rows.Close()
+	for position, want := range []string{"webfetch", "git"} {
+		if !rows.Next() {
+			t.Fatalf("default tool row %d missing", position)
+		}
+		var gotPosition int
+		var gotName string
+		if err := rows.Scan(&gotPosition, &gotName); err != nil {
+			t.Fatalf("scan default tool: %v", err)
+		}
+		if gotPosition != position || gotName != want {
+			t.Errorf("default tool row = (%d, %q), want (%d, %q)", gotPosition, gotName, position, want)
+		}
+	}
+}
+
+func TestSetDefaultEnabledToolsReplacesWithExplicitEmptyList(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
 	if err := SetDefaultEnabledTools(context.Background(), database, []string{"webfetch"}); err != nil {
 		t.Fatalf("SetDefaultEnabledTools() error: %v", err)
@@ -98,25 +113,6 @@ func TestSetDefaultEnabledToolsReplacesValue(t *testing.T) {
 	}
 	if len(names) != 0 {
 		t.Errorf("default enabled tools = %v, want empty list", names)
-	}
-}
-
-func TestGetDefaultEnabledToolsFallsBackWhenValueInvalid(t *testing.T) {
-	database := openMessagesTestDatabase(t, "")
-	for _, value := range []string{"garbage", `{"name":"webfetch"}`} {
-		if _, err := database.Exec(`INSERT INTO settings (name, value) VALUES (?, ?)`, defaultToolsSetting, value); err != nil {
-			t.Fatalf("insert invalid setting: %v", err)
-		}
-		names, err := GetDefaultEnabledTools(context.Background(), database, []string{"git"})
-		if err != nil {
-			t.Fatalf("GetDefaultEnabledTools() error: %v", err)
-		}
-		if len(names) != 1 || names[0] != "git" {
-			t.Errorf("default enabled tools for %q = %v, want fallback [git]", value, names)
-		}
-		if _, err := database.Exec(`DELETE FROM settings WHERE name = ?`, defaultToolsSetting); err != nil {
-			t.Fatalf("clean up setting: %v", err)
-		}
 	}
 }
 
@@ -141,25 +137,15 @@ func TestSaveSettingsRollsBackWhenPromptAppendsWriteFails(t *testing.T) {
 		t.Fatalf("InsertChat() error: %v", err)
 	}
 
-	// Model, rounds, and tools upserts execute first inside the same
-	// transaction. A trigger that raises only for the prompt_appends settings
-	// write forces the final write to fail, exercising rollback after earlier
-	// values were already changed but never committed.
 	if _, err := database.Exec(`
 		CREATE TRIGGER fail_prompt_appends_insert
-		AFTER INSERT ON settings
-		WHEN NEW.name = 'prompt_appends'
-		BEGIN
-			SELECT RAISE(ABORT, 'injected prompt appends failure');
-		END;
-		CREATE TRIGGER fail_prompt_appends_update
-		AFTER UPDATE ON settings
-		WHEN OLD.name = 'prompt_appends'
+		BEFORE INSERT ON prompt_appends
+		WHEN NEW.id = 'new'
 		BEGIN
 			SELECT RAISE(ABORT, 'injected prompt appends failure');
 		END;
 	`); err != nil {
-		t.Fatalf("inject failure triggers: %v", err)
+		t.Fatalf("inject failure trigger: %v", err)
 	}
 
 	err = SaveSettings(ctx, database, SettingsUpdate{
@@ -222,16 +208,12 @@ func TestSaveSettingsPreservesPromptAppendsWhenOmitted(t *testing.T) {
 	if !slices.Equal(got, appends) {
 		t.Errorf("prompt appends = %#v, want preserved %#v", got, appends)
 	}
-	for name, want := range map[string]string{
-		"default_model":   "saved-model",
-		"max_tool_rounds": "12",
-	} {
-		var value string
-		if err := database.QueryRow(`SELECT value FROM settings WHERE name = ?`, name).Scan(&value); err != nil {
-			t.Fatalf("get setting %q: %v", name, err)
-		}
-		if value != want {
-			t.Errorf("setting %q = %q, want %q", name, value, want)
-		}
+	var model string
+	var rounds int
+	if err := database.QueryRow(`SELECT default_model, max_tool_rounds FROM settings WHERE id = 1`).Scan(&model, &rounds); err != nil {
+		t.Fatalf("get typed settings: %v", err)
+	}
+	if model != "saved-model" || rounds != 12 {
+		t.Errorf("typed settings = (%q, %d), want (saved-model, 12)", model, rounds)
 	}
 }

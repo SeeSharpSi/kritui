@@ -52,12 +52,14 @@ func TestSetAndGetPromptAppends(t *testing.T) {
 	}
 }
 
-func TestGetPromptAppendsTreatsLegacyValuesAsDisabledByDefault(t *testing.T) {
+func TestGetPromptAppendsLoadsDisabledRows(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
 	if _, err := database.ExecContext(context.Background(), `
-		INSERT INTO settings (name, value) VALUES (?, ?)
-	`, promptAppendsSetting, `[{"id":"custom","name":"Custom","text":"Use custom instruction."}]`); err != nil {
-		t.Fatalf("insert legacy value: %v", err)
+		UPDATE settings SET prompt_appends_configured = 1 WHERE id = 1;
+		INSERT INTO prompt_appends (id, position, name, text)
+		VALUES ('custom', 0, 'Custom', 'Use custom instruction.');
+	`); err != nil {
+		t.Fatalf("insert prompt append row: %v", err)
 	}
 
 	values, err := GetPromptAppends(context.Background(), database)
@@ -65,38 +67,27 @@ func TestGetPromptAppendsTreatsLegacyValuesAsDisabledByDefault(t *testing.T) {
 		t.Fatalf("GetPromptAppends() error: %v", err)
 	}
 	if len(values) != 1 || values[0].EnabledByDefault {
-		t.Errorf("legacy prompt appends = %#v, want one disabled append", values)
+		t.Errorf("prompt appends = %#v, want one disabled append", values)
 	}
 }
 
-func TestGetPromptAppendsRejectsCorruptValues(t *testing.T) {
+func TestPromptAppendTableRejectsEmptyRequiredValues(t *testing.T) {
 	tests := []struct {
-		name  string
-		value string
+		name string
+		id   string
+		text string
 	}{
-		{
-			name:  "invalid json",
-			value: "not-json",
-		},
-		{
-			name:  "fails validation",
-			value: `[{"id":"","name":"x","text":"y"}]`,
-		},
+		{name: "empty id", id: "", text: "text"},
+		{name: "empty text", id: "valid", text: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			database := openMessagesTestDatabase(t, "")
 			if _, err := database.ExecContext(context.Background(), `
-				INSERT INTO settings (name, value) VALUES (?, ?)
-			`, promptAppendsSetting, tt.value); err != nil {
-				t.Fatalf("insert corrupt value: %v", err)
-			}
-			values, err := GetPromptAppends(context.Background(), database)
-			if err == nil {
-				t.Fatal("GetPromptAppends() error = nil, want an error")
-			}
-			if values != nil {
-				t.Errorf("GetPromptAppends() values = %#v, want nil", values)
+				INSERT INTO prompt_appends (id, position, name, text)
+				VALUES (?, 0, 'Name', ?)
+			`, tt.id, tt.text); err == nil {
+				t.Fatal("insert invalid prompt append error = nil")
 			}
 		})
 	}
@@ -268,10 +259,8 @@ func TestPromptAppendIDValidationAppliesToAllAccessors(t *testing.T) {
 		t.Fatalf("seed SetPromptAppends() error: %v", err)
 	}
 	if _, err := database.Exec(`
-		UPDATE settings SET value = '[
-			{"id":"bad char","name":"Bad","text":"Bad."},
-			{"id":"ok","name":"Ok","text":"Fine."}
-		]' WHERE name = 'prompt_appends'
+		INSERT INTO prompt_appends (id, position, name, text)
+		VALUES ('bad char', 1, 'Bad', 'Bad.')
 	`); err != nil {
 		t.Fatalf("corrupt stored appends: %v", err)
 	}

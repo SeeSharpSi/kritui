@@ -4,13 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"strings"
 )
 
 const (
-	promptAppendsSetting     = "prompt_appends"
 	maxPromptAppends         = 32
 	maxPromptAppendIDBytes   = 64
 	maxPromptAppendNameRunes = 80
@@ -55,30 +53,42 @@ func embeddedAppendText(name string) string {
 	return strings.TrimSpace(string(content))
 }
 
-// rowQueryer is satisfied by both *sql.DB and *sql.Tx so prompt-append
-// resolution can run inside the same transaction that persists a chat and its
-// message.
+// rowQueryer is satisfied by both *sql.DB and *sql.Tx.
 type rowQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 // GetPromptAppends returns stored presets, or built-in presets when none have
-// been configured. Stored values that fail to decode or validate return an
-// error instead of falling back, so corruption is never silently replaced by
-// defaults.
+// been configured.
 func GetPromptAppends(ctx context.Context, db rowQueryer) ([]PromptAppend, error) {
-	var encoded string
-	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE name = ?`, promptAppendsSetting).Scan(&encoded)
-	if err == sql.ErrNoRows {
+	var configured bool
+	if err := db.QueryRowContext(ctx, `SELECT prompt_appends_configured FROM settings WHERE id = 1`).Scan(&configured); err != nil {
+		return nil, fmt.Errorf("get prompt append state: %w", err)
+	}
+	if !configured {
 		return DefaultPromptAppends(), nil
 	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, name, text, enabled_by_default
+		FROM prompt_appends
+		ORDER BY position
+	`)
 	if err != nil {
 		return nil, fmt.Errorf("get prompt appends: %w", err)
 	}
-
-	var values []PromptAppend
-	if err := json.Unmarshal([]byte(encoded), &values); err != nil {
-		return nil, fmt.Errorf("decode prompt appends: %w", err)
+	defer rows.Close()
+	values := []PromptAppend{}
+	for rows.Next() {
+		var value PromptAppend
+		if err := rows.Scan(&value.ID, &value.Name, &value.Text, &value.EnabledByDefault); err != nil {
+			return nil, fmt.Errorf("scan prompt append: %w", err)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate prompt appends: %w", err)
 	}
 	normalized, err := normalizePromptAppends(values)
 	if err != nil {
@@ -107,44 +117,33 @@ func SetPromptAppends(ctx context.Context, db *sql.DB, values []PromptAppend) er
 	return nil
 }
 
-// setPromptAppends writes prompt append definitions and prunes removed IDs
-// from every chat's selected appends. It runs on either a database or an
-// open transaction so a settings save can share one atomic unit of work.
+// setPromptAppends writes definitions and prunes removed chat selections.
 func setPromptAppends(ctx context.Context, db settingWriter, values []PromptAppend) error {
 	normalized, err := normalizePromptAppends(values)
 	if err != nil {
 		return fmt.Errorf("set prompt appends: %w", err)
 	}
-	encoded, err := json.Marshal(normalized)
-	if err != nil {
-		return fmt.Errorf("encode prompt appends: %w", err)
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM prompt_appends`); err != nil {
+		return fmt.Errorf("clear prompt appends: %w", err)
 	}
-	encodedIDs, err := encodePromptAppendIDs(PromptAppendIDs(normalized))
-	if err != nil {
-		return fmt.Errorf("encode prompt append IDs: %w", err)
+	for position, value := range normalized {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO prompt_appends (id, position, name, text, enabled_by_default)
+			VALUES (?, ?, ?, ?, ?)
+		`, value.ID, position, value.Name, value.Text, value.EnabledByDefault); err != nil {
+			return fmt.Errorf("store prompt append %q: %w", value.ID, err)
+		}
 	}
 
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO settings (name, value) VALUES (?, ?)
-		ON CONFLICT (name) DO UPDATE SET value = excluded.value
-	`, promptAppendsSetting, string(encoded)); err != nil {
-		return fmt.Errorf("set prompt appends: %w", err)
-	}
-
-	if _, err := db.ExecContext(ctx, `
-		UPDATE chats
-		SET appends = (
-			SELECT COALESCE(json_group_array(value), '[]')
-			FROM (
-				SELECT value
-				FROM json_each(chats.appends)
-				WHERE value IN (SELECT value FROM json_each(?))
-				ORDER BY CAST(key AS INTEGER)
-			)
-		)
-		WHERE json_valid(appends)
-	`, encodedIDs); err != nil {
+		DELETE FROM chat_prompt_appends
+		WHERE prompt_append_id NOT IN (SELECT id FROM prompt_appends)
+	`); err != nil {
 		return fmt.Errorf("prune chat prompt appends: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET prompt_appends_configured = 1 WHERE id = 1`); err != nil {
+		return fmt.Errorf("mark prompt appends configured: %w", err)
 	}
 	return nil
 }
@@ -231,25 +230,6 @@ func SelectPromptAppends(values []PromptAppend, ids []string) ([]PromptAppend, e
 		selected = append(selected, value)
 	}
 	return selected, nil
-}
-
-func encodePromptAppendIDs(ids []string) (string, error) {
-	if ids == nil {
-		ids = []string{}
-	}
-	encoded, err := json.Marshal(ids)
-	return string(encoded), err
-}
-
-func decodePromptAppendIDs(encoded string) ([]string, error) {
-	var ids []string
-	if err := json.Unmarshal([]byte(encoded), &ids); err != nil {
-		return nil, err
-	}
-	if ids == nil {
-		ids = []string{}
-	}
-	return ids, nil
 }
 
 func normalizePromptAppends(values []PromptAppend) ([]PromptAppend, error) {

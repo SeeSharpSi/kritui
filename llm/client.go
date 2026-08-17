@@ -52,11 +52,17 @@ type storedProviderMetadata struct {
 	ResponsesOutput []json.RawMessage `json:"responses_output"`
 }
 
-func newResponsesProviderMetadata(output []json.RawMessage) (ProviderMetadata, error) {
+// NewResponsesProviderMetadata validates provider output items and returns
+// metadata suitable for restoring a Responses API conversation.
+func NewResponsesProviderMetadata(output []json.RawMessage) (ProviderMetadata, error) {
 	if err := validateResponsesOutput(output); err != nil {
 		return ProviderMetadata{}, err
 	}
 	return ProviderMetadata{responsesOutput: cloneRawMessages(output)}, nil
+}
+
+func newResponsesProviderMetadata(output []json.RawMessage) (ProviderMetadata, error) {
+	return NewResponsesProviderMetadata(output)
 }
 
 // ResponsesOutput returns a deep copy of stored Responses API output items.

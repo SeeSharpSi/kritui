@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestUpsertChatInsertEncodesEmptySlices(t *testing.T) {
+func TestUpsertChatInsertStoresEmptyOptionSets(t *testing.T) {
 	ctx := context.Background()
 	database := openMessagesTestDatabase(t, "")
 
@@ -14,18 +14,22 @@ func TestUpsertChatInsertEncodesEmptySlices(t *testing.T) {
 	}
 
 	var title string
-	var tools, appends string
-	if err := database.QueryRow(`SELECT title, tools, appends FROM chats WHERE id = 1`).Scan(&title, &tools, &appends); err != nil {
+	if err := database.QueryRow(`SELECT title FROM chats WHERE id = 1`).Scan(&title); err != nil {
 		t.Fatalf("query inserted chat: %v", err)
 	}
 	if title != "first title" {
 		t.Errorf("title = %q, want %q", title, "first title")
 	}
-	if tools != "[]" {
-		t.Errorf("tools = %q, want []", tools)
+	tools, err := GetChatTools(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("GetChatTools() error: %v", err)
 	}
-	if appends != "[]" {
-		t.Errorf("appends = %q, want []", appends)
+	appends, err := GetChatPromptAppendIDs(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("GetChatPromptAppendIDs() error: %v", err)
+	}
+	if len(tools) != 0 || len(appends) != 0 {
+		t.Errorf("stored options = tools %v, appends %v; want empty", tools, appends)
 	}
 }
 
@@ -41,18 +45,25 @@ func TestUpsertChatPreservesNonEmptyTitleAndReplacesToolsAppends(t *testing.T) {
 	}
 
 	var title string
-	var tools, appends string
-	if err := database.QueryRow(`SELECT title, tools, appends FROM chats WHERE id = 1`).Scan(&title, &tools, &appends); err != nil {
+	if err := database.QueryRow(`SELECT title FROM chats WHERE id = 1`).Scan(&title); err != nil {
 		t.Fatalf("query updated chat: %v", err)
 	}
 	if title != "first title" {
 		t.Errorf("title = %q, want preserved %q", title, "first title")
 	}
-	if tools != `["webfetch","git"]` {
-		t.Errorf("tools = %q, want replaced %q", tools, `["webfetch","git"]`)
+	tools, err := GetChatTools(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("GetChatTools() error: %v", err)
 	}
-	if appends != `["three"]` {
-		t.Errorf("appends = %q, want replaced %q", appends, `["three"]`)
+	appends, err := GetChatPromptAppendIDs(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("GetChatPromptAppendIDs() error: %v", err)
+	}
+	if len(tools) != 2 || tools[0] != "webfetch" || tools[1] != "git" {
+		t.Errorf("tools = %v, want [webfetch git]", tools)
+	}
+	if len(appends) != 1 || appends[0] != "three" {
+		t.Errorf("appends = %v, want [three]", appends)
 	}
 }
 

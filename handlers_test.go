@@ -296,11 +296,15 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	t.Setenv("LLM_MODEL", "env-model")
 	if _, err := database.Exec(`
 		INSERT INTO chats (id) VALUES (8);
-		INSERT INTO messages (chat_id, position, role, content, model, tool_calls, tool_call_id) VALUES
-			(8, 0, 'user', 'Earlier question', NULL, NULL, NULL),
-			(8, 1, 'assistant', '', 'stored-model', '[{"id":"call-1","type":"function","function":{"name":"webfetch","arguments":"{\"url\":\"https://example.com\"}"}}]', NULL),
-			(8, 2, 'tool', 'result', NULL, NULL, 'call-1'),
-			(8, 3, 'assistant', 'Earlier answer', 'stored-model', NULL, NULL);
+		INSERT INTO messages (chat_id, position, role, content, model, tool_call_id) VALUES
+			(8, 0, 'user', 'Earlier question', NULL, NULL),
+			(8, 1, 'assistant', '', 'stored-model', NULL),
+			(8, 2, 'tool', 'result', NULL, 'call-1'),
+			(8, 3, 'assistant', 'Earlier answer', 'stored-model', NULL);
+		INSERT INTO message_tool_calls
+			(message_id, message_role, position, call_id, call_type, function_name, arguments)
+		SELECT id, 'assistant', 0, 'call-1', 'function', 'webfetch', '{"url":"https://example.com"}'
+		FROM messages WHERE chat_id = 8 AND position = 1;
 	`); err != nil {
 		t.Fatalf("insert chat history: %v", err)
 	}
@@ -480,7 +484,10 @@ func TestHomeHandlerUsesMostRecentResponseModel(t *testing.T) {
 
 func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
 	database := openTestDatabase(t)
-	if _, err := database.Exec(`INSERT INTO chats (id, tools) VALUES (8, ?)`, `["websearch"]`); err != nil {
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (8);
+		INSERT INTO chat_tools (chat_id, position, name) VALUES (8, 0, 'websearch');
+	`); err != nil {
 		t.Fatalf("insert chat: %v", err)
 	}
 	t.Setenv("LLM_MODEL", "env-model")
@@ -531,13 +538,9 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 
-	var tools string
-	if err := database.QueryRow(`SELECT tools FROM chats WHERE id = 3`).Scan(&tools); err != nil {
-		t.Fatalf("query chat tools: %v", err)
-	}
-	var names []string
-	if err := json.Unmarshal([]byte(tools), &names); err != nil {
-		t.Fatalf("decode chat tools: %v", err)
+	names, err := kritui_db.GetChatTools(context.Background(), database, 3)
+	if err != nil {
+		t.Fatalf("get chat tools: %v", err)
 	}
 	if len(names) != 2 || names[0] != "webfetch" || names[1] != "websearch" {
 		t.Fatalf("tools = %#v, want [webfetch websearch]", names)
@@ -565,26 +568,14 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 	}
 	defaults := kritui_db.DefaultPromptAppends()
 
-	var content, encodedPromptAppendTexts, encodedAppendIDs string
-	if err := database.QueryRow(`
-		SELECT messages.content, messages.prompt_appends, chats.appends
-		FROM messages
-		JOIN chats ON chats.id = messages.chat_id
-		WHERE messages.chat_id = 3
-	`).Scan(&content, &encodedPromptAppendTexts, &encodedAppendIDs); err != nil {
-		t.Fatalf("query message and append selections: %v", err)
+	var content string
+	if err := database.QueryRow(`SELECT content FROM messages WHERE chat_id = 3`).Scan(&content); err != nil {
+		t.Fatalf("query message: %v", err)
 	}
 	if content != "Hello" {
 		t.Errorf("stored message = %q, want original Hello", content)
 	}
-	var storedPromptAppendTexts []string
-	if err := json.Unmarshal([]byte(encodedPromptAppendTexts), &storedPromptAppendTexts); err != nil {
-		t.Fatalf("decode message prompt append texts: %v", err)
-	}
 	wantPromptAppendTexts := []string{defaults[1].Text, defaults[0].Text}
-	if !slices.Equal(storedPromptAppendTexts, wantPromptAppendTexts) {
-		t.Errorf("stored message prompt append texts = %v, want %v", storedPromptAppendTexts, wantPromptAppendTexts)
-	}
 	storedMessages, err := kritui_db.GetMessages(context.Background(), database, 3)
 	if err != nil {
 		t.Fatalf("get stored messages: %v", err)
@@ -592,9 +583,9 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 	if len(storedMessages) != 1 || !slices.Equal(storedMessages[0].PromptAppendTexts, wantPromptAppendTexts) {
 		t.Errorf("loaded message prompt append texts = %#v, want %v", storedMessages, wantPromptAppendTexts)
 	}
-	var selected []string
-	if err := json.Unmarshal([]byte(encodedAppendIDs), &selected); err != nil {
-		t.Fatalf("decode chat prompt append IDs: %v", err)
+	selected, err := kritui_db.GetChatPromptAppendIDs(context.Background(), database, 3)
+	if err != nil {
+		t.Fatalf("get chat prompt append IDs: %v", err)
 	}
 	if !slices.Equal(selected, []string{"research", "link-check"}) {
 		t.Errorf("stored chat prompt append IDs = %v, want [research link-check]", selected)
@@ -1356,22 +1347,15 @@ func TestSettingsHandlerReportsChatAppendsLoadFailureAfterHTMXSave(t *testing.T)
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
-	if _, err := database.Exec(`PRAGMA ignore_check_constraints = ON`); err != nil {
-		t.Fatalf("enable ignoring check constraints: %v", err)
-	}
-	if _, err := database.Exec(`INSERT INTO chats (id, appends) VALUES (8, 'not-json')`); err != nil {
-		t.Fatalf("insert corrupt chat appends: %v", err)
-	}
-	if _, err := database.Exec(`PRAGMA ignore_check_constraints = OFF`); err != nil {
-		t.Fatalf("disable ignoring check constraints: %v", err)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (8);
+		DROP TABLE chat_prompt_appends;
+	`); err != nil {
+		t.Fatalf("break chat prompt append storage: %v", err)
 	}
 	form := url.Values{
-		"model":              {"saved-model"},
-		"max_tool_rounds":    {"16"},
-		"append_form":        {"1"},
-		"append_id":          {"custom"},
-		"append_name_custom": {"Custom"},
-		"append_text_custom": {"Use custom instruction."},
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
 	}
 	request := httptest.NewRequest(http.MethodPost, "/settings?chat=8", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -2435,18 +2419,25 @@ func TestMessageCompletionHandlerExpandsStoredPromptAppendsExactlyOnce(t *testin
 		t.Errorf("provider request count = %d, want 2", requestNumber)
 	}
 
-	var storedContent, storedAppendTexts string
+	var storedContent string
 	if err := database.QueryRow(`
-		SELECT content, prompt_appends FROM messages WHERE chat_id = 3 AND role = 'user'
-	`).Scan(&storedContent, &storedAppendTexts); err != nil {
+		SELECT content FROM messages WHERE chat_id = 3 AND role = 'user'
+	`).Scan(&storedContent); err != nil {
 		t.Fatalf("query stored user message: %v", err)
 	}
 	if storedContent != original {
 		t.Errorf("stored user content = %q, want raw %q", storedContent, original)
 	}
+	storedMessages, err := kritui_db.GetMessages(context.Background(), database, 3)
+	if err != nil {
+		t.Fatalf("get stored messages: %v", err)
+	}
 	var snapshots []string
-	if err := json.Unmarshal([]byte(storedAppendTexts), &snapshots); err != nil {
-		t.Fatalf("decode stored prompt append texts: %v", err)
+	for _, message := range storedMessages {
+		if message.Role == "user" {
+			snapshots = message.PromptAppendTexts
+			break
+		}
 	}
 	if !slices.Equal(snapshots, []string{firstText, secondText}) {
 		t.Errorf("stored append snapshots = %v, want %v", snapshots, []string{firstText, secondText})
@@ -3131,6 +3122,129 @@ func TestMigrateDatabaseHistoricalSchemas(t *testing.T) {
 			}
 			assertMigratedDatabase(t, database)
 		})
+	}
+}
+
+func TestMigrateDatabaseNormalizesVersionSevenData(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+
+	if _, err := database.Exec(`
+		PRAGMA foreign_keys = ON;
+		CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+		CREATE TABLE chats (
+			id INTEGER PRIMARY KEY,
+			title TEXT NOT NULL DEFAULT '',
+			tools TEXT NOT NULL DEFAULT '[]',
+			appends TEXT NOT NULL DEFAULT '[]',
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		) STRICT;
+		CREATE TABLE messages (
+			id INTEGER PRIMARY KEY,
+			chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+			position INTEGER NOT NULL CHECK (position >= 0),
+			role TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT '',
+			prompt_appends TEXT,
+			model TEXT,
+			total_tokens INTEGER,
+			cost REAL,
+			tool_calls TEXT,
+			tool_call_id TEXT,
+			provider_metadata TEXT,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			UNIQUE (chat_id, position)
+		) STRICT;
+		INSERT INTO settings (name, value) VALUES
+			('default_model', 'legacy-model'),
+			('max_tool_rounds', '9'),
+			('default_tools', '["webfetch","git"]'),
+			('prompt_appends', '[{"id":"research","name":"Research","text":"Research deeply.","enabled_by_default":true}]');
+		INSERT INTO chats (id, title, tools, appends, created_at, updated_at)
+		VALUES (7, 'legacy chat', '["webfetch"]', '["research"]', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z');
+		INSERT INTO messages
+			(id, chat_id, position, role, content, prompt_appends, model, total_tokens, cost, tool_calls, tool_call_id, provider_metadata)
+		VALUES
+			(10, 7, 0, 'user', 'question', '["Research deeply."]', NULL, NULL, NULL, NULL, NULL, NULL),
+			(11, 7, 1, 'assistant', '', NULL, 'legacy-model', 12, 0.25,
+			 '[{"id":"call-1","type":"function","function":{"name":"webfetch","arguments":"opaque-provider-text"}}]',
+			 NULL, '{"responses_output":[{"type":"reasoning","id":"reasoning-1","encrypted_content":"opaque"}]}'),
+			(12, 7, 2, 'tool', 'result', NULL, NULL, NULL, NULL, NULL, 'call-1', NULL);
+		PRAGMA user_version = 7;
+	`); err != nil {
+		t.Fatalf("initialize version seven database: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	var version int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read migrated schema version: %v", err)
+	}
+	if version != len(databaseMigrations) {
+		t.Fatalf("migrated schema version = %d, want %d", version, len(databaseMigrations))
+	}
+
+	ctx := context.Background()
+	if got, err := kritui_db.GetDefaultEnabledTools(ctx, database, nil); err != nil {
+		t.Fatalf("get migrated default tools: %v", err)
+	} else if !slices.Equal(got, []string{"webfetch", "git"}) {
+		t.Errorf("migrated default tools = %v, want [webfetch git]", got)
+	}
+	if got, err := kritui_db.GetMaxToolRounds(ctx, database, 1); err != nil {
+		t.Fatalf("get migrated max tool rounds: %v", err)
+	} else if got != 9 {
+		t.Errorf("migrated max tool rounds = %d, want 9", got)
+	}
+	if got, err := kritui_db.GetPromptAppends(ctx, database); err != nil {
+		t.Fatalf("get migrated prompt appends: %v", err)
+	} else if !slices.Equal(got, []kritui_db.PromptAppend{{
+		ID: "research", Name: "Research", Text: "Research deeply.", EnabledByDefault: true,
+	}}) {
+		t.Errorf("migrated prompt appends = %#v", got)
+	}
+	if got, err := kritui_db.GetChatPromptAppendIDs(ctx, database, 7); err != nil {
+		t.Fatalf("get migrated chat prompt appends: %v", err)
+	} else if !slices.Equal(got, []string{"research"}) {
+		t.Errorf("migrated chat prompt appends = %v, want [research]", got)
+	}
+
+	messages, err := kritui_db.GetMessages(ctx, database, 7)
+	if err != nil {
+		t.Fatalf("get migrated messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("migrated message count = %d, want 3", len(messages))
+	}
+	if !slices.Equal(messages[0].PromptAppendTexts, []string{"Research deeply."}) {
+		t.Errorf("migrated prompt append snapshots = %v", messages[0].PromptAppendTexts)
+	}
+	if len(messages[1].ToolCalls) != 1 || messages[1].ToolCalls[0].ID != "call-1" || messages[1].ToolCalls[0].Function.Name != "webfetch" || messages[1].ToolCalls[0].Function.Arguments != "opaque-provider-text" {
+		t.Errorf("migrated tool calls = %#v", messages[1].ToolCalls)
+	}
+	outputs := messages[1].ProviderMetadata.ResponsesOutput()
+	if len(outputs) != 1 || !strings.Contains(string(outputs[0]), `"reasoning-1"`) {
+		t.Errorf("migrated provider output = %s", outputs)
+	}
+	for _, removedColumn := range []string{"tools", "appends", "prompt_appends", "tool_calls", "provider_metadata"} {
+		var count int
+		err := database.QueryRow(`
+			SELECT COUNT(*)
+			FROM pragma_table_info(CASE WHEN ? IN ('tools', 'appends') THEN 'chats' ELSE 'messages' END)
+			WHERE name = ?
+		`, removedColumn, removedColumn).Scan(&count)
+		if err != nil {
+			t.Fatalf("inspect removed column %q: %v", removedColumn, err)
+		}
+		if count != 0 {
+			t.Errorf("legacy column %q still exists", removedColumn)
+		}
 	}
 }
 

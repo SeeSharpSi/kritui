@@ -3,7 +3,6 @@ package kritui_db
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -24,28 +23,22 @@ var (
 // AllocateChat reserves a unique chat ID, stores options enabled by default
 // for new chats, and removes abandoned empty chats.
 func AllocateChat(ctx context.Context, db *sql.DB, tools, appendIDs []string) (int64, error) {
-	encoded, err := encodeToolNames(tools)
-	if err != nil {
-		return 0, fmt.Errorf("encode chat tools: %w", err)
-	}
-	encodedAppendIDs, err := encodePromptAppendIDs(appendIDs)
-	if err != nil {
-		return 0, fmt.Errorf("encode chat prompt append IDs: %w", err)
-	}
-
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin chat allocation: %w", err)
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `INSERT INTO chats (tools, appends) VALUES (?, ?)`, encoded, encodedAppendIDs)
+	result, err := tx.ExecContext(ctx, `INSERT INTO chats DEFAULT VALUES`)
 	if err != nil {
 		return 0, fmt.Errorf("allocate chat: %w", err)
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("get allocated chat ID: %w", err)
+	}
+	if err := replaceChatOptions(ctx, tx, id, tools, appendIDs); err != nil {
+		return 0, err
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -68,40 +61,42 @@ func AllocateChat(ctx context.Context, db *sql.DB, tools, appendIDs []string) (i
 
 // InsertChat creates a chat and returns its database ID.
 func InsertChat(ctx context.Context, db *sql.DB, title string, tools, appendIDs []string) (int64, error) {
-	encoded, err := encodeToolNames(tools)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("encode chat tools: %w", err)
+		return 0, fmt.Errorf("begin insert chat: %w", err)
 	}
-	encodedAppendIDs, err := encodePromptAppendIDs(appendIDs)
-	if err != nil {
-		return 0, fmt.Errorf("encode chat prompt append IDs: %w", err)
-	}
+	defer tx.Rollback()
 
-	result, err := db.ExecContext(ctx, `INSERT INTO chats (title, tools, appends) VALUES (?, ?, ?)`, title, encoded, encodedAppendIDs)
+	result, err := tx.ExecContext(ctx, `INSERT INTO chats (title) VALUES (?)`, title)
 	if err != nil {
 		return 0, fmt.Errorf("insert chat: %w", err)
 	}
-
 	id, err := result.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("get inserted chat ID: %w", err)
 	}
-
+	if err := replaceChatOptions(ctx, tx, id, tools, appendIDs); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit insert chat: %w", err)
+	}
 	return id, nil
 }
 
-// SetChatTools replaces the enabled tool names stored for a chat.
+// SetChatTools replaces enabled tool names stored for a chat.
 func SetChatTools(ctx context.Context, db *sql.DB, chatID int64, tools []string) error {
-	encoded, err := encodeToolNames(tools)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("encode chat tools: %w", err)
+		return fmt.Errorf("begin set chat tools: %w", err)
 	}
+	defer tx.Rollback()
 
-	result, err := db.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE chats
-		SET tools = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		WHERE id = ?
-	`, encoded, chatID)
+	`, chatID)
 	if err != nil {
 		return fmt.Errorf("set chat tools: %w", err)
 	}
@@ -112,46 +107,85 @@ func SetChatTools(ctx context.Context, db *sql.DB, chatID int64, tools []string)
 	if affected == 0 {
 		return fmt.Errorf("set chat tools: chat %d not found", chatID)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM chat_tools WHERE chat_id = ?`, chatID); err != nil {
+		return fmt.Errorf("clear chat tools: %w", err)
+	}
+	if err := insertChatTools(ctx, tx, chatID, tools); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set chat tools: %w", err)
+	}
 	return nil
 }
 
-// UpsertChat inserts a chat with the supplied title, tools, and prompt-append
-// IDs, or updates the existing chat when that ID is already present. An
-// existing non-empty title is preserved; only an empty title is replaced with
-// the supplied one. Tools and prompt-append IDs are always replaced with the
-// supplied values. It runs on either a database or an open transaction so a
-// chat can be created in the same atomic unit of work as its first message.
+// UpsertChat inserts or updates a chat and atomically replaces its options.
+// Existing non-empty titles are preserved.
 func UpsertChat(ctx context.Context, db databaseExecutor, chatID int64, title string, tools, appendIDs []string) error {
-	encoded, err := encodeToolNames(tools)
-	if err != nil {
-		return fmt.Errorf("encode chat tools: %w", err)
-	}
-	encodedAppendIDs, err := encodePromptAppendIDs(appendIDs)
-	if err != nil {
-		return fmt.Errorf("encode chat prompt append IDs: %w", err)
-	}
+	return executeAtomically(ctx, db, func(executor databaseExecutor) error {
+		if _, err := executor.ExecContext(ctx, `
+			INSERT INTO chats (id, title) VALUES (?, ?)
+			ON CONFLICT (id) DO UPDATE SET
+				title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END
+		`, chatID, title); err != nil {
+			return fmt.Errorf("upsert chat: %w", err)
+		}
+		return replaceChatOptions(ctx, executor, chatID, tools, appendIDs)
+	})
+}
 
-	if _, err := db.ExecContext(ctx, `
-		INSERT INTO chats (id, title, tools, appends) VALUES (?, ?, ?, ?)
-		ON CONFLICT (id) DO UPDATE SET
-			title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END,
-			tools = excluded.tools,
-			appends = excluded.appends
-	`, chatID, title, encoded, encodedAppendIDs); err != nil {
-		return fmt.Errorf("upsert chat: %w", err)
+func replaceChatOptions(ctx context.Context, db databaseExecutor, chatID int64, tools, appendIDs []string) error {
+	if _, err := db.ExecContext(ctx, `DELETE FROM chat_tools WHERE chat_id = ?`, chatID); err != nil {
+		return fmt.Errorf("clear chat tools: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM chat_prompt_appends WHERE chat_id = ?`, chatID); err != nil {
+		return fmt.Errorf("clear chat prompt appends: %w", err)
+	}
+	if err := insertChatTools(ctx, db, chatID, tools); err != nil {
+		return err
+	}
+	for position, id := range appendIDs {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO chat_prompt_appends (chat_id, position, prompt_append_id)
+			VALUES (?, ?, ?)
+		`, chatID, position, id); err != nil {
+			return fmt.Errorf("store prompt append %d for chat %d: %w", position, chatID, err)
+		}
+	}
+	return nil
+}
+
+func insertChatTools(ctx context.Context, db databaseExecutor, chatID int64, tools []string) error {
+	for position, name := range tools {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO chat_tools (chat_id, position, name) VALUES (?, ?, ?)
+		`, chatID, position, name); err != nil {
+			return fmt.Errorf("store tool %d for chat %d: %w", position, chatID, err)
+		}
 	}
 	return nil
 }
 
 // InsertMessage adds a message at its position in a chat and returns its database ID.
 func InsertMessage(ctx context.Context, db databaseExecutor, chatID int64, position int, message llm.Message) (int64, error) {
-	var toolCalls any
-	if len(message.ToolCalls) > 0 {
-		encoded, err := json.Marshal(message.ToolCalls)
-		if err != nil {
-			return 0, fmt.Errorf("encode message tool calls: %w", err)
-		}
-		toolCalls = string(encoded)
+	var id int64
+	err := executeAtomically(ctx, db, func(executor databaseExecutor) error {
+		insertedID, err := insertMessage(ctx, executor, chatID, position, message)
+		id = insertedID
+		return err
+	})
+	return id, err
+}
+
+func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, position int, message llm.Message) (int64, error) {
+	if len(message.ToolCalls) > 0 && message.Role != "assistant" {
+		return 0, fmt.Errorf("store message tool calls: only assistant messages may contain tool calls")
+	}
+	if len(message.PromptAppendTexts) > 0 && message.Role != "user" {
+		return 0, fmt.Errorf("store prompt append texts: only user messages may contain prompt append texts")
+	}
+	if !message.ProviderMetadata.IsZero() && message.Role != "assistant" {
+		return 0, fmt.Errorf("store provider metadata: only assistant messages may contain provider metadata")
 	}
 
 	var toolCallID any
@@ -170,43 +204,67 @@ func InsertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 	if message.Cost != nil {
 		cost = *message.Cost
 	}
-	var providerMetadata any
-	if !message.ProviderMetadata.IsZero() {
-		if message.Role != "assistant" {
-			return 0, fmt.Errorf("encode provider metadata: only assistant messages may contain provider metadata")
-		}
-		encoded, err := json.Marshal(message.ProviderMetadata)
-		if err != nil {
-			return 0, fmt.Errorf("encode provider metadata: %w", err)
-		}
-		providerMetadata = string(encoded)
-	}
-	var promptAppendTexts any
-	if len(message.PromptAppendTexts) > 0 {
-		if message.Role != "user" {
-			return 0, fmt.Errorf("encode prompt append texts: only user messages may contain prompt append texts")
-		}
-		encoded, err := json.Marshal(message.PromptAppendTexts)
-		if err != nil {
-			return 0, fmt.Errorf("encode prompt append texts: %w", err)
-		}
-		promptAppendTexts = string(encoded)
-	}
 
 	result, err := db.ExecContext(ctx, `
-		INSERT INTO messages (chat_id, position, role, content, model, total_tokens, cost, tool_calls, tool_call_id, provider_metadata, prompt_appends)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, chatID, position, message.Role, message.Content, model, totalTokens, cost, toolCalls, toolCallID, providerMetadata, promptAppendTexts)
+		INSERT INTO messages (chat_id, position, role, content, model, total_tokens, cost, tool_call_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, chatID, position, message.Role, message.Content, model, totalTokens, cost, toolCallID)
 	if err != nil {
 		return 0, fmt.Errorf("insert message: %w", err)
 	}
-
 	id, err := result.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("get inserted message ID: %w", err)
 	}
 
+	for callPosition, call := range message.ToolCalls {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO message_tool_calls
+				(message_id, message_role, position, call_id, call_type, function_name, arguments)
+			VALUES (?, 'assistant', ?, ?, ?, ?, ?)
+		`, id, callPosition, call.ID, call.Type, call.Function.Name, call.Function.Arguments); err != nil {
+			return 0, fmt.Errorf("store tool call %d for message %d: %w", callPosition, id, err)
+		}
+	}
+	for appendPosition, text := range message.PromptAppendTexts {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO message_prompt_appends (message_id, message_role, position, text)
+			VALUES (?, 'user', ?, ?)
+		`, id, appendPosition, text); err != nil {
+			return 0, fmt.Errorf("store prompt append %d for message %d: %w", appendPosition, id, err)
+		}
+	}
+	for outputPosition, output := range message.ProviderMetadata.ResponsesOutput() {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO message_provider_outputs (message_id, message_role, position, payload)
+			VALUES (?, 'assistant', ?, ?)
+		`, id, outputPosition, string(output)); err != nil {
+			return 0, fmt.Errorf("store provider output %d for message %d: %w", outputPosition, id, err)
+		}
+	}
 	return id, nil
+}
+
+func executeAtomically(ctx context.Context, db databaseExecutor, operation func(databaseExecutor) error) error {
+	if _, ok := db.(*sql.Tx); ok {
+		return operation(db)
+	}
+	database, ok := db.(*sql.DB)
+	if !ok {
+		return fmt.Errorf("unsupported database executor %T", db)
+	}
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin database transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if err := operation(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit database transaction: %w", err)
+	}
+	return nil
 }
 
 // AppendCompletion atomically appends generated messages if stored history
