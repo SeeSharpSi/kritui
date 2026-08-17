@@ -30,6 +30,7 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
 		chatURL := ""
+		var promptAppends []kritui_db.PromptAppend
 		if chat == "" {
 			defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 			if err != nil {
@@ -37,7 +38,13 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 				renderPageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
 				return
 			}
-			chatID, err := kritui_db.AllocateChat(r.Context(), database, defaultTools, nil)
+			promptAppends, err = kritui_db.GetPromptAppends(r.Context(), database)
+			if err != nil {
+				log.Printf("get prompt appends: %v", err)
+				renderPageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
+				return
+			}
+			chatID, err := kritui_db.AllocateChat(r.Context(), database, defaultTools, kritui_db.DefaultPromptAppendIDs(promptAppends))
 			if err != nil {
 				log.Printf("allocate chat: %v", err)
 				renderPageError(w, r, http.StatusInternalServerError, "Failed to allocate chat.")
@@ -75,11 +82,13 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat appends.")
 			return
 		}
-		promptAppends, err := kritui_db.GetPromptAppends(r.Context(), database)
-		if err != nil {
-			log.Printf("get prompt appends: %v", err)
-			renderPageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
-			return
+		if promptAppends == nil {
+			promptAppends, err = kritui_db.GetPromptAppends(r.Context(), database)
+			if err != nil {
+				log.Printf("get prompt appends: %v", err)
+				renderPageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
+				return
+			}
 		}
 		defaultModel, err := kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
 		if err != nil {
@@ -471,6 +480,23 @@ func renderPageError(w http.ResponseWriter, r *http.Request, status int, message
 }
 
 func promptAppendsFromForm(r *http.Request) ([]kritui_db.PromptAppend, error) {
+	defaultIDs := make([]string, 0, len(r.Form["default_append"]))
+	defaults := make(map[string]struct{}, len(r.Form["default_append"]))
+	for _, id := range r.Form["default_append"] {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if err := kritui_db.ValidatePromptAppendID(id); err != nil {
+			return nil, err
+		}
+		if _, ok := defaults[id]; ok {
+			continue
+		}
+		defaults[id] = struct{}{}
+		defaultIDs = append(defaultIDs, id)
+	}
+
 	ids := r.Form["append_id"]
 	values := make([]kritui_db.PromptAppend, 0, len(ids))
 	seen := make(map[string]struct{}, len(ids))
@@ -486,11 +512,18 @@ func promptAppendsFromForm(r *http.Request) ([]kritui_db.PromptAppend, error) {
 			return nil, fmt.Errorf("prompt append %q is duplicated", id)
 		}
 		seen[id] = struct{}{}
+		_, enabledByDefault := defaults[id]
 		values = append(values, kritui_db.PromptAppend{
-			ID:   id,
-			Name: r.FormValue("append_name_" + id),
-			Text: r.FormValue("append_text_" + id),
+			ID:               id,
+			Name:             r.FormValue("append_name_" + id),
+			Text:             r.FormValue("append_text_" + id),
+			EnabledByDefault: enabledByDefault,
 		})
+	}
+	for _, id := range defaultIDs {
+		if _, ok := seen[id]; !ok {
+			return values, fmt.Errorf("unknown default prompt append %q", id)
+		}
 	}
 	return values, nil
 }

@@ -68,6 +68,10 @@ templ SettingsPage(chatID string, models []string, selectedModel string, maxTool
 					<fieldset class="settings-append">
 						<legend>{ preset.Name }</legend>
 						<input type="hidden" name="append_id" value={ preset.ID } />
+						<label class="settings-append-default">
+							<input type="checkbox" name="default_append" value={ preset.ID } if preset.EnabledByDefault { checked } />
+							<span>Enable for new chats</span>
+						</label>
 						<label for={ "append-name-" + preset.ID }>Name</label>
 						<input id={ "append-name-" + preset.ID } type="text" name={ "append_name_" + preset.ID } value={ preset.Name } maxlength="80" required />
 						<label for={ "append-text-" + preset.ID }>Text</label>

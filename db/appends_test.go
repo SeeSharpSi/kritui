@@ -19,6 +19,11 @@ func TestDefaultPromptAppendsReadEmbeddedMarkdown(t *testing.T) {
 	if values[1].ID != "research" || values[1].Name != "research" || values[1].Text == "" {
 		t.Errorf("research preset = %#v", values[1])
 	}
+	for _, value := range values {
+		if value.EnabledByDefault {
+			t.Errorf("default prompt append %q is enabled by default", value.ID)
+		}
+	}
 }
 
 func TestGetPromptAppendsFallsBackToEmbeddedDefaults(t *testing.T) {
@@ -34,7 +39,7 @@ func TestGetPromptAppendsFallsBackToEmbeddedDefaults(t *testing.T) {
 
 func TestSetAndGetPromptAppends(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
-	want := []PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction."}}
+	want := []PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction.", EnabledByDefault: true}}
 	if err := SetPromptAppends(context.Background(), database, want); err != nil {
 		t.Fatalf("SetPromptAppends() error: %v", err)
 	}
@@ -44,6 +49,23 @@ func TestSetAndGetPromptAppends(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("prompt appends = %#v, want %#v", got, want)
+	}
+}
+
+func TestGetPromptAppendsTreatsLegacyValuesAsDisabledByDefault(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.ExecContext(context.Background(), `
+		INSERT INTO settings (name, value) VALUES (?, ?)
+	`, promptAppendsSetting, `[{"id":"custom","name":"Custom","text":"Use custom instruction."}]`); err != nil {
+		t.Fatalf("insert legacy value: %v", err)
+	}
+
+	values, err := GetPromptAppends(context.Background(), database)
+	if err != nil {
+		t.Fatalf("GetPromptAppends() error: %v", err)
+	}
+	if len(values) != 1 || values[0].EnabledByDefault {
+		t.Errorf("legacy prompt appends = %#v, want one disabled append", values)
 	}
 }
 
@@ -141,6 +163,23 @@ func TestPromptAppendIDsPreservesOrder(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Errorf("PromptAppendIDs(nil) length = %d, want 0", len(empty))
+	}
+}
+
+func TestDefaultPromptAppendIDsPreservesEnabledOrder(t *testing.T) {
+	values := []PromptAppend{
+		{ID: "second", EnabledByDefault: true},
+		{ID: "first"},
+		{ID: "third", EnabledByDefault: true},
+	}
+	ids := DefaultPromptAppendIDs(values)
+	if !slices.Equal(ids, []string{"second", "third"}) {
+		t.Errorf("DefaultPromptAppendIDs() = %#v, want [second third]", ids)
+	}
+
+	empty := DefaultPromptAppendIDs(nil)
+	if empty == nil {
+		t.Error("DefaultPromptAppendIDs(nil) = nil, want non-nil empty slice")
 	}
 }
 

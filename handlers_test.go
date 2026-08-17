@@ -1145,6 +1145,7 @@ func TestSettingsHandlerStoresPromptAppends(t *testing.T) {
 		"append_id":          {"custom"},
 		"append_name_custom": {"Custom"},
 		"append_text_custom": {"Use custom instruction."},
+		"default_append":     {"custom"},
 	})
 
 	if response.Code != http.StatusOK {
@@ -1154,11 +1155,66 @@ func TestSettingsHandlerStoresPromptAppends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get prompt appends: %v", err)
 	}
-	want := []kritui_db.PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction."}}
+	want := []kritui_db.PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction.", EnabledByDefault: true}}
 	if !slices.Equal(values, want) {
 		t.Errorf("prompt appends = %#v, want %#v", values, want)
 	}
-	requireContains(t, response.Body.String(), `name="append_name_custom"`, `value="Custom"`, "Use custom instruction.", "Settings saved.")
+	requireContains(t, response.Body.String(), `name="append_name_custom"`, `value="Custom"`, "Use custom instruction.", `name="default_append" value="custom" checked`, "Settings saved.")
+}
+
+func TestSettingsHandlerClearsDefaultPromptAppend(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	if err := kritui_db.SetPromptAppends(context.Background(), database, []kritui_db.PromptAppend{{
+		ID:               "custom",
+		Name:             "Custom",
+		Text:             "Use custom instruction.",
+		EnabledByDefault: true,
+	}}); err != nil {
+		t.Fatalf("set prompt appends: %v", err)
+	}
+
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":              {"saved-model"},
+		"max_tool_rounds":    {"16"},
+		"append_form":        {"1"},
+		"append_id":          {"custom"},
+		"append_name_custom": {"Custom"},
+		"append_text_custom": {"Use custom instruction."},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	values, err := kritui_db.GetPromptAppends(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get prompt appends: %v", err)
+	}
+	if len(values) != 1 || values[0].EnabledByDefault {
+		t.Errorf("prompt appends = %#v, want one disabled append", values)
+	}
+	requireNotContains(t, response.Body.String(), `name="default_append" value="custom" checked`)
+}
+
+func TestSettingsHandlerRejectsUnknownDefaultPromptAppend(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":              {"saved-model"},
+		"max_tool_rounds":    {"16"},
+		"append_form":        {"1"},
+		"append_id":          {"custom"},
+		"append_name_custom": {"Custom"},
+		"append_text_custom": {"Use custom instruction."},
+		"default_append":     {"missing"},
+	})
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), `unknown default prompt append &#34;missing&#34;`)
 }
 
 func TestSettingsHandlerStoresLargePromptAppend(t *testing.T) {
@@ -1553,6 +1609,61 @@ func TestHomeHandlerAllocatesChatWithoutDefaultToolsWhenUnset(t *testing.T) {
 	requireNotContains(t, page.Body.String(),
 		`name="tool" value="webfetch" form="message-form" checked`,
 		`name="tool" value="websearch" form="message-form" checked`,
+	)
+}
+
+func TestHomeHandlerAllocatesChatWithDefaultPromptAppends(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	appends := []kritui_db.PromptAppend{
+		{ID: "enabled", Name: "Enabled", Text: "Enabled instruction.", EnabledByDefault: true},
+		{ID: "disabled", Name: "Disabled", Text: "Disabled instruction."},
+	}
+	if err := kritui_db.SetPromptAppends(context.Background(), database, appends); err != nil {
+		t.Fatalf("set prompt appends: %v", err)
+	}
+
+	page := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
+	}
+	chatID := messageFormChatID(t, page.Body.String())
+
+	ids, err := kritui_db.GetChatPromptAppendIDs(context.Background(), database, chatID)
+	if err != nil {
+		t.Fatalf("get chat prompt append IDs: %v", err)
+	}
+	if !slices.Equal(ids, []string{"enabled"}) {
+		t.Errorf("chat prompt append IDs = %v, want [enabled]", ids)
+	}
+	requireContains(t, page.Body.String(), `name="append" value="enabled" form="message-form" checked`)
+	requireNotContains(t, page.Body.String(), `name="append" value="disabled" form="message-form" checked`)
+}
+
+func TestHomeHandlerAllocatesChatWithoutDefaultPromptAppendsWhenUnset(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+
+	page := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
+	}
+	chatID := messageFormChatID(t, page.Body.String())
+
+	ids, err := kritui_db.GetChatPromptAppendIDs(context.Background(), database, chatID)
+	if err != nil {
+		t.Fatalf("get chat prompt append IDs: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("chat prompt append IDs = %v, want empty list", ids)
+	}
+	requireNotContains(t, page.Body.String(),
+		`name="append" value="link-check" form="message-form" checked`,
+		`name="append" value="research" form="message-form" checked`,
 	)
 }
 

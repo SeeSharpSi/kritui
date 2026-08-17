@@ -185,7 +185,7 @@ main {
                         font-weight: 600;
                     }
 
-                    input,
+                    input:not([type="checkbox"]),
                     textarea {
                         box-sizing: border-box;
                         width: 100%;
@@ -200,6 +200,18 @@ main {
                     textarea {
                         min-height: 5rem;
                         resize: vertical;
+                    }
+
+                    .settings-append-default {
+                        display: flex;
+                        align-items: center;
+                        gap: .5rem;
+                        width: fit-content;
+
+                        input {
+                            margin: 0;
+                            accent-color: var(--color-accent);
+                        }
                     }
                 }
 

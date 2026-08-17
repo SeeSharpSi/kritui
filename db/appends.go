@@ -21,9 +21,10 @@ const (
 
 // PromptAppend is a named text fragment that can be added to a user message.
 type PromptAppend struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Text string `json:"text"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Text             string `json:"text"`
+	EnabledByDefault bool   `json:"enabled_by_default,omitempty"`
 }
 
 //go:embed default_appends/*.md
@@ -183,6 +184,17 @@ func PromptAppendIDs(values []PromptAppend) []string {
 	ids := make([]string, 0, len(values))
 	for _, value := range values {
 		ids = append(ids, value.ID)
+	}
+	return ids
+}
+
+// DefaultPromptAppendIDs returns IDs enabled by default in input order.
+func DefaultPromptAppendIDs(values []PromptAppend) []string {
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		if value.EnabledByDefault {
+			ids = append(ids, value.ID)
+		}
 	}
 	return ids
 }
