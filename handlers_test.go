@@ -178,7 +178,7 @@ func TestHomeHandlerAllocatesNextChatIDAtIndex(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?view=compact", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -202,7 +202,7 @@ func TestHomeHandlerRendersFirstChatIDAtIndexForEmptyDatabase(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -213,6 +213,7 @@ func TestHomeHandlerRendersFirstChatIDAtIndexForEmptyDatabase(t *testing.T) {
 func TestHomeHandlerAllocatesConcurrentChatsWithIsolatedMessages(t *testing.T) {
 	database := openTestDatabase(t)
 	registry := newTestToolRegistry(t)
+	commandRegistry := newTestCommandRegistry(t, database)
 	responses := []*httptest.ResponseRecorder{httptest.NewRecorder(), httptest.NewRecorder()}
 	start := make(chan struct{})
 	var wait sync.WaitGroup
@@ -221,7 +222,7 @@ func TestHomeHandlerAllocatesConcurrentChatsWithIsolatedMessages(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			homeHandler(database, registry)(responses[index], httptest.NewRequest(http.MethodGet, "/", nil))
+			homeHandler(database, registry, commandRegistry)(responses[index], httptest.NewRequest(http.MethodGet, "/", nil))
 		}()
 	}
 	close(start)
@@ -270,8 +271,9 @@ func TestHomeHandlerAllocatesConcurrentChatsWithIsolatedMessages(t *testing.T) {
 func TestAllocatedChatsStayHiddenAndAbandonedRowsAreRemoved(t *testing.T) {
 	database := openTestDatabase(t)
 	registry := newTestToolRegistry(t)
+	commandRegistry := newTestCommandRegistry(t, database)
 	first := httptest.NewRecorder()
-	homeHandler(database, registry)(first, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, registry, commandRegistry)(first, httptest.NewRequest(http.MethodGet, "/", nil))
 	if _, err := database.Exec(`UPDATE chats SET created_at = '2000-01-01T00:00:00.000Z'`); err != nil {
 		t.Fatalf("age abandoned chat: %v", err)
 	}
@@ -281,7 +283,7 @@ func TestAllocatedChatsStayHiddenAndAbandonedRowsAreRemoved(t *testing.T) {
 	requireContains(t, history.Body.String(), "No saved chats yet.")
 
 	second := httptest.NewRecorder()
-	homeHandler(database, registry)(second, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, registry, commandRegistry)(second, httptest.NewRequest(http.MethodGet, "/", nil))
 	var count int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&count); err != nil {
 		t.Fatalf("count allocated chats: %v", err)
@@ -312,7 +314,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -342,13 +344,57 @@ func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 	requireContains(t, response.Body.String(), "begin a convo...")
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?")
+}
+
+func TestHomeHandlerRendersCommandAutocomplete(t *testing.T) {
+	database := openTestDatabase(t)
+	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
+	response := httptest.NewRecorder()
+
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	body := response.Body.String()
+	requireContains(t, body,
+		`id="message"`,
+		`role="combobox"`,
+		`aria-autocomplete="list"`,
+		`aria-controls="command-autocomplete"`,
+		`aria-expanded="false"`,
+		`id="command-autocomplete"`,
+		`role="listbox"`,
+		`aria-label="Slash commands"`,
+		`id="command-option-new"`,
+		`data-command-name="new"`,
+		`>Start a new chat</span>`,
+		`id="command-option-history"`,
+		`>Open chat history</span>`,
+		`id="command-option-settings"`,
+		`>Open settings</span>`,
+		`id="command-option-rename"`,
+		`data-command-requires-arguments="true"`,
+		`>Rename the current chat</span>`,
+	)
+	if count := strings.Count(body, `data-command-requires-arguments="true"`); count != 1 {
+		t.Errorf("required-argument command count = %d, want 1", count)
+	}
+	previous := -1
+	for _, name := range []string{"new", "history", "settings", "rename"} {
+		index := strings.Index(body, `id="command-option-`+name+`"`)
+		if index <= previous {
+			t.Fatalf("command %q index = %d after %d; want registry order", name, index, previous)
+		}
+		previous = index
+	}
 }
 
 func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
@@ -359,7 +405,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -406,6 +452,12 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, string(script), `panelButton?.focus()`)
 	requireContains(t, string(script), `document.addEventListener('kritui:command'`)
 	requireContains(t, string(script), `messageInput.value = ''`)
+	requireContains(t, string(script), `document.addEventListener('input'`)
+	requireContains(t, string(script), `document.addEventListener('keydown'`)
+	requireContains(t, string(script), `moveCommandSelection(input, 1)`)
+	requireContains(t, string(script), `activateCommandOption(input, selected)`)
+	requireContains(t, string(script), `option.dataset.commandRequiresArguments === 'true'`)
+	requireContains(t, string(script), `input.form?.requestSubmit()`)
 	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger")
 }
 
@@ -424,7 +476,7 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -445,7 +497,7 @@ func TestHomeHandlerUsesStoredDefaultModel(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -472,7 +524,7 @@ func TestHomeHandlerUsesMostRecentResponseModel(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -497,7 +549,7 @@ func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -511,7 +563,7 @@ func TestHomeHandlerRendersPromptAppends(t *testing.T) {
 	database := openTestDatabase(t)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/?chat=8", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, httptest.NewRequest(http.MethodGet, "/?chat=8", nil))
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -1701,7 +1753,7 @@ func TestHomeHandlerAllocatesChatWithDefaultTools(t *testing.T) {
 	}
 
 	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
@@ -1725,7 +1777,7 @@ func TestHomeHandlerAllocatesChatWithoutDefaultToolsWhenUnset(t *testing.T) {
 	t.Setenv("LLM_ENDPOINT", "")
 
 	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
@@ -1758,7 +1810,7 @@ func TestHomeHandlerAllocatesChatWithDefaultPromptAppends(t *testing.T) {
 	}
 
 	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
@@ -1781,7 +1833,7 @@ func TestHomeHandlerAllocatesChatWithoutDefaultPromptAppendsWhenUnset(t *testing
 	t.Setenv("LLM_ENDPOINT", "")
 
 	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
@@ -1982,7 +2034,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 	t.Run("page", func(t *testing.T) {
 		database := openTestDatabase(t)
 		response := httptest.NewRecorder()
-		homeHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/?chat=invalid", nil))
+		homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, httptest.NewRequest(http.MethodGet, "/?chat=invalid", nil))
 
 		requireHTMLErrorResponse(t, response, http.StatusBadRequest, `<main hx-history="false">`, `id="messages"`, "A valid chat is required.")
 	})
@@ -2979,7 +3031,7 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	t.Setenv("LLM_ENDPOINT", "")
 	reloadRequest := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
 	reloadResponse := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(reloadResponse, reloadRequest)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(reloadResponse, reloadRequest)
 	if reloadResponse.Code != http.StatusOK {
 		t.Fatalf("reload status = %d, want %d; body = %q", reloadResponse.Code, http.StatusOK, reloadResponse.Body.String())
 	}
@@ -3095,7 +3147,7 @@ func TestMessageCompletionHandlerMarksFailedToolCalls(t *testing.T) {
 
 	t.Setenv("LLM_ENDPOINT", "")
 	reloadResponse := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t))(reloadResponse, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(reloadResponse, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
 	if reloadResponse.Code != http.StatusOK {
 		t.Fatalf("reload status = %d, want %d; body = %q", reloadResponse.Code, http.StatusOK, reloadResponse.Body.String())
 	}

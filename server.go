@@ -83,7 +83,7 @@ func main() {
 	mux := http.NewServeMux()
 	toolCalls := newToolCallStore()
 	mux.HandleFunc("GET /healthz", healthHandler(database))
-	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry))
+	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry, commandRegistry))
 	mux.HandleFunc("GET /history", historyHandler(database))
 	mux.HandleFunc("GET /settings", settingsHandler(database, toolRegistry))
 	mux.HandleFunc("POST /settings", settingsHandler(database, toolRegistry))

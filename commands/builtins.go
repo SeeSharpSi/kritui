@@ -91,7 +91,7 @@ func NewRenameCommand(rename RenameFunc) Command {
 }
 
 func (c *renameCommand) Definition() Definition {
-	return Definition{Name: "rename", Description: "Rename the current chat"}
+	return Definition{Name: "rename", Description: "Rename the current chat", RequiresArguments: true}
 }
 
 func (c *renameCommand) Execute(ctx context.Context, invocation Invocation) (Result, error) {

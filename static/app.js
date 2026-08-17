@@ -170,6 +170,96 @@ function syncPanelSendButton() {
     }
 }
 
+function commandAutocompleteFor(input) {
+    const autocompleteID = input?.getAttribute('aria-controls');
+    return autocompleteID ? document.getElementById(autocompleteID) : null;
+}
+
+function visibleCommandOptions(autocomplete) {
+    return Array.from(autocomplete.querySelectorAll('.command-option:not([hidden])'));
+}
+
+function closeCommandAutocomplete(input = document.querySelector('#message')) {
+    const autocomplete = commandAutocompleteFor(input);
+    if (!autocomplete) {
+        return;
+    }
+
+    autocomplete.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    autocomplete.querySelectorAll('.command-option').forEach((option) => {
+        option.setAttribute('aria-selected', 'false');
+    });
+}
+
+function selectCommandOption(input, option) {
+    const autocomplete = commandAutocompleteFor(input);
+    if (!autocomplete || !option) {
+        return;
+    }
+
+    autocomplete.querySelectorAll('.command-option').forEach((candidate) => {
+        candidate.setAttribute('aria-selected', String(candidate === option));
+    });
+    input.setAttribute('aria-activedescendant', option.id);
+    option.scrollIntoView({ block: 'nearest' });
+}
+
+function updateCommandAutocomplete(input) {
+    const autocomplete = commandAutocompleteFor(input);
+    if (!autocomplete || !/^\/[a-z0-9_-]*$/.test(input.value)) {
+        closeCommandAutocomplete(input);
+        return;
+    }
+
+    const query = input.value.slice(1);
+    let firstMatch = null;
+    autocomplete.querySelectorAll('.command-option').forEach((option) => {
+        const matches = option.dataset.commandName.startsWith(query);
+        option.hidden = !matches;
+        option.setAttribute('aria-selected', 'false');
+        firstMatch ||= matches ? option : null;
+    });
+    if (!firstMatch) {
+        closeCommandAutocomplete(input);
+        return;
+    }
+
+    autocomplete.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    selectCommandOption(input, firstMatch);
+}
+
+function moveCommandSelection(input, offset) {
+    const autocomplete = commandAutocompleteFor(input);
+    if (!autocomplete || autocomplete.hidden) {
+        return false;
+    }
+
+    const options = visibleCommandOptions(autocomplete);
+    if (options.length === 0) {
+        return false;
+    }
+    const selectedIndex = options.findIndex((option) => option.getAttribute('aria-selected') === 'true');
+    const nextIndex = (selectedIndex + offset + options.length) % options.length;
+    selectCommandOption(input, options[nextIndex]);
+    return true;
+}
+
+function activateCommandOption(input, option) {
+    input.value = `/${option.dataset.commandName}`;
+    closeCommandAutocomplete(input);
+    if (option.dataset.commandRequiresArguments === 'true') {
+        input.value += ' ';
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+        return;
+    }
+
+    input.form?.requestSubmit();
+}
+
 function togglePanel(panelID, panelButton) {
     const selectedPanel = document.getElementById(panelID);
     if (!selectedPanel) {
@@ -232,6 +322,58 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+document.addEventListener('input', (event) => {
+    if (event.target.matches('#message')) {
+        updateCommandAutocomplete(event.target);
+    }
+});
+
+document.addEventListener('focusin', (event) => {
+    if (event.target.matches('#message')) {
+        updateCommandAutocomplete(event.target);
+    }
+});
+
+document.addEventListener('keydown', (event) => {
+    const input = event.target;
+    if (!input.matches('#message') || event.isComposing) {
+        return;
+    }
+
+    switch (event.key) {
+    case 'ArrowDown':
+        if (moveCommandSelection(input, 1)) {
+            event.preventDefault();
+        }
+        break;
+    case 'ArrowUp':
+        if (moveCommandSelection(input, -1)) {
+            event.preventDefault();
+        }
+        break;
+    case 'Enter': {
+        const autocomplete = commandAutocompleteFor(input);
+        const selected = autocomplete?.hidden
+            ? null
+            : autocomplete?.querySelector('.command-option[aria-selected="true"]:not([hidden])');
+        if (selected) {
+            event.preventDefault();
+            activateCommandOption(input, selected);
+        }
+        break;
+    }
+    case 'Escape':
+        if (commandAutocompleteFor(input)?.hidden === false) {
+            event.preventDefault();
+            closeCommandAutocomplete(input);
+        }
+        break;
+    case 'Tab':
+        closeCommandAutocomplete(input);
+        break;
+    }
+});
+
 let appendPickerSelection = null;
 
 document.addEventListener('htmx:oobBeforeSwap', (event) => {
@@ -265,6 +407,7 @@ document.addEventListener('kritui:command', (event) => {
     const messageInput = document.querySelector('#message');
     if (messageInput) {
         messageInput.value = '';
+        closeCommandAutocomplete(messageInput);
     }
 
     const panelID = event.detail?.panel;
@@ -312,6 +455,16 @@ document.addEventListener('htmx:confirm', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+    const commandOption = event.target.closest('.command-option:not([hidden])');
+    if (commandOption) {
+        const messageInput = document.querySelector('#message');
+        if (messageInput) {
+            activateCommandOption(messageInput, commandOption);
+        }
+    } else if (!event.target.closest('#message-form')) {
+        closeCommandAutocomplete();
+    }
+
     const panelButton = event.target.closest('[data-panel-target]');
     if (panelButton) {
         togglePanel(panelButton.dataset.panelTarget, panelButton);

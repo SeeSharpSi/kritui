@@ -3,11 +3,12 @@ package templates
 import (
 	"slices"
 
+	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 )
 
-templ Home(chatID string, chatURL string, messages []llm.Message, models []string, selectedModel string, defaultModel string, maxToolRounds int, tools []string, enabledTools []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, enabledAppendIDs []string) {
+templ Home(chatID string, chatURL string, messages []llm.Message, models []string, selectedModel string, defaultModel string, maxToolRounds int, tools []string, enabledTools []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, enabledAppendIDs []string, commandDefinitions []commands.Definition) {
 	@Layout("Kritui") {
 		<main hx-history="false">
 			<section class="chat">
@@ -81,6 +82,23 @@ templ Home(chatID string, chatURL string, messages []llm.Message, models []strin
 				}
 			>
 				<label for="message" class="visually-hidden">Message</label>
+				<div id="command-autocomplete" class="command-autocomplete" role="listbox" aria-label="Slash commands" hidden>
+					for _, definition := range commandDefinitions {
+						<div
+							id={ "command-option-" + definition.Name }
+							class="command-option"
+							role="option"
+							aria-selected="false"
+							data-command-name={ definition.Name }
+							if definition.RequiresArguments {
+								data-command-requires-arguments="true"
+							}
+						>
+							<span class="command-name">{ "/" + definition.Name }</span>
+							<span class="command-description">{ definition.Description }</span>
+						</div>
+					}
+				</div>
 				@MessageInput(false)
 				@SendButton()
 			</form>

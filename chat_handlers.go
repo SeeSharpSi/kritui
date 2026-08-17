@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/templ"
@@ -26,7 +27,7 @@ const (
 	maxHistoryPageSize     = 50
 )
 
-func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
+func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *commands.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
 		chatURL := ""
@@ -121,7 +122,7 @@ func homeHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 		}
 
 		var page bytes.Buffer
-		if err := templates.Home(chat, chatURL, messages, models, selectedModel, defaultModel, maxToolRounds, registry.Names(), enabledTools, defaultTools, promptAppends, enabledAppendIDs).Render(r.Context(), &page); err != nil {
+		if err := templates.Home(chat, chatURL, messages, models, selectedModel, defaultModel, maxToolRounds, toolRegistry.Names(), enabledTools, defaultTools, promptAppends, enabledAppendIDs, commandRegistry.Definitions()).Render(r.Context(), &page); err != nil {
 			log.Printf("render page: %v", err)
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to render page.")
 			return

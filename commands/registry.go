@@ -28,8 +28,9 @@ var (
 
 // Definition describes a slash command to the application and user.
 type Definition struct {
-	Name        string
-	Description string
+	Name              string
+	Description       string
+	RequiresArguments bool
 }
 
 // Parsed is command input separated from its leading slash.

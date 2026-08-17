@@ -248,8 +248,8 @@ templ CompletionRetry(chatID string, model string, tools []string) {
 
 templ MessageInput(outOfBand bool) {
 	if outOfBand {
-		<input id="message" name="message" placeholder="Write a message..." required autocomplete="off" hx-swap-oob="outerHTML"/>
+		<input id="message" name="message" placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" hx-swap-oob="outerHTML"/>
 	} else {
-		<input id="message" name="message" placeholder="Write a message..." required autocomplete="off" autofocus/>
+		<input id="message" name="message" placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" autofocus/>
 	}
 }

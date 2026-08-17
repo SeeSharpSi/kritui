@@ -46,6 +46,9 @@ func TestRenameCommand(t *testing.T) {
 		gotTitle = title
 		return nil
 	})
+	if definition := command.Definition(); !definition.RequiresArguments {
+		t.Errorf("Definition().RequiresArguments = false, want true")
+	}
 
 	result, err := command.Execute(context.Background(), Invocation{Name: "rename", ChatID: 7, Arguments: "New title"})
 	if err != nil {
