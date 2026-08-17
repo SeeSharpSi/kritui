@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/tools"
@@ -66,6 +67,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("register tools: %v", err)
 	}
+	commandRegistry, err := newCommandRegistry(database)
+	if err != nil {
+		log.Fatalf("register commands: %v", err)
+	}
 	var toolCallLogger *log.Logger
 	switch value := os.Getenv("SHOW_TOOLCALLS"); value {
 	case "", "false":
@@ -84,7 +89,7 @@ func main() {
 	mux.HandleFunc("POST /settings", settingsHandler(database, toolRegistry))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
-	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, toolCalls))
+	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, commandRegistry, toolCalls))
 	mux.HandleFunc("POST /messages/retry", messageRetryHandler(database, toolRegistry, toolCalls))
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
 	mux.HandleFunc("GET /messages/tools", messageToolStreamHandler(toolCalls))
@@ -97,6 +102,36 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
+	return commands.NewRegistry(
+		commands.NewRedirectCommand("new", "Start a new chat", "/"),
+		commands.NewPanelCommand("history", "Open chat history", "history-page"),
+		commands.NewPanelCommand("settings", "Open settings", "settings-page"),
+		commands.NewRenameCommand(func(ctx context.Context, chatID int64, title string) error {
+			title = normalizeChatTitle(title)
+			if title == "" {
+				return &commands.UserError{Status: http.StatusBadRequest, Message: "Usage: /rename <title>."}
+			}
+			result, err := database.ExecContext(ctx, `
+				UPDATE chats
+				SET title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				WHERE id = ?
+			`, title, chatID)
+			if err != nil {
+				return fmt.Errorf("rename current chat: %w", err)
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("get renamed chat count: %w", err)
+			}
+			if affected == 0 {
+				return &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
+			}
+			return nil
+		}),
+	)
 }
 
 func openDatabase(path string) (*sql.DB, error) {

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/templ"
@@ -45,12 +46,33 @@ var (
 	errPromptAppendTooLarge = errors.New("message with prompt appends is too large")
 )
 
-func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
+func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry *commands.Registry, toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !parseMessageForm(w, r, maxMessageBodyBytes) {
 			return
 		}
-		message := strings.TrimSpace(r.FormValue("message"))
+		rawMessage := r.FormValue("message")
+		parsedCommand, isCommand, err := commands.Parse(rawMessage)
+		if isCommand {
+			if err != nil {
+				renderMessageError(w, r, http.StatusBadRequest, "Invalid slash command.")
+				return
+			}
+			chatID, ok := positiveID(r.URL.Query().Get("chat"))
+			if !ok {
+				renderMessageError(w, r, http.StatusBadRequest, "A valid chat is required.")
+				return
+			}
+			result, err := commandRegistry.Execute(r.Context(), parsedCommand, chatID)
+			if err != nil {
+				renderCommandError(w, r, parsedCommand.Name, err)
+				return
+			}
+			renderCommandResult(w, r, result)
+			return
+		}
+
+		message := strings.TrimSpace(rawMessage)
 		if message == "" {
 			renderMessageError(w, r, http.StatusBadRequest, "Message is required.")
 			return
@@ -93,6 +115,52 @@ func messageHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolC
 			log.Printf("render pending message: %v", err)
 		}
 	}
+}
+
+func renderCommandResult(w http.ResponseWriter, r *http.Request, result commands.Result) {
+	var fragment bytes.Buffer
+	if result.Body != nil {
+		if err := result.Body.Render(r.Context(), &fragment); err != nil {
+			log.Printf("render slash command: %v", err)
+			renderMessageError(w, r, http.StatusInternalServerError, "Command completed, but its result could not be displayed.")
+			return
+		}
+	}
+	for name, values := range result.Header {
+		for _, value := range values {
+			w.Header().Add(name, value)
+		}
+	}
+	if result.Body != nil && w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	}
+	status := result.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	if status != http.StatusNoContent && status != http.StatusNotModified {
+		_, _ = w.Write(fragment.Bytes())
+	}
+}
+
+func renderCommandError(w http.ResponseWriter, r *http.Request, name string, err error) {
+	if errors.Is(err, commands.ErrCommandNotFound) {
+		renderMessageError(w, r, http.StatusBadRequest, fmt.Sprintf("Unknown command /%s.", name))
+		return
+	}
+	var userError *commands.UserError
+	if errors.As(err, &userError) {
+		status := userError.Status
+		if status < 400 || status > 499 {
+			status = http.StatusBadRequest
+		}
+		renderMessageError(w, r, status, userError.Message)
+		return
+	}
+
+	log.Printf("execute slash command %q: %v", name, err)
+	renderMessageError(w, r, http.StatusInternalServerError, "Failed to execute command.")
 }
 
 func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore, toolCallLogger *log.Logger) http.HandlerFunc {

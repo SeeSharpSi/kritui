@@ -261,6 +261,23 @@ document.addEventListener('htmx:afterSwap', (event) => {
 });
 document.addEventListener('htmx:afterSettle', (event) => restoreMessageScroll(event.detail.elt));
 document.addEventListener('htmx:afterRequest', syncPanelSendButton);
+document.addEventListener('kritui:command', (event) => {
+    const messageInput = document.querySelector('#message');
+    if (messageInput) {
+        messageInput.value = '';
+    }
+
+    const panelID = event.detail?.panel;
+    if (!panelID) {
+        messageInput?.focus();
+        return;
+    }
+    const panel = document.getElementById(panelID);
+    const button = document.querySelector(`[data-panel-target="${CSS.escape(panelID)}"]`);
+    if (panel?.hidden) {
+        togglePanel(panelID, button);
+    }
+});
 document.addEventListener('htmx:beforeCleanupElement', (event) => {
     const root = event.detail.elt;
     if (root.matches?.('.message-list')) {

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/tools"
@@ -243,7 +244,7 @@ func TestHomeHandlerAllocatesConcurrentChatsWithIsolatedMessages(t *testing.T) {
 		{"message": {"second message"}, "model": {"test-model"}, "tool": {"websearch"}},
 	}
 	for index, chatID := range chatIDs {
-		response := postForm(t, messageHandler(database, registry, toolCalls), "/messages?chat="+strconv.FormatInt(chatID, 10), forms[index])
+		response := postForm(t, messageHandler(database, registry, newTestCommandRegistry(t, database), toolCalls), "/messages?chat="+strconv.FormatInt(chatID, 10), forms[index])
 		if response.Code != http.StatusOK {
 			t.Fatalf("chat %d message status = %d, want %d; body = %q", chatID, response.Code, http.StatusOK, response.Body.String())
 		}
@@ -403,6 +404,8 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, string(script), `button.setAttribute('aria-expanded', String(active))`)
 	requireContains(t, string(script), `selectedPanel.querySelector('[data-panel-initial-focus]')?.focus()`)
 	requireContains(t, string(script), `panelButton?.focus()`)
+	requireContains(t, string(script), `document.addEventListener('kritui:command'`)
+	requireContains(t, string(script), `messageInput.value = ''`)
 	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger")
 }
 
@@ -532,7 +535,7 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 		"model":   {"selected-model"},
 		"tool":    {"webfetch", "websearch"},
 	}
-	response := postForm(t, messageHandler(database, newTestToolRegistry(t), toolCalls), "/messages?chat=3", form)
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls), "/messages?chat=3", form)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -555,9 +558,154 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 	}
 }
 
+func TestMessageHandlerExecutesNavigationCommandsWithoutPersistence(t *testing.T) {
+	database := openTestDatabase(t)
+	chatID, err := kritui_db.InsertChat(context.Background(), database, "Existing", nil, nil)
+	if err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	toolCalls := newToolCallStore()
+	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls)
+
+	tests := []struct {
+		name       string
+		message    string
+		wantHeader string
+		wantValue  string
+	}{
+		{name: "new", message: "/new", wantHeader: "HX-Redirect", wantValue: "/"},
+		{name: "history", message: "/history", wantHeader: "HX-Trigger", wantValue: `{"kritui:command":{"panel":"history-page"}}`},
+		{name: "settings", message: "/settings", wantHeader: "HX-Trigger", wantValue: `{"kritui:command":{"panel":"settings-page"}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := postForm(t, handler, "/messages?chat="+strconv.FormatInt(chatID, 10), url.Values{
+				"message": {test.message},
+				"tool":    {"not-a-tool"},
+			})
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusNoContent, response.Body.String())
+			}
+			if got := response.Header().Get(test.wantHeader); got != test.wantValue {
+				t.Errorf("%s = %q, want %q", test.wantHeader, got, test.wantValue)
+			}
+			if response.Body.Len() != 0 {
+				t.Errorf("body = %q, want empty", response.Body.String())
+			}
+
+			requestID, err := toolCalls.create(chatID)
+			if err != nil {
+				t.Fatalf("command left completion tracker: %v", err)
+			}
+			toolCalls.delete(requestID)
+		})
+	}
+
+	var messages int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = ?`, chatID).Scan(&messages); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if messages != 0 {
+		t.Errorf("stored messages = %d, want 0", messages)
+	}
+}
+
+func TestMessageHandlerRenamesCurrentChatCommand(t *testing.T) {
+	database := openTestDatabase(t)
+	chatID, err := kritui_db.InsertChat(context.Background(), database, "Old title", nil, nil)
+	if err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
+
+	response := postForm(t, handler, "/messages?chat="+strconv.FormatInt(chatID, 10), url.Values{"message": {"/rename New title"}})
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusNoContent, response.Body.String())
+	}
+	if got := response.Header().Get("HX-Trigger"); got != `{"kritui:command":{}}` {
+		t.Errorf("HX-Trigger = %q", got)
+	}
+	var title string
+	if err := database.QueryRow(`SELECT title FROM chats WHERE id = ?`, chatID).Scan(&title); err != nil {
+		t.Fatalf("get renamed chat: %v", err)
+	}
+	if title != "New title" {
+		t.Errorf("title = %q, want New title", title)
+	}
+	var messages int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = ?`, chatID).Scan(&messages); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if messages != 0 {
+		t.Errorf("stored messages = %d, want 0", messages)
+	}
+}
+
+func TestMessageHandlerRejectsInvalidSlashCommands(t *testing.T) {
+	database := openTestDatabase(t)
+	chatID, err := kritui_db.InsertChat(context.Background(), database, "Existing", nil, nil)
+	if err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
+	tests := []struct {
+		name    string
+		chatID  int64
+		message string
+		status  int
+		want    string
+	}{
+		{name: "unknown", chatID: chatID, message: "/missing", status: http.StatusBadRequest, want: "Unknown command /missing."},
+		{name: "malformed", chatID: chatID, message: "/History", status: http.StatusBadRequest, want: "Invalid slash command."},
+		{name: "navigation arguments", chatID: chatID, message: "/history extra", status: http.StatusBadRequest, want: "/history does not accept arguments."},
+		{name: "rename title", chatID: chatID, message: "/rename", status: http.StatusBadRequest, want: "Usage: /rename &lt;title&gt;."},
+		{name: "missing chat", chatID: chatID + 1, message: "/rename New title", status: http.StatusNotFound, want: "Chat not found."},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := postForm(t, handler, "/messages?chat="+strconv.FormatInt(test.chatID, 10), url.Values{"message": {test.message}})
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d; body = %q", response.Code, test.status, response.Body.String())
+			}
+			requireContains(t, response.Body.String(), test.want)
+		})
+	}
+
+	var messages int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&messages); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if messages != 0 {
+		t.Errorf("stored messages = %d, want 0", messages)
+	}
+}
+
+func TestMessageHandlerRequiresSlashAsFirstCharacter(t *testing.T) {
+	database := openTestDatabase(t)
+	toolCalls := newToolCallStore()
+	response := postForm(t,
+		messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls),
+		"/messages?chat=3",
+		url.Values{"message": {" /new"}, "model": {"test-model"}},
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	if got := response.Header().Get("HX-Redirect"); got != "" {
+		t.Errorf("HX-Redirect = %q, want empty", got)
+	}
+	var content string
+	if err := database.QueryRow(`SELECT content FROM messages WHERE chat_id = 3`).Scan(&content); err != nil {
+		t.Fatalf("get message: %v", err)
+	}
+	if content != "/new" {
+		t.Errorf("stored content = %q, want /new", content)
+	}
+}
+
 func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 	database := openTestDatabase(t)
-	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages?chat=3", url.Values{
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore()), "/messages?chat=3", url.Values{
 		"message": {"Hello"},
 		"model":   {"selected-model"},
 		"append":  {"research", "link-check"},
@@ -607,7 +755,7 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 
 func TestMessageHandlerRejectsUnknownPromptAppend(t *testing.T) {
 	database := openTestDatabase(t)
-	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages?chat=3", url.Values{
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore()), "/messages?chat=3", url.Values{
 		"message": {"Hello"},
 		"model":   {"selected-model"},
 		"append":  {"missing"},
@@ -715,7 +863,7 @@ func TestChatTitleNormalizationPreservesMessageContent(t *testing.T) {
 	database := openTestDatabase(t)
 	firstLine := strings.Repeat("界", maxChatTitleRunes+1)
 	message := "\n  " + firstLine + "  \nsecond line\n"
-	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages?chat=3", url.Values{
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore()), "/messages?chat=3", url.Values{
 		"message": {message},
 		"model":   {"selected-model"},
 	})
@@ -778,7 +926,8 @@ func TestHandlersLimitURLFormBodies(t *testing.T) {
 			base:   "message=hello&model=test-model",
 			limit:  maxMessageBodyBytes,
 			newHandler: func(t *testing.T) http.Handler {
-				return messageHandler(openTestDatabase(t), newTestToolRegistry(t), newToolCallStore())
+				database := openTestDatabase(t)
+				return messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
 			},
 			wantHTML: `<article class="message" role="alert">`,
 		},
@@ -852,7 +1001,7 @@ func TestHandlersLimitURLFormBodies(t *testing.T) {
 
 func TestMessageHandlerLimitsMultipartBody(t *testing.T) {
 	database := openTestDatabase(t)
-	handler := messageHandler(database, newTestToolRegistry(t), newToolCallStore())
+	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
 
 	body, contentType := multipartBodyOfSize(t, maxMessageBodyBytes)
 	request := httptest.NewRequest(http.MethodPost, "/messages?chat=invalid", bytes.NewReader(body))
@@ -876,7 +1025,7 @@ func TestOversizedMessageFormsDoNotChangeState(t *testing.T) {
 		database := openTestDatabase(t)
 		toolCalls := newToolCallStore()
 		body := paddedFormBody(t, "message=hello&model=test-model", maxMessageBodyBytes+1)
-		response := serveRawForm(messageHandler(database, newTestToolRegistry(t), toolCalls), http.MethodPost, "/messages?chat=1", body)
+		response := serveRawForm(messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls), http.MethodPost, "/messages?chat=1", body)
 		if response.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, want 413", response.Code)
 		}
@@ -1796,7 +1945,7 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	t.Setenv("LLM_MODEL", "default-model")
 	form := url.Values{"message": {"Hello"}, "model": {"selected-model"}, "tool": {"webfetch"}}
 	toolCalls := newToolCallStore()
-	response := postForm(t, messageHandler(database, newTestToolRegistry(t), toolCalls), "/messages?chat=1", form)
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls), "/messages?chat=1", form)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -1909,7 +2058,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 	t.Run("message storage", func(t *testing.T) {
 		database := openTestDatabase(t)
 		database.Close()
-		response := postForm(t, messageHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages?chat=1", url.Values{
+		response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore()), "/messages?chat=1", url.Values{
 			"message": {"Hello"},
 			"model":   {"test-model"},
 		})
@@ -1946,7 +2095,7 @@ func TestMessageHandlerUsesStoredDefaultWhenModelIsMissing(t *testing.T) {
 		t.Fatalf("set default model: %v", err)
 	}
 	toolCalls := newToolCallStore()
-	response := postForm(t, messageHandler(database, newTestToolRegistry(t), toolCalls), "/messages?chat=1", url.Values{"message": {"Hello"}})
+	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls), "/messages?chat=1", url.Values{"message": {"Hello"}})
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -1958,7 +2107,7 @@ func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
 	database := openTestDatabase(t)
 	registry := newTestToolRegistry(t)
 	toolCalls := newToolCallStore()
-	handler := messageHandler(database, registry, toolCalls)
+	handler := messageHandler(database, registry, newTestCommandRegistry(t, database), toolCalls)
 
 	submit := func(chatID int, message string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -2105,7 +2254,7 @@ func TestMessageCompletionHandlerDoesNotReleaseActiveChatOnExpiry(t *testing.T) 
 	waitForTestSignal(t, requestStarted, "active completion request")
 
 	toolCalls.expireUnclaimed(requestID)
-	replacement := postForm(t, messageHandler(database, registry, toolCalls), "/messages?chat=1", url.Values{
+	replacement := postForm(t, messageHandler(database, registry, newTestCommandRegistry(t, database), toolCalls), "/messages?chat=1", url.Values{
 		"message": {"Replacement question"},
 		"model":   {"selected-model"},
 	})
@@ -2297,7 +2446,7 @@ func TestMessageCompletionHandlerExpandsStoredPromptAppendsExactlyOnce(t *testin
 	}
 
 	toolCalls := newToolCallStore()
-	message := postForm(t, messageHandler(database, registry, toolCalls), "/messages?chat=3", url.Values{
+	message := postForm(t, messageHandler(database, registry, newTestCommandRegistry(t, database), toolCalls), "/messages?chat=3", url.Values{
 		"message": {"Original question"},
 		"model":   {"selected-model"},
 		"tool":    {"lookup"},
@@ -3316,6 +3465,16 @@ func newTestToolRegistry(t *testing.T) *tools.Registry {
 	)
 	if err != nil {
 		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	return registry
+}
+
+func newTestCommandRegistry(t *testing.T, database *sql.DB) *commands.Registry {
+	t.Helper()
+
+	registry, err := newCommandRegistry(database)
+	if err != nil {
+		t.Fatalf("newCommandRegistry() error: %v", err)
 	}
 	return registry
 }
