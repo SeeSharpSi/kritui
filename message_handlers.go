@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a-h/templ"
 	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
@@ -87,7 +88,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 		if !ok {
 			return
 		}
-		requestID, err := toolCalls.create(request.chatID)
+		requestID, err := toolCalls.create(request.chatID, request.model, request.selected.Names())
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
 				renderMessageError(w, r, http.StatusConflict, "A response is already in progress.")
@@ -151,7 +152,7 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			return
 		}
 
-		requestID, err := toolCalls.create(request.chatID)
+		requestID, err := toolCalls.create(request.chatID, request.model, request.selected.Names())
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
 				renderMessageEditError(w, r, http.StatusConflict, messageID, "A response is already in progress.")
@@ -261,95 +262,112 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		}
 
 		requestID := strings.TrimSpace(r.FormValue("request"))
-		tracker, ok := toolCalls.claim(requestID, request.chatID)
+		selectedTools := request.selected.Names()
+		tracker, ok := toolCalls.claim(requestID, request.chatID, request.model, selectedTools)
 		if !ok {
 			renderMessageError(w, r, http.StatusBadRequest, "This completion request is no longer valid.")
 			return
 		}
-		defer toolCalls.delete(requestID)
+		clientTimezone := r.FormValue("client_timezone")
+		go runMessageCompletion(context.Background(), database, request, requestID, tracker, toolCalls, toolCallLogger, clientTimezone)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
 
-		snapshot, err := kritui_db.GetMessageSnapshot(r.Context(), database, request.chatID)
-		if err != nil {
-			log.Printf("get messages: %v", err)
-			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to load conversation.", request.model, request.selected.Names())
-			return
+func runMessageCompletion(ctx context.Context, database *sql.DB, request messageRequest, requestID string, tracker *toolCallTracker, toolCalls *toolCallStore, toolCallLogger *log.Logger, clientTimezone string) {
+	selectedTools := request.selected.Names()
+	terminal := renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to complete message.", request.model, selectedTools))
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("complete message panic: %v", recovered)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to complete message.", request.model, selectedTools))
 		}
-		messages := snapshot.Messages
-		if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
-			renderMessageError(w, r, http.StatusConflict, "No message is waiting for completion.")
-			return
-		}
-		conversationMessages := messagesWithPromptAppendTexts(messages)
-		client, err := llm.New(os.Getenv("LLM_KEY"), request.model, os.Getenv("LLM_ENDPOINT"))
-		if err != nil {
-			log.Printf("configure llm: %v", err)
-			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to configure model.", request.model, request.selected.Names())
-			return
-		}
+		toolCalls.finish(requestID, terminal)
+	}()
 
-		conversation, err := llm.NewConversation(client, request.selected, llm.PromptContext{
-			CurrentTime:    time.Now(),
-			ClientLocation: clientLocation(r.FormValue("client_timezone")),
-		}, conversationMessages...)
-		if err != nil {
-			log.Printf("configure conversation: %v", err)
-			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to configure conversation.", request.model, request.selected.Names())
-			return
-		}
-		maxToolRounds, err := kritui_db.GetMaxToolRounds(r.Context(), database, llm.DefaultMaxToolCallRounds)
-		if err != nil {
-			log.Printf("get max tool rounds: %v", err)
-			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to load settings.", request.model, request.selected.Names())
-			return
-		}
-		conversation.SetMaxToolRounds(maxToolRounds)
-		conversation.SetToolCallLogger(toolCallLogger)
-		conversation.SetToolCallObserver(tracker.observe)
-		completionContext := r.Context()
-		var gitSession *tools.GitSession
-		if request.selected.HasCapability("git") {
-			gitSession = tools.NewGitSession()
-			defer func() {
-				if err := gitSession.Close(); err != nil {
-					log.Printf("clean git session: %v", err)
-				}
-			}()
-			completionContext = gitSession.Context(completionContext)
-		}
-		_, completionErr := conversation.Complete(completionContext)
-		if gitSession != nil {
+	snapshot, err := kritui_db.GetMessageSnapshot(ctx, database, request.chatID)
+	if err != nil {
+		log.Printf("get messages: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load conversation.", request.model, selectedTools))
+		return
+	}
+	messages := snapshot.Messages
+	if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
+		terminal = renderCompletionFragment(ctx, templates.MessageError("No message is waiting for completion."))
+		return
+	}
+	conversationMessages := messagesWithPromptAppendTexts(messages)
+	client, err := llm.New(os.Getenv("LLM_KEY"), request.model, os.Getenv("LLM_ENDPOINT"))
+	if err != nil {
+		log.Printf("configure llm: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure model.", request.model, selectedTools))
+		return
+	}
+
+	conversation, err := llm.NewConversation(client, request.selected, llm.PromptContext{
+		CurrentTime:    time.Now(),
+		ClientLocation: clientLocation(clientTimezone),
+	}, conversationMessages...)
+	if err != nil {
+		log.Printf("configure conversation: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure conversation.", request.model, selectedTools))
+		return
+	}
+	maxToolRounds, err := kritui_db.GetMaxToolRounds(ctx, database, llm.DefaultMaxToolCallRounds)
+	if err != nil {
+		log.Printf("get max tool rounds: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load settings.", request.model, selectedTools))
+		return
+	}
+	conversation.SetMaxToolRounds(maxToolRounds)
+	conversation.SetToolCallLogger(toolCallLogger)
+	conversation.SetToolCallObserver(tracker.observe)
+	completionContext := ctx
+	var gitSession *tools.GitSession
+	if request.selected.HasCapability("git") {
+		gitSession = tools.NewGitSession()
+		defer func() {
 			if err := gitSession.Close(); err != nil {
 				log.Printf("clean git session: %v", err)
 			}
-		}
-		if completionErr != nil {
-			log.Printf("complete message: %v", completionErr)
-			message := completionErrorMessage(completionErr)
-			renderCompletionError(w, r, http.StatusFailedDependency, request.chat, message, request.model, request.selected.Names())
-			return
-		}
-		completedMessages := conversation.Messages()[len(messages)+1:]
-		if err := kritui_db.AppendCompletion(r.Context(), database, request.chatID, snapshot, completedMessages); err != nil {
-			switch {
-			case errors.Is(err, kritui_db.ErrConversationConflict):
-				renderCompletionError(w, r, http.StatusConflict, request.chat, "Conversation changed while the response was being generated. Retry the completion.", request.model, request.selected.Names())
-			case errors.Is(err, kritui_db.ErrChatNotFound):
-				renderMessageError(w, r, http.StatusNotFound, "Chat no longer exists.")
-			default:
-				log.Printf("store response: %v", err)
-				renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to store response.", request.model, request.selected.Names())
-			}
-			return
-		}
-		var fragment bytes.Buffer
-		if err := templates.CompletedMessage(request.chat, completedMessages...).Render(r.Context(), &fragment); err != nil {
-			log.Printf("render completed message: %v", err)
-			renderMessageError(w, r, http.StatusInternalServerError, "Response completed, but could not be displayed.")
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(fragment.Bytes())
+		}()
+		completionContext = gitSession.Context(completionContext)
 	}
+	_, completionErr := conversation.Complete(completionContext)
+	if completionErr != nil {
+		log.Printf("complete message: %v", completionErr)
+		message := completionErrorMessage(completionErr)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, message, request.model, selectedTools))
+		return
+	}
+	completedMessages := conversation.Messages()[len(messages)+1:]
+	if err := kritui_db.AppendCompletion(ctx, database, request.chatID, snapshot, completedMessages); err != nil {
+		switch {
+		case errors.Is(err, kritui_db.ErrConversationConflict):
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Conversation changed while the response was being generated. Retry the completion.", request.model, selectedTools))
+		case errors.Is(err, kritui_db.ErrChatNotFound):
+			terminal = renderCompletionFragment(ctx, templates.MessageError("Chat no longer exists."))
+		default:
+			log.Printf("store response: %v", err)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to store response.", request.model, selectedTools))
+		}
+		return
+	}
+	terminal = renderCompletionFragment(ctx, templates.CompletedMessage(request.chat, completedMessages...))
+}
+
+func renderCompletionFragment(ctx context.Context, component templ.Component) string {
+	var fragment bytes.Buffer
+	if err := component.Render(ctx, &fragment); err == nil {
+		return fragment.String()
+	} else {
+		log.Printf("render completion result: %v", err)
+	}
+	fragment.Reset()
+	if err := templates.MessageError("Completion finished, but could not be displayed.").Render(ctx, &fragment); err != nil {
+		log.Printf("render completion display error: %v", err)
+	}
+	return fragment.String()
 }
 
 func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
@@ -384,7 +402,7 @@ func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *
 			return
 		}
 
-		requestID, err := toolCalls.create(request.chatID)
+		requestID, err := toolCalls.create(request.chatID, request.model, request.selected.Names())
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
 				renderCompletionError(w, r, http.StatusConflict, request.chat, "A response is already in progress.", request.model, request.selected.Names())

@@ -178,7 +178,7 @@ func TestHomeHandlerAllocatesNextChatIDAtIndex(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?view=compact", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -202,7 +202,7 @@ func TestHomeHandlerRendersFirstChatIDAtIndexForEmptyDatabase(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -222,7 +222,7 @@ func TestHomeHandlerAllocatesConcurrentChatsWithIsolatedMessages(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			homeHandler(database, registry, commandRegistry)(responses[index], httptest.NewRequest(http.MethodGet, "/", nil))
+			homeHandler(database, registry, commandRegistry, newToolCallStore())(responses[index], httptest.NewRequest(http.MethodGet, "/", nil))
 		}()
 	}
 	close(start)
@@ -273,7 +273,7 @@ func TestAllocatedChatsStayHiddenAndAbandonedRowsAreRemoved(t *testing.T) {
 	registry := newTestToolRegistry(t)
 	commandRegistry := newTestCommandRegistry(t, database)
 	first := httptest.NewRecorder()
-	homeHandler(database, registry, commandRegistry)(first, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, registry, commandRegistry, newToolCallStore())(first, httptest.NewRequest(http.MethodGet, "/", nil))
 	if _, err := database.Exec(`UPDATE chats SET created_at = '2000-01-01T00:00:00.000Z'`); err != nil {
 		t.Fatalf("age abandoned chat: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestAllocatedChatsStayHiddenAndAbandonedRowsAreRemoved(t *testing.T) {
 	requireContains(t, history.Body.String(), "No saved chats yet.")
 
 	second := httptest.NewRecorder()
-	homeHandler(database, registry, commandRegistry)(second, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, registry, commandRegistry, newToolCallStore())(second, httptest.NewRequest(http.MethodGet, "/", nil))
 	var count int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&count); err != nil {
 		t.Fatalf("count allocated chats: %v", err)
@@ -314,7 +314,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -355,7 +355,7 @@ func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -369,7 +369,7 @@ func TestHomeHandlerRendersCommandAutocomplete(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -420,7 +420,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -492,7 +492,7 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -513,7 +513,7 @@ func TestHomeHandlerUsesStoredDefaultModel(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -540,7 +540,7 @@ func TestHomeHandlerUsesMostRecentResponseModel(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -565,7 +565,7 @@ func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, request)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -579,7 +579,7 @@ func TestHomeHandlerRendersPromptAppends(t *testing.T) {
 	database := openTestDatabase(t)
 	response := httptest.NewRecorder()
 
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, httptest.NewRequest(http.MethodGet, "/?chat=8", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, httptest.NewRequest(http.MethodGet, "/?chat=8", nil))
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -661,7 +661,7 @@ func TestMessageHandlerExecutesNavigationCommandsWithoutPersistence(t *testing.T
 				t.Errorf("body = %q, want empty", response.Body.String())
 			}
 
-			requestID, err := toolCalls.create(chatID)
+			requestID, err := toolCalls.create(chatID, "", nil)
 			if err != nil {
 				t.Fatalf("command left completion tracker: %v", err)
 			}
@@ -1260,7 +1260,7 @@ func TestOversizedMessageFormsDoNotChangeState(t *testing.T) {
 		if messages != 0 {
 			t.Errorf("stored message count = %d, want 0", messages)
 		}
-		requestID, err := toolCalls.create(1)
+		requestID, err := toolCalls.create(1, "", nil)
 		if err != nil {
 			t.Fatalf("oversized submission retained active chat: %v", err)
 		}
@@ -1276,7 +1276,7 @@ func TestOversizedMessageFormsDoNotChangeState(t *testing.T) {
 		if response.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, want 413", response.Code)
 		}
-		if _, ok := toolCalls.claim(requestID, 1); !ok {
+		if _, ok := toolCalls.claim(requestID, 1, "", nil); !ok {
 			t.Fatal("oversized completion consumed tracker")
 		}
 		toolCalls.delete(requestID)
@@ -1290,7 +1290,7 @@ func TestOversizedMessageFormsDoNotChangeState(t *testing.T) {
 		if response.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, want 413", response.Code)
 		}
-		requestID, err := toolCalls.create(1)
+		requestID, err := toolCalls.create(1, "", nil)
 		if err != nil {
 			t.Fatalf("oversized retry retained active chat: %v", err)
 		}
@@ -1925,7 +1925,7 @@ func TestHomeHandlerAllocatesChatWithDefaultTools(t *testing.T) {
 	}
 
 	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
@@ -1949,7 +1949,7 @@ func TestHomeHandlerAllocatesChatWithoutDefaultToolsWhenUnset(t *testing.T) {
 	t.Setenv("LLM_ENDPOINT", "")
 
 	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
@@ -1982,7 +1982,7 @@ func TestHomeHandlerAllocatesChatWithDefaultPromptAppends(t *testing.T) {
 	}
 
 	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
@@ -2005,7 +2005,7 @@ func TestHomeHandlerAllocatesChatWithoutDefaultPromptAppendsWhenUnset(t *testing
 	t.Setenv("LLM_ENDPOINT", "")
 
 	page := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", page.Code, http.StatusOK)
 	}
@@ -2370,7 +2370,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 	t.Run("page", func(t *testing.T) {
 		database := openTestDatabase(t)
 		response := httptest.NewRecorder()
-		homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(response, httptest.NewRequest(http.MethodGet, "/?chat=invalid", nil))
+		homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, httptest.NewRequest(http.MethodGet, "/?chat=invalid", nil))
 
 		requireHTMLErrorResponse(t, response, http.StatusBadRequest, `<main hx-history="false">`, `id="messages"`, "A valid chat is required.")
 	})
@@ -2458,12 +2458,12 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 		database := openTestDatabase(t)
 		database.Close()
 		toolCalls := newToolCallStore()
-		response := postForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), "/messages/complete?chat=1", url.Values{
+		response := completeForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), toolCalls, "/messages/complete?chat=1", url.Values{
 			"model":   {"test-model"},
 			"request": {newToolCallRequest(t, toolCalls, 1)},
 		})
 
-		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `class="message completion-error"`, "Failed to load conversation.")
+		requireHTMLErrorResponse(t, response, http.StatusOK, `class="message completion-error"`, "Failed to load conversation.")
 	})
 
 	t.Run("retry storage", func(t *testing.T) {
@@ -2539,7 +2539,7 @@ func TestToolCallStoreUnclaimedTrackerExpiresWithoutAnotherCreate(t *testing.T) 
 	if _, ok := toolCalls.get(requestID); ok {
 		t.Error("expired unclaimed tracker remains stored")
 	}
-	replacementID, err := toolCalls.create(1)
+	replacementID, err := toolCalls.create(1, "", nil)
 	if err != nil {
 		t.Fatalf("reuse chat after unclaimed expiry: %v", err)
 	}
@@ -2577,13 +2577,13 @@ func TestMessageToolStreamHandlerStopsWhenUnclaimedTrackerExpires(t *testing.T) 
 func TestToolCallStoreClaimedTrackerStaysActivePastExpiry(t *testing.T) {
 	toolCalls := newToolCallStore()
 	requestID := newToolCallRequest(t, toolCalls, 1)
-	tracker, ok := toolCalls.claim(requestID, 1)
+	tracker, ok := toolCalls.claim(requestID, 1, "", nil)
 	if !ok {
 		t.Fatal("claim tracker failed")
 	}
 
 	toolCalls.expireUnclaimed(requestID)
-	if _, err := toolCalls.create(1); !errors.Is(err, errChatCompletionActive) {
+	if _, err := toolCalls.create(1, "", nil); !errors.Is(err, errChatCompletionActive) {
 		t.Fatalf("create during started completion error = %v, want %v", err, errChatCompletionActive)
 	}
 	if current, ok := toolCalls.get(requestID); !ok || current != tracker {
@@ -2597,11 +2597,30 @@ func TestToolCallStoreClaimedTrackerStaysActivePastExpiry(t *testing.T) {
 
 	toolCalls.delete(requestID)
 	waitForTestSignal(t, tracker.done, "started tracker completion")
-	replacementID, err := toolCalls.create(1)
+	replacementID, err := toolCalls.create(1, "", nil)
 	if err != nil {
 		t.Fatalf("reuse chat after completion: %v", err)
 	}
 	toolCalls.delete(replacementID)
+}
+
+func TestToolCallStoreFinishedTrackerExpires(t *testing.T) {
+	toolCalls := newToolCallStore()
+	toolCalls.finishedTTL = time.Millisecond
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	tracker, ok := toolCalls.claim(requestID, 1, "selected-model", nil)
+	if !ok {
+		t.Fatal("claim tracker failed")
+	}
+
+	toolCalls.finish(requestID, "finished")
+	waitForTestSignal(t, tracker.done, "finished tracker expiry")
+	if _, ok := toolCalls.get(requestID); ok {
+		t.Error("finished tracker remains stored after retention period")
+	}
+	if _, ok := toolCalls.active(1); ok {
+		t.Error("finished tracker kept chat active")
+	}
 }
 
 func TestMessageCompletionHandlerDoesNotReleaseActiveChatOnExpiry(t *testing.T) {
@@ -2630,15 +2649,13 @@ func TestMessageCompletionHandlerDoesNotReleaseActiveChatOnExpiry(t *testing.T) 
 	toolCalls := newToolCallStore()
 	registry := newTestToolRegistry(t)
 	requestID := newToolCallRequest(t, toolCalls, 1)
-	completionResponse := httptest.NewRecorder()
-	completionDone := make(chan struct{})
-	go func() {
-		defer close(completionDone)
-		form := url.Values{"model": {"selected-model"}, "request": {requestID}}
-		request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
-		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		messageCompletionHandler(database, registry, toolCalls, nil)(completionResponse, request)
-	}()
+	completionResponse := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil), "/messages/complete?chat=1", url.Values{
+		"model":   {"selected-model"},
+		"request": {requestID},
+	})
+	if completionResponse.Code != http.StatusNoContent {
+		t.Fatalf("completion start status = %d, want %d; body = %q", completionResponse.Code, http.StatusNoContent, completionResponse.Body.String())
+	}
 	waitForTestSignal(t, requestStarted, "active completion request")
 
 	toolCalls.expireUnclaimed(requestID)
@@ -2651,10 +2668,8 @@ func TestMessageCompletionHandlerDoesNotReleaseActiveChatOnExpiry(t *testing.T) 
 	}
 
 	close(releaseRequest)
-	waitForTestSignal(t, completionDone, "original completion")
-	if completionResponse.Code != http.StatusOK {
-		t.Fatalf("completion status = %d, want %d; body = %q", completionResponse.Code, http.StatusOK, completionResponse.Body.String())
-	}
+	completionBody := waitForCompletionResult(t, toolCalls, requestID)
+	requireContains(t, completionBody, "Original answer.")
 	messages, err := kritui_db.GetMessages(context.Background(), database, 1)
 	if err != nil {
 		t.Fatalf("get completed messages: %v", err)
@@ -2667,7 +2682,7 @@ func TestMessageCompletionHandlerDoesNotReleaseActiveChatOnExpiry(t *testing.T) 
 func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 	toolCalls := newToolCallStore()
 	requestID := newToolCallRequest(t, toolCalls, 1)
-	tracker, ok := toolCalls.claim(requestID, 1)
+	tracker, ok := toolCalls.claim(requestID, 1, "", nil)
 	if !ok {
 		t.Fatal("claim tool-call tracker failed")
 	}
@@ -2728,6 +2743,170 @@ func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 	requireContains(t, closeEvent, "data: \n")
 }
 
+func TestMessageToolStreamHandlerSendsHeartbeat(t *testing.T) {
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	request := httptest.NewRequest(http.MethodGet, "/messages/tools?request="+requestID, nil)
+	ctx, cancel := context.WithCancel(request.Context())
+	request = request.WithContext(ctx)
+	response := newFlushingResponseRecorder()
+	done := make(chan struct{})
+	go func() {
+		messageToolStreamHandlerWithHeartbeat(toolCalls, 10*time.Millisecond)(response, request)
+		close(done)
+	}()
+
+	waitForTestSignal(t, response.flushes, "initial tool-call event")
+	waitForTestSignal(t, response.flushes, "tool-call heartbeat")
+	cancel()
+	waitForTestSignal(t, done, "heartbeat stream cancellation")
+	requireContains(t, response.Body.String(), ": keepalive\n\n")
+}
+
+func TestMessageToolStreamHandlerReplaysCompletedResult(t *testing.T) {
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	if _, ok := toolCalls.claim(requestID, 1, "selected-model", []string{"webfetch"}); !ok {
+		t.Fatal("claim tracker failed")
+	}
+	toolCalls.finish(requestID, `<article class="message">Finished.</article>`)
+
+	response := newFlushingResponseRecorder()
+	messageToolStreamHandler(toolCalls)(response, httptest.NewRequest(http.MethodGet, "/messages/tools?request="+requestID, nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "event: completion\n", `<article class="message">Finished.</article>`)
+	requireNotContains(t, response.Body.String(), "event: close\n")
+	if _, ok := toolCalls.get(requestID); !ok {
+		t.Error("finished tracker was not retained for reconnect")
+	}
+	replacementID, err := toolCalls.create(1, "", nil)
+	if err != nil {
+		t.Fatalf("finished completion kept chat active: %v", err)
+	}
+	toolCalls.delete(replacementID)
+}
+
+func TestMessageToolStreamHandlerClosesMissingTracker(t *testing.T) {
+	response := newFlushingResponseRecorder()
+	messageToolStreamHandler(newToolCallStore())(response, httptest.NewRequest(http.MethodGet, "/messages/tools?request=missing", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "event: close\n")
+}
+
+func TestMessageCompletionContinuesAfterRequestCancellation(t *testing.T) {
+	database := openTestDatabase(t)
+	insertAcceptedUser(t, database, 1, "Keep working")
+	providerStarted := make(chan struct{})
+	releaseProvider := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(providerStarted)
+		select {
+		case <-releaseProvider:
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"Still finished."},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls, 1)
+	form := url.Values{"model": {"selected-model"}, "request": {requestID}}
+	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	ctx, cancel := context.WithCancel(request.Context())
+	request = request.WithContext(ctx)
+	response := httptest.NewRecorder()
+	messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("completion start status = %d, want %d; body = %q", response.Code, http.StatusNoContent, response.Body.String())
+	}
+
+	waitForTestSignal(t, providerStarted, "detached provider request")
+	cancel()
+	close(releaseProvider)
+	result := waitForCompletionResult(t, toolCalls, requestID)
+	requireContains(t, result, "Still finished.")
+
+	var stored string
+	if err := database.QueryRow(`SELECT content FROM messages WHERE chat_id = 1 AND role = 'assistant'`).Scan(&stored); err != nil {
+		t.Fatalf("load detached completion: %v", err)
+	}
+	if stored != "Still finished." {
+		t.Errorf("stored detached completion = %q, want %q", stored, "Still finished.")
+	}
+}
+
+func TestHomeHandlerRestoresCompletionState(t *testing.T) {
+	database := openTestDatabase(t)
+	insertAcceptedUser(t, database, 1, "Question")
+	registry := newTestToolRegistry(t)
+	commands := newTestCommandRegistry(t, database)
+	t.Setenv("LLM_KEY", "")
+	t.Setenv("LLM_ENDPOINT", "")
+
+	t.Run("active", func(t *testing.T) {
+		toolCalls := newToolCallStore()
+		requestID := newToolCallRequest(t, toolCalls, 1)
+		if _, ok := toolCalls.claim(requestID, 1, "active-model", []string{"webfetch"}); !ok {
+			t.Fatal("claim active completion")
+		}
+		response := httptest.NewRecorder()
+		homeHandler(database, registry, commands, toolCalls)(response, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
+
+		requireContains(t, response.Body.String(), `class="message loading-message completion-active"`, `sse-connect="/messages/tools?request=`+requestID+`"`, "active-model")
+		requireNotContains(t, response.Body.String(), `hx-post="/messages/complete?chat=1"`)
+	})
+
+	t.Run("not started", func(t *testing.T) {
+		toolCalls := newToolCallStore()
+		requestID, err := toolCalls.create(1, "queued-model", []string{"websearch"})
+		if err != nil {
+			t.Fatalf("create queued completion: %v", err)
+		}
+		response := httptest.NewRecorder()
+		homeHandler(database, registry, commands, toolCalls)(response, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
+
+		requireContains(t, response.Body.String(), `hx-post="/messages/complete?chat=1"`, `sse-connect="/messages/tools?request=`+requestID+`"`, "queued-model", `name="tool" value="websearch"`)
+	})
+
+	t.Run("interrupted", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		homeHandler(database, registry, commands, newToolCallStore())(response, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
+
+		requireContains(t, response.Body.String(), "Completion was interrupted. Retry the completion.", `hx-post="/messages/retry?chat=1"`)
+		requireNotContains(t, response.Body.String(), `class="message loading-message completion-active"`)
+	})
+
+	t.Run("persisted result wins", func(t *testing.T) {
+		if _, err := database.Exec(`INSERT INTO messages (chat_id, position, role, content, model) VALUES (1, 1, 'assistant', 'Finished answer.', 'finished-model')`); err != nil {
+			t.Fatalf("insert finished answer: %v", err)
+		}
+		toolCalls := newToolCallStore()
+		if _, err := toolCalls.create(1, "stale-active-model", nil); err != nil {
+			t.Fatalf("create stale active completion: %v", err)
+		}
+		response := httptest.NewRecorder()
+		homeHandler(database, registry, commands, toolCalls)(response, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
+
+		requireContains(t, response.Body.String(), "Finished answer.", "finished-model")
+		requireNotContains(t, response.Body.String(), `class="message loading-message completion-active"`, "stale-active-model")
+	})
+}
+
 func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 	database := openTestDatabase(t)
 	type completionRequest struct {
@@ -2775,7 +2954,7 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 			"request":         {newToolCallRequest(t, toolCalls, 1)},
 			"tool":            {"webfetch"},
 		}
-		response := postForm(t, handler, "/messages/complete?chat=1", form)
+		response := completeForm(t, handler, toolCalls, "/messages/complete?chat=1", form)
 
 		if response.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -2895,7 +3074,7 @@ func TestMessageCompletionHandlerExpandsStoredPromptAppendsExactlyOnce(t *testin
 	t.Setenv("LLM_MODEL", "test-model")
 	t.Setenv("LLM_ENDPOINT", server.URL)
 
-	completion := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil),
+	completion := completeForm(t, messageCompletionHandler(database, registry, toolCalls, nil), toolCalls,
 		"/messages/complete?chat=3", url.Values{
 			"model":   {"selected-model"},
 			"request": {requestID},
@@ -3014,7 +3193,7 @@ func TestMessageCompletionHandlerStoresRawMarkdown(t *testing.T) {
 		"model":   {"selected-model"},
 		"request": {newToolCallRequest(t, toolCalls, 1)},
 	}
-	response := postForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), "/messages/complete?chat=1", form)
+	response := completeForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), toolCalls, "/messages/complete?chat=1", form)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -3050,28 +3229,24 @@ func TestMessageCompletionHandlerRejectsStaleGeneratedResponse(t *testing.T) {
 
 	insertAcceptedUser(t, database, 1, "First question")
 	toolCalls := newToolCallStore()
+	requestID := newToolCallRequest(t, toolCalls, 1)
 	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(url.Values{
 		"model":   {"selected-model"},
-		"request": {newToolCallRequest(t, toolCalls, 1)},
+		"request": {requestID},
 	}.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 	registry := newTestToolRegistry(t)
-	done := make(chan struct{})
-	go func() {
-		messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
-		close(done)
-	}()
+	messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("completion start status = %d, want %d; body = %q", response.Code, http.StatusNoContent, response.Body.String())
+	}
 
 	waitForTestSignal(t, modelStarted, "model request")
 	insertAcceptedUser(t, database, 1, "Concurrent question")
 	close(releaseModel)
-	waitForTestSignal(t, done, "stale completion rejection")
-
-	if response.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusConflict, response.Body.String())
-	}
-	requireContains(t, response.Body.String(),
+	completionBody := waitForCompletionResult(t, toolCalls, requestID)
+	requireContains(t, completionBody,
 		"Conversation changed while the response was being generated. Retry the completion.",
 		`hx-post="/messages/retry?chat=1"`,
 	)
@@ -3103,10 +3278,10 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 		"tool":    {"webfetch"},
 	}
 	registry := newTestToolRegistry(t)
-	response := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil), "/messages/complete?chat=1", form)
+	response := completeForm(t, messageCompletionHandler(database, registry, toolCalls, nil), toolCalls, "/messages/complete?chat=1", form)
 
-	if response.Code != http.StatusFailedDependency {
-		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusFailedDependency, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	requireContains(t, response.Body.String(),
 		"Model endpoint returned HTTP 500: Internal Server Error.",
@@ -3117,8 +3292,8 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 		`aria-label="Retry completion"`,
 	)
 	requireNotContains(t, response.Body.String(), "upstream failed")
-	if _, ok := toolCalls.get(requestID); ok {
-		t.Error("failed completion kept old tracker active")
+	if _, ok := toolCalls.active(1); ok {
+		t.Error("failed completion kept chat active")
 	}
 
 	retryResponse := postForm(t, messageRetryHandler(database, registry, toolCalls), "/messages/retry?chat=1", url.Values{
@@ -3173,10 +3348,10 @@ func TestMessageCompletionHandlerRendersToolCallLimitError(t *testing.T) {
 		"request": {newToolCallRequest(t, toolCalls, 1)},
 		"tool":    {"webfetch"},
 	}
-	response := postForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), "/messages/complete?chat=1", form)
+	response := completeForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), toolCalls, "/messages/complete?chat=1", form)
 
-	if response.Code != http.StatusFailedDependency {
-		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusFailedDependency, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	requireContains(t, response.Body.String(), "llm: reached maximum of 16 consecutive tool-call rounds")
 	requireNotContains(t, response.Body.String(), "Failed to complete message.")
@@ -3241,7 +3416,7 @@ func TestMessageCompletionHandlerRejectsTrackerFromAnotherChat(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
 	}
-	if _, ok := toolCalls.claim(requestID, 1); !ok {
+	if _, ok := toolCalls.claim(requestID, 1, "", nil); !ok {
 		t.Error("cross-chat request consumed valid tracker")
 	}
 }
@@ -3313,11 +3488,10 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 		t.Fatalf("create test tool registry: %v", err)
 	}
 
-	completionDone := make(chan struct{})
-	go func() {
-		messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
-		close(completionDone)
-	}()
+	messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("completion start status = %d, want %d; body = %q", response.Code, http.StatusNoContent, response.Body.String())
+	}
 	select {
 	case <-fetchStarted:
 	case <-time.After(2 * time.Second):
@@ -3340,16 +3514,7 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	requireContains(t, statusResponse.Body.String(), "webfetch", `class="braille-spinner"`)
 
 	close(releaseFetch)
-	select {
-	case <-completionDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("message completion did not finish")
-	}
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
-	}
-	body := response.Body.String()
+	body := waitForCompletionResult(t, toolCalls, requestID)
 	requireContains(t, body, "webfetch", fetchURL, "Final answer.", `class="tool-call-complete"`)
 	requireNotContains(t, body, `class="braille-spinner"`)
 	if strings.Index(body, "webfetch") > strings.Index(body, "Final answer.") {
@@ -3367,7 +3532,7 @@ func TestMessageCompletionHandlerKeepsCompletedToolCallsAboveAnswer(t *testing.T
 	t.Setenv("LLM_ENDPOINT", "")
 	reloadRequest := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
 	reloadResponse := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(reloadResponse, reloadRequest)
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(reloadResponse, reloadRequest)
 	if reloadResponse.Code != http.StatusOK {
 		t.Fatalf("reload status = %d, want %d; body = %q", reloadResponse.Code, http.StatusOK, reloadResponse.Body.String())
 	}
@@ -3435,11 +3600,10 @@ func TestMessageCompletionHandlerMarksFailedToolCalls(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/messages/complete?chat=1", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
-	completionDone := make(chan struct{})
-	go func() {
-		messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
-		close(completionDone)
-	}()
+	messageCompletionHandler(database, registry, toolCalls, nil)(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("completion start status = %d, want %d; body = %q", response.Code, http.StatusNoContent, response.Body.String())
+	}
 	select {
 	case <-followupStarted:
 	case <-time.After(2 * time.Second):
@@ -3467,12 +3631,7 @@ func TestMessageCompletionHandlerMarksFailedToolCalls(t *testing.T) {
 	requireNotContains(t, statusResponse.Body.String(), `class="braille-spinner"`)
 
 	close(releaseFollowup)
-	waitForTestSignal(t, completionDone, "failed tool-call completion")
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
-	}
-	body := response.Body.String()
+	body := waitForCompletionResult(t, toolCalls, requestID)
 	requireContains(t, body,
 		`class="tool-call tool-error"`,
 		`class="tool-call-error"`,
@@ -3483,7 +3642,7 @@ func TestMessageCompletionHandlerMarksFailedToolCalls(t *testing.T) {
 
 	t.Setenv("LLM_ENDPOINT", "")
 	reloadResponse := httptest.NewRecorder()
-	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database))(reloadResponse, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(reloadResponse, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
 	if reloadResponse.Code != http.StatusOK {
 		t.Fatalf("reload status = %d, want %d; body = %q", reloadResponse.Code, http.StatusOK, reloadResponse.Body.String())
 	}
@@ -3559,7 +3718,7 @@ func TestResponsesProviderMetadataPersistsAcrossDatabaseReload(t *testing.T) {
 	}
 	insertAcceptedUser(t, database, 1, "First question")
 	toolCalls := newToolCallStore()
-	firstResponse := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil), "/messages/complete?chat=1", url.Values{
+	firstResponse := completeForm(t, messageCompletionHandler(database, registry, toolCalls, nil), toolCalls, "/messages/complete?chat=1", url.Values{
 		"model":   {"selected-model"},
 		"request": {newToolCallRequest(t, toolCalls, 1)},
 		"tool":    {"lookup"},
@@ -3598,7 +3757,7 @@ func TestResponsesProviderMetadataPersistsAcrossDatabaseReload(t *testing.T) {
 	}
 
 	toolCalls = newToolCallStore()
-	secondResponse := postForm(t, messageCompletionHandler(database, registry, toolCalls, nil), "/messages/complete?chat=1", url.Values{
+	secondResponse := completeForm(t, messageCompletionHandler(database, registry, toolCalls, nil), toolCalls, "/messages/complete?chat=1", url.Values{
 		"model":   {"selected-model"},
 		"request": {newToolCallRequest(t, toolCalls, 1)},
 		"tool":    {"lookup"},
@@ -3922,6 +4081,45 @@ func postForm(t *testing.T, handler http.Handler, target string, form url.Values
 	return response
 }
 
+func completeForm(t *testing.T, handler http.Handler, toolCalls *toolCallStore, target string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	started := postForm(t, handler, target, form)
+	if started.Code != http.StatusNoContent {
+		t.Fatalf("completion start status = %d, want %d; body = %q", started.Code, http.StatusNoContent, started.Body.String())
+	}
+
+	response := httptest.NewRecorder()
+	response.Header().Set("Content-Type", "text/html; charset=utf-8")
+	response.WriteHeader(http.StatusOK)
+	_, _ = response.Body.WriteString(waitForCompletionResult(t, toolCalls, form.Get("request")))
+	return response
+}
+
+func waitForCompletionResult(t *testing.T, toolCalls *toolCallStore, requestID string) string {
+	t.Helper()
+	tracker, ok := toolCalls.get(requestID)
+	if !ok {
+		t.Fatalf("completion tracker %q is missing", requestID)
+	}
+	t.Cleanup(func() { toolCalls.delete(requestID) })
+
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for {
+		_, _, _, terminal, finished, updates := tracker.streamSnapshot()
+		if finished {
+			return terminal
+		}
+		select {
+		case <-updates:
+		case <-tracker.done:
+			t.Fatalf("completion tracker %q closed without a result", requestID)
+		case <-timeout.C:
+			t.Fatalf("timed out waiting for completion %q", requestID)
+		}
+	}
+}
+
 func serveRawForm(handler http.Handler, method, target, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -4070,7 +4268,7 @@ func waitForTestSignal(t *testing.T, signal <-chan struct{}, name string) {
 func newToolCallRequest(t *testing.T, toolCalls *toolCallStore, chatID int64) string {
 	t.Helper()
 
-	requestID, err := toolCalls.create(chatID)
+	requestID, err := toolCalls.create(chatID, "", nil)
 	if err != nil {
 		t.Fatalf("create tool-call tracker: %v", err)
 	}

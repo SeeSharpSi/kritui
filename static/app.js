@@ -154,20 +154,9 @@ function syncPanelSendButton() {
         return;
     }
 
-    if (document.querySelector('#page-panel > .panel-page:not([hidden])')) {
-        sendButton.dataset.panelDisabled = '';
-        sendButton.disabled = true;
-        return;
-    }
-    if (!sendButton.hasAttribute('data-panel-disabled')) {
-        return;
-    }
-
-    sendButton.removeAttribute('data-panel-disabled');
-    const requestActive = document.querySelector('#message-form.htmx-request, .loading-message.htmx-request');
-    if (!requestActive) {
-        sendButton.disabled = false;
-    }
+    const panelOpen = document.querySelector('#page-panel > .panel-page:not([hidden])');
+    const requestActive = document.querySelector('#message-form.htmx-request, .loading-message.completion-active:not(.completion-failed)');
+    sendButton.disabled = Boolean(panelOpen || requestActive);
 }
 
 function commandAutocompleteFor(input) {
@@ -317,6 +306,7 @@ function showCompletionNetworkError(event, message) {
 
 document.addEventListener('DOMContentLoaded', () => {
     scrollMessages(document);
+    syncPanelSendButton();
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js');
     }
@@ -477,7 +467,13 @@ document.addEventListener('htmx:oobAfterSwap', (event) => {
 });
 
 document.addEventListener('htmx:load', (event) => scrollMessages(event.detail.elt));
-document.addEventListener('htmx:beforeSwap', (event) => rememberMessageScroll(event.detail.target));
+document.addEventListener('htmx:beforeSwap', (event) => {
+    rememberMessageScroll(event.detail.target);
+    if (event.detail.elt?.matches?.('.loading-message') && event.detail.xhr?.status >= 500) {
+        event.detail.shouldSwap = false;
+        showCompletionNetworkError(event, 'Failed to complete message. Check your connection and retry.');
+    }
+});
 document.addEventListener('htmx:afterSwap', (event) => {
     restoreMessageScroll(event.detail.elt);
     syncPanelSendButton();
@@ -515,7 +511,15 @@ document.addEventListener('htmx:beforeCleanupElement', (event) => {
     root.querySelectorAll?.('.message-list').forEach(destroyMessageListState);
 });
 document.addEventListener('htmx:sseBeforeMessage', (event) => rememberMessageScroll(event.target));
-document.addEventListener('htmx:sseMessage', (event) => restoreMessageScroll(event.target));
+document.addEventListener('htmx:sseMessage', (event) => {
+    restoreMessageScroll(event.target);
+    syncPanelSendButton();
+});
+document.addEventListener('htmx:sseClose', (event) => {
+    if (event.detail.type === 'message') {
+        showCompletionNetworkError(event, 'Completion status expired. Retry the completion.');
+    }
+});
 document.addEventListener('htmx:sendError', (event) => {
     showCompletionNetworkError(event, 'Failed to complete message. Check your connection and retry.');
 });

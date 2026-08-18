@@ -27,7 +27,7 @@ const (
 	maxHistoryPageSize     = 50
 )
 
-func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *commands.Registry) http.HandlerFunc {
+func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *commands.Registry, toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
 		chatURL := ""
@@ -70,6 +70,21 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			log.Printf("get messages: %v", err)
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load messages.")
 			return
+		}
+		completion, completionActive := toolCalls.active(chatID)
+		if !completionActive && len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+			// Completion persistence happens before the active marker is released.
+			// Re-read once to close the small race between those two observations.
+			messages, err = kritui_db.GetMessages(r.Context(), database, chatID)
+			if err != nil {
+				log.Printf("reload messages after completion: %v", err)
+				renderPageError(w, r, http.StatusInternalServerError, "Failed to load messages.")
+				return
+			}
+		}
+		if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
+			completion = activeCompletion{}
+			completionActive = false
 		}
 		enabledTools, err := kritui_db.GetChatTools(r.Context(), database, chatID)
 		if err != nil {
@@ -116,13 +131,19 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 				break
 			}
 		}
+		if completionActive {
+			if completion.model != "" {
+				selectedModel = completion.model
+			}
+			enabledTools = completion.tools
+		}
 		models, selectedModel := availableModels(r, selectedModel)
 		if defaultModel != "" && !slices.Contains(models, defaultModel) {
 			models = append([]string{defaultModel}, models...)
 		}
 
 		var page bytes.Buffer
-		if err := templates.Home(chat, chatURL, messages, models, selectedModel, defaultModel, maxToolRounds, toolRegistry.Names(), enabledTools, defaultTools, promptAppends, enabledAppendIDs, commandRegistry.Definitions()).Render(r.Context(), &page); err != nil {
+		if err := templates.Home(chat, chatURL, messages, models, selectedModel, defaultModel, maxToolRounds, toolRegistry.Names(), enabledTools, defaultTools, promptAppends, enabledAppendIDs, completion.requestID, completion.started, commandRegistry.Definitions()).Render(r.Context(), &page); err != nil {
 			log.Printf("render page: %v", err)
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to render page.")
 			return

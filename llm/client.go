@@ -19,12 +19,11 @@ import (
 )
 
 const (
-	maxErrorBodySize            = 1 << 20
-	defaultMaxResponseBodySize  = 16 << 20
-	defaultModelsTimeout        = 5 * time.Second
-	defaultCompletionTimeout    = 10 * time.Minute
-	providerConnectTimeout      = 10 * time.Second
-	providerResponseHeadTimeout = 30 * time.Second
+	maxErrorBodySize           = 1 << 20
+	defaultMaxResponseBodySize = 16 << 20
+	defaultModelsTimeout       = 5 * time.Second
+	defaultCompletionTimeout   = 10 * time.Minute
+	providerConnectTimeout     = 10 * time.Second
 )
 
 // Message is one message in a chat completion conversation.
@@ -374,7 +373,6 @@ func defaultHTTPClient() *http.Client {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
-		ResponseHeaderTimeout: providerResponseHeadTimeout,
 	}}
 }
 

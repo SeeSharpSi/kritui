@@ -8,12 +8,22 @@ import (
 	"seesharpsi/kritui/llm"
 )
 
-templ Home(chatID string, chatURL string, messages []llm.Message, models []string, selectedModel string, defaultModel string, maxToolRounds int, tools []string, enabledTools []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, enabledAppendIDs []string, commandDefinitions []commands.Definition) {
+templ Home(chatID string, chatURL string, messages []llm.Message, models []string, selectedModel string, defaultModel string, maxToolRounds int, tools []string, enabledTools []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, enabledAppendIDs []string, completionRequestID string, completionStarted bool, commandDefinitions []commands.Definition) {
 	@Layout("Kritui") {
 		<main hx-history="false">
 			<section class="chat">
 				<div class="message-panel">
-					@MessageList(chatID, messages, false)
+					@MessageList(chatID, messages, false) {
+						if completionRequestID != "" {
+							if completionStarted {
+								@ActiveCompletion(chatID, completionRequestID, selectedModel, enabledTools)
+							} else {
+								@PendingCompletion(chatID, completionRequestID, selectedModel, enabledTools)
+							}
+						} else if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+							@CompletionError(chatID, "Completion was interrupted. Retry the completion.", selectedModel, enabledTools)
+						}
+					}
 					<div id="page-panel">
 						@SettingsPage(chatID, models, defaultModel, maxToolRounds, tools, defaultTools, promptAppends, false, false, "")
 						@HistoryPage(chatID)

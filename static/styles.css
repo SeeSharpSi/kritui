@@ -926,7 +926,7 @@ main {
                 padding: .7rem 0;
                 background: transparent;
 
-                &.htmx-request,
+                &.completion-active,
                 &.completion-failed {
                     display: block;
                 }

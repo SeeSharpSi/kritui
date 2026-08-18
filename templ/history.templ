@@ -21,6 +21,7 @@ templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
 	>
 		<div id="messages" class="message-thread">
 			@Messages(chatID, messages...)
+			{ children... }
 		</div>
 		if len(messages) == 0 {
 			<p class="chat-empty">begin a convo...</p>

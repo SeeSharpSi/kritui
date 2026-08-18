@@ -52,8 +52,8 @@ func TestNewConfiguresProviderDeadlines(t *testing.T) {
 	if transport.DialContext == nil {
 		t.Error("provider DialContext = nil, want connect deadline")
 	}
-	if transport.ResponseHeaderTimeout != providerResponseHeadTimeout {
-		t.Errorf("response header timeout = %s, want %s", transport.ResponseHeaderTimeout, providerResponseHeadTimeout)
+	if transport.ResponseHeaderTimeout != 0 {
+		t.Errorf("response header timeout = %s, want operation context deadline", transport.ResponseHeaderTimeout)
 	}
 	if client.modelsTimeout != defaultModelsTimeout {
 		t.Errorf("models timeout = %s, want %s", client.modelsTimeout, defaultModelsTimeout)
