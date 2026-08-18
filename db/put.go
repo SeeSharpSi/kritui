@@ -23,7 +23,18 @@ var (
 	ErrMessageNotFound = errors.New("message not found")
 	// ErrMessageNotEditable means an edit target is not a user message.
 	ErrMessageNotEditable = errors.New("message is not editable")
+	// ErrNothingToUndo means a chat has no active user turn.
+	ErrNothingToUndo = errors.New("nothing to undo")
+	// ErrNothingToRedo means a chat has no hidden user turn.
+	ErrNothingToRedo = errors.New("nothing to redo")
 )
+
+// UndoResult contains the newly active history and user message removed by an
+// undo operation.
+type UndoResult struct {
+	Messages []llm.Message
+	Message  llm.Message
+}
 
 // AllocateChat reserves a unique chat ID, stores options enabled by default
 // for new chats, and removes abandoned empty chats.
@@ -279,7 +290,7 @@ func ReplaceUserMessage(ctx context.Context, db databaseExecutor, chatID, messag
 		if err := executor.QueryRowContext(ctx, `
 			SELECT position, role
 			FROM messages
-			WHERE id = ? AND chat_id = ?
+			WHERE id = ? AND chat_id = ? AND undo_sequence IS NULL
 		`, messageID, chatID).Scan(&position, &role); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrMessageNotFound
@@ -309,6 +320,126 @@ func ReplaceUserMessage(ctx context.Context, db databaseExecutor, chatID, messag
 		}
 		return nil
 	})
+}
+
+// UndoLatestTurn hides the latest active user message and every active message
+// after it. Repeated calls create ordered groups for LIFO redo.
+func UndoLatestTurn(ctx context.Context, db *sql.DB, chatID int64) (UndoResult, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return UndoResult{}, fmt.Errorf("begin undo transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := reserveChat(ctx, tx, chatID); err != nil {
+		return UndoResult{}, err
+	}
+
+	var (
+		position int
+		message  = llm.Message{Role: "user"}
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, position, content
+		FROM messages
+		WHERE chat_id = ? AND role = 'user' AND undo_sequence IS NULL
+		ORDER BY position DESC
+		LIMIT 1
+	`, chatID).Scan(&message.ID, &position, &message.Content); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return UndoResult{}, ErrNothingToUndo
+		}
+		return UndoResult{}, fmt.Errorf("get message to undo: %w", err)
+	}
+
+	var sequence int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(undo_sequence), 0) + 1
+		FROM messages
+		WHERE chat_id = ?
+	`, chatID).Scan(&sequence); err != nil {
+		return UndoResult{}, fmt.Errorf("get undo sequence: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE messages
+		SET undo_sequence = ?
+		WHERE chat_id = ? AND position >= ? AND undo_sequence IS NULL
+	`, sequence, chatID, position); err != nil {
+		return UndoResult{}, fmt.Errorf("undo latest turn: %w", err)
+	}
+
+	snapshot, err := getMessageSnapshot(ctx, tx, chatID)
+	if err != nil {
+		return UndoResult{}, fmt.Errorf("reload messages after undo: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return UndoResult{}, fmt.Errorf("commit undo: %w", err)
+	}
+	return UndoResult{Messages: snapshot.Messages, Message: message}, nil
+}
+
+// RedoLatestTurn restores the most recently hidden undo group.
+func RedoLatestTurn(ctx context.Context, db *sql.DB, chatID int64) ([]llm.Message, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin redo transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := reserveChat(ctx, tx, chatID); err != nil {
+		return nil, err
+	}
+
+	var sequence sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT MAX(undo_sequence)
+		FROM messages
+		WHERE chat_id = ?
+	`, chatID).Scan(&sequence); err != nil {
+		return nil, fmt.Errorf("get redo sequence: %w", err)
+	}
+	if !sequence.Valid {
+		return nil, ErrNothingToRedo
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE messages
+		SET undo_sequence = NULL
+		WHERE chat_id = ? AND undo_sequence = ?
+	`, chatID, sequence.Int64); err != nil {
+		return nil, fmt.Errorf("redo latest turn: %w", err)
+	}
+
+	snapshot, err := getMessageSnapshot(ctx, tx, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("reload messages after redo: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit redo: %w", err)
+	}
+	return snapshot.Messages, nil
+}
+
+// DiscardUndoneMessages permanently removes a chat's hidden redo history.
+func DiscardUndoneMessages(ctx context.Context, db databaseExecutor, chatID int64) error {
+	if _, err := db.ExecContext(ctx, `DELETE FROM messages WHERE chat_id = ? AND undo_sequence IS NOT NULL`, chatID); err != nil {
+		return fmt.Errorf("discard undone messages: %w", err)
+	}
+	return nil
+}
+
+func reserveChat(ctx context.Context, db databaseExecutor, chatID int64) error {
+	result, err := db.ExecContext(ctx, `UPDATE chats SET id = id WHERE id = ?`, chatID)
+	if err != nil {
+		return fmt.Errorf("reserve chat history: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("reserve chat history rows affected: %w", err)
+	}
+	if affected == 0 {
+		return ErrChatNotFound
+	}
+	return nil
 }
 
 func executeAtomically(ctx context.Context, db databaseExecutor, operation func(databaseExecutor) error) error {
@@ -368,6 +499,9 @@ func AppendCompletion(ctx context.Context, db *sql.DB, chatID int64, expected Me
 	}
 	if current.version != expected.version {
 		return ErrConversationConflict
+	}
+	if err := DiscardUndoneMessages(ctx, tx, chatID); err != nil {
+		return err
 	}
 
 	nextPosition := current.version.lastPosition + 1

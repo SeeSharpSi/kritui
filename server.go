@@ -15,9 +15,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a-h/templ"
+
 	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
+	"seesharpsi/kritui/templ"
 	"seesharpsi/kritui/tools"
 
 	_ "modernc.org/sqlite"
@@ -108,6 +111,30 @@ func main() {
 func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 	return commands.NewRegistry(
 		commands.NewRedirectCommand("new", "Start a new chat", "/"),
+		commands.NewMessageHistoryCommand("undo", "Undo the last message", func(ctx context.Context, chatID int64) (templ.Component, error) {
+			result, err := kritui_db.UndoLatestTurn(ctx, database, chatID)
+			switch {
+			case errors.Is(err, kritui_db.ErrNothingToUndo):
+				return nil, &commands.UserError{Status: http.StatusConflict, Message: "Nothing to undo."}
+			case errors.Is(err, kritui_db.ErrChatNotFound):
+				return nil, &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
+			case err != nil:
+				return nil, fmt.Errorf("undo current chat: %w", err)
+			}
+			return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), result.Messages, result.Message.Content), nil
+		}),
+		commands.NewMessageHistoryCommand("redo", "Redo the last undone message", func(ctx context.Context, chatID int64) (templ.Component, error) {
+			messages, err := kritui_db.RedoLatestTurn(ctx, database, chatID)
+			switch {
+			case errors.Is(err, kritui_db.ErrNothingToRedo):
+				return nil, &commands.UserError{Status: http.StatusConflict, Message: "Nothing to redo."}
+			case errors.Is(err, kritui_db.ErrChatNotFound):
+				return nil, &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
+			case err != nil:
+				return nil, fmt.Errorf("redo current chat: %w", err)
+			}
+			return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), messages, ""), nil
+		}),
 		commands.NewPanelCommand("history", "Open chat history", "history-page"),
 		commands.NewPanelCommand("settings", "Open settings", "settings-page"),
 		commands.NewRenameCommand(func(ctx context.Context, chatID int64, title string) error {
@@ -276,6 +303,9 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 		) CHECK (prompt_appends IS NULL OR role = 'user')`)
 	},
 	migrateNormalizedDatabaseStorage,
+	func(ctx context.Context, tx *sql.Tx) error {
+		return addColumnIfMissing(ctx, tx, "messages", "undo_sequence", `INTEGER CHECK (undo_sequence IS NULL OR undo_sequence > 0)`)
+	},
 }
 
 type legacyChatCollections struct {

@@ -420,6 +420,236 @@ func TestReplaceUserMessageRejectsInvalidTargets(t *testing.T) {
 	}
 }
 
+func TestUndoRedoLatestTurnPreservesStoredMessages(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 0, llm.Message{Role: "user", Content: "earlier"}); err != nil {
+		t.Fatalf("insert earlier user: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 1, llm.Message{Role: "assistant", Content: "earlier answer"}); err != nil {
+		t.Fatalf("insert earlier assistant: %v", err)
+	}
+	latestID, err := InsertMessage(context.Background(), database, 1, 2, llm.Message{
+		Role:              "user",
+		Content:           "latest",
+		PromptAppendTexts: []string{"Research carefully."},
+	})
+	if err != nil {
+		t.Fatalf("insert latest user: %v", err)
+	}
+	metadata, err := llm.NewResponsesProviderMetadata([]json.RawMessage{json.RawMessage(`{"type":"reasoning","id":"reasoning-1"}`)})
+	if err != nil {
+		t.Fatalf("create provider metadata: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 3, llm.Message{
+		Role: "assistant",
+		ToolCalls: []llm.ToolCall{{
+			ID: "call-1", Type: "function", Function: llm.FunctionCall{Name: "lookup", Arguments: `{"key":"value"}`},
+		}},
+		ProviderMetadata: metadata,
+	}); err != nil {
+		t.Fatalf("insert assistant tool call: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 4, llm.Message{Role: "tool", Content: "result", ToolCallID: "call-1"}); err != nil {
+		t.Fatalf("insert tool result: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 5, llm.Message{Role: "assistant", Content: "latest answer"}); err != nil {
+		t.Fatalf("insert latest assistant: %v", err)
+	}
+
+	result, err := UndoLatestTurn(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("UndoLatestTurn() error: %v", err)
+	}
+	if result.Message.ID != latestID || result.Message.Content != "latest" {
+		t.Errorf("undone message = %#v, want latest message %d", result.Message, latestID)
+	}
+	if len(result.Messages) != 2 || result.Messages[1].Content != "earlier answer" {
+		t.Fatalf("active messages after undo = %#v", result.Messages)
+	}
+	var hidden, toolCalls, appends, outputs int
+	if err := database.QueryRow(`
+		SELECT
+			(SELECT COUNT(*) FROM messages WHERE chat_id = 1 AND undo_sequence IS NOT NULL),
+			(SELECT COUNT(*) FROM message_tool_calls),
+			(SELECT COUNT(*) FROM message_prompt_appends),
+			(SELECT COUNT(*) FROM message_provider_outputs)
+	`).Scan(&hidden, &toolCalls, &appends, &outputs); err != nil {
+		t.Fatalf("query hidden records: %v", err)
+	}
+	if hidden != 4 || toolCalls != 1 || appends != 1 || outputs != 1 {
+		t.Errorf("hidden records = messages %d, calls %d, appends %d, outputs %d; want 4, 1, 1, 1", hidden, toolCalls, appends, outputs)
+	}
+	if err := ReplaceUserMessage(context.Background(), database, 1, latestID, llm.Message{Role: "user", Content: "hidden edit"}); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("ReplaceUserMessage(hidden) error = %v, want ErrMessageNotFound", err)
+	}
+
+	messages, err := RedoLatestTurn(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("RedoLatestTurn() error: %v", err)
+	}
+	if len(messages) != 6 {
+		t.Fatalf("message count after redo = %d, want 6: %#v", len(messages), messages)
+	}
+	if messages[2].ID != latestID || !slices.Equal(messages[2].PromptAppendTexts, []string{"Research carefully."}) {
+		t.Errorf("restored user message = %#v", messages[2])
+	}
+	if len(messages[3].ToolCalls) != 1 || messages[3].ToolCalls[0].ID != "call-1" || len(messages[3].ProviderMetadata.ResponsesOutput()) != 1 {
+		t.Errorf("restored assistant message = %#v", messages[3])
+	}
+	if messages[4].ToolCallID != "call-1" || messages[5].Content != "latest answer" {
+		t.Errorf("restored completion tail = %#v", messages[4:])
+	}
+}
+
+func TestUndoRedoLatestTurnUsesLIFOOrder(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	for position, message := range []llm.Message{
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "first answer"},
+		{Role: "user", Content: "second"},
+		{Role: "assistant", Content: "second answer"},
+		{Role: "user", Content: "third"},
+		{Role: "assistant", Content: "third answer"},
+	} {
+		if _, err := InsertMessage(context.Background(), database, 1, position, message); err != nil {
+			t.Fatalf("insert message %d: %v", position, err)
+		}
+	}
+
+	if _, err := UndoLatestTurn(context.Background(), database, 1); err != nil {
+		t.Fatalf("undo third turn: %v", err)
+	}
+	secondUndo, err := UndoLatestTurn(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("undo second turn: %v", err)
+	}
+	if secondUndo.Message.Content != "second" || len(secondUndo.Messages) != 2 {
+		t.Errorf("second undo = %#v", secondUndo)
+	}
+	var secondSequence, thirdSequence int
+	if err := database.QueryRow(`
+		SELECT
+			(SELECT undo_sequence FROM messages WHERE chat_id = 1 AND position = 2),
+			(SELECT undo_sequence FROM messages WHERE chat_id = 1 AND position = 4)
+	`).Scan(&secondSequence, &thirdSequence); err != nil {
+		t.Fatalf("query undo sequences: %v", err)
+	}
+	if secondSequence != 2 || thirdSequence != 1 {
+		t.Errorf("undo sequences = second %d, third %d; want 2, 1", secondSequence, thirdSequence)
+	}
+
+	messages, err := RedoLatestTurn(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("redo second turn: %v", err)
+	}
+	if len(messages) != 4 || messages[2].Content != "second" {
+		t.Errorf("first redo messages = %#v", messages)
+	}
+	messages, err = RedoLatestTurn(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("redo third turn: %v", err)
+	}
+	if len(messages) != 6 || messages[4].Content != "third" {
+		t.Errorf("second redo messages = %#v", messages)
+	}
+}
+
+func TestUndoRedoLatestTurnRejectsUnavailableChanges(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES (1, 0, 'assistant', 'answer');
+	`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+
+	if _, err := UndoLatestTurn(context.Background(), database, 1); !errors.Is(err, ErrNothingToUndo) {
+		t.Errorf("UndoLatestTurn() error = %v, want ErrNothingToUndo", err)
+	}
+	if _, err := RedoLatestTurn(context.Background(), database, 1); !errors.Is(err, ErrNothingToRedo) {
+		t.Errorf("RedoLatestTurn() error = %v, want ErrNothingToRedo", err)
+	}
+	if _, err := UndoLatestTurn(context.Background(), database, 2); !errors.Is(err, ErrChatNotFound) {
+		t.Errorf("UndoLatestTurn(missing chat) error = %v, want ErrChatNotFound", err)
+	}
+	if _, err := RedoLatestTurn(context.Background(), database, 2); !errors.Is(err, ErrChatNotFound) {
+		t.Errorf("RedoLatestTurn(missing chat) error = %v, want ErrChatNotFound", err)
+	}
+}
+
+func TestUndoRedoLatestTurnInvalidateSnapshots(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	insertMessagesTestUser(t, database)
+	snapshot, err := GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get original snapshot: %v", err)
+	}
+	if _, err := UndoLatestTurn(context.Background(), database, 1); err != nil {
+		t.Fatalf("undo turn: %v", err)
+	}
+	if err := AppendCompletion(context.Background(), database, 1, snapshot, []llm.Message{{Role: "assistant", Content: "stale after undo"}}); !errors.Is(err, ErrConversationConflict) {
+		t.Errorf("AppendCompletion(after undo) error = %v, want conflict", err)
+	}
+
+	undoneSnapshot, err := GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get undone snapshot: %v", err)
+	}
+	if _, err := RedoLatestTurn(context.Background(), database, 1); err != nil {
+		t.Fatalf("redo turn: %v", err)
+	}
+	if err := AppendCompletion(context.Background(), database, 1, undoneSnapshot, []llm.Message{{Role: "assistant", Content: "stale after redo"}}); !errors.Is(err, ErrConversationConflict) {
+		t.Errorf("AppendCompletion(after redo) error = %v, want conflict", err)
+	}
+}
+
+func TestAppendCompletionDiscardsRedoHistory(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', 'first'),
+			(1, 1, 'assistant', 'first answer'),
+			(1, 2, 'user', 'second'),
+			(1, 3, 'assistant', 'second answer');
+	`); err != nil {
+		t.Fatalf("insert messages: %v", err)
+	}
+	if _, err := UndoLatestTurn(context.Background(), database, 1); err != nil {
+		t.Fatalf("undo second turn: %v", err)
+	}
+	snapshot, err := GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get active snapshot: %v", err)
+	}
+	if err := AppendCompletion(context.Background(), database, 1, snapshot, []llm.Message{{Role: "assistant", Content: "replacement"}}); err != nil {
+		t.Fatalf("AppendCompletion() error: %v", err)
+	}
+	var hidden int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE undo_sequence IS NOT NULL`).Scan(&hidden); err != nil {
+		t.Fatalf("count hidden messages: %v", err)
+	}
+	if hidden != 0 {
+		t.Errorf("hidden message count = %d, want 0", hidden)
+	}
+	if _, err := RedoLatestTurn(context.Background(), database, 1); !errors.Is(err, ErrNothingToRedo) {
+		t.Errorf("RedoLatestTurn() error = %v, want ErrNothingToRedo", err)
+	}
+	messages, err := GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("GetMessages() error: %v", err)
+	}
+	if len(messages) != 3 || messages[2].Content != "replacement" {
+		t.Errorf("messages after replacement = %#v", messages)
+	}
+}
+
 func openSharedMessagesTestDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "data.db")

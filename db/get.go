@@ -267,7 +267,7 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, position, role, content, model, total_tokens, cost, tool_call_id
 		FROM messages
-		WHERE chat_id = ?
+		WHERE chat_id = ? AND undo_sequence IS NULL
 		ORDER BY position, id
 	`, chatID)
 	if err != nil {
@@ -355,7 +355,7 @@ func loadMessageToolCalls(ctx context.Context, db messageQueryer, chatID int64, 
 		SELECT calls.message_id, calls.position, calls.call_id, calls.call_type, calls.function_name, calls.arguments
 		FROM message_tool_calls AS calls
 		JOIN messages ON messages.id = calls.message_id
-		WHERE messages.chat_id = ?
+		WHERE messages.chat_id = ? AND messages.undo_sequence IS NULL
 		ORDER BY messages.position, messages.id, calls.position
 	`, chatID)
 	if err != nil {
@@ -387,7 +387,7 @@ func loadMessagePromptAppends(ctx context.Context, db messageQueryer, chatID int
 		SELECT appends.message_id, appends.position, appends.text
 		FROM message_prompt_appends AS appends
 		JOIN messages ON messages.id = appends.message_id
-		WHERE messages.chat_id = ?
+		WHERE messages.chat_id = ? AND messages.undo_sequence IS NULL
 		ORDER BY messages.position, messages.id, appends.position
 	`, chatID)
 	if err != nil {
@@ -419,7 +419,7 @@ func loadMessageProviderOutputs(ctx context.Context, db messageQueryer, chatID i
 		SELECT outputs.message_id, outputs.position, outputs.payload
 		FROM message_provider_outputs AS outputs
 		JOIN messages ON messages.id = outputs.message_id
-		WHERE messages.chat_id = ?
+		WHERE messages.chat_id = ? AND messages.undo_sequence IS NULL
 		ORDER BY messages.position, messages.id, outputs.position
 	`, chatID)
 	if err != nil {

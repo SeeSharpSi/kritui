@@ -236,7 +236,7 @@ templ CompletedMessage(chatID string, messages ...llm.Message) {
 templ PendingSubmission(chatID string, requestID string, message llm.Message, model string, tools []string) {
 	@Messages(chatID, message)
 	@PendingCompletion(chatID, requestID, model, tools)
-	@MessageInput(true)
+	@MessageInput("", true)
 }
 
 templ EditedSubmission(chatID string, requestID string, messages []llm.Message, model string, tools []string) {
@@ -318,10 +318,15 @@ templ CompletionRetry(chatID string, model string, tools []string) {
 	</form>
 }
 
-templ MessageInput(outOfBand bool) {
+templ MessageHistoryResult(chatID string, messages []llm.Message, input string) {
+	@MessageList(chatID, messages, false)
+	@MessageInput(input, true)
+}
+
+templ MessageInput(value string, outOfBand bool) {
 	if outOfBand {
-		<input id="message" name="message" placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" hx-swap-oob="outerHTML"/>
+		<input id="message" name="message" value={ value } placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" hx-swap-oob="outerHTML"/>
 	} else {
-		<input id="message" name="message" placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" autofocus/>
+		<input id="message" name="message" value={ value } placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" autofocus/>
 	}
 }

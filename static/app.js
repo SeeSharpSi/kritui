@@ -432,7 +432,9 @@ document.addEventListener('htmx:afterRequest', syncPanelSendButton);
 document.addEventListener('kritui:command', (event) => {
     const messageInput = document.querySelector('#message');
     if (messageInput) {
-        messageInput.value = '';
+        if (!event.detail?.preserveInput) {
+            messageInput.value = '';
+        }
         closeCommandAutocomplete(messageInput);
     }
 

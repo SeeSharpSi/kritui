@@ -349,7 +349,7 @@ func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *
 		err := database.QueryRowContext(r.Context(), `
 			SELECT role
 			FROM messages
-			WHERE chat_id = ?
+			WHERE chat_id = ? AND undo_sequence IS NULL
 			ORDER BY position DESC
 			LIMIT 1
 		`, request.chatID).Scan(&role)
@@ -448,6 +448,9 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	}
 
 	if err := kritui_db.UpsertChat(ctx, tx, chatID, normalizeChatTitle(message), tools, kritui_db.PromptAppendIDs(selectedAppends)); err != nil {
+		return persistedUserMessage{}, err
+	}
+	if err := kritui_db.DiscardUndoneMessages(ctx, tx, chatID); err != nil {
 		return persistedUserMessage{}, err
 	}
 

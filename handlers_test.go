@@ -382,6 +382,10 @@ func TestHomeHandlerRendersCommandAutocomplete(t *testing.T) {
 		`id="command-option-new"`,
 		`data-command-name="new"`,
 		`>Start a new chat</span>`,
+		`id="command-option-undo"`,
+		`>Undo the last message</span>`,
+		`id="command-option-redo"`,
+		`>Redo the last undone message</span>`,
 		`id="command-option-history"`,
 		`>Open chat history</span>`,
 		`id="command-option-settings"`,
@@ -394,7 +398,7 @@ func TestHomeHandlerRendersCommandAutocomplete(t *testing.T) {
 		t.Errorf("required-argument command count = %d, want 1", count)
 	}
 	previous := -1
-	for _, name := range []string{"new", "history", "settings", "rename"} {
+	for _, name := range []string{"new", "undo", "redo", "history", "settings", "rename"} {
 		index := strings.Index(body, `id="command-option-`+name+`"`)
 		if index <= previous {
 			t.Fatalf("command %q index = %d after %d; want registry order", name, index, previous)
@@ -464,6 +468,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, string(script), `activateCommandOption(input, selected)`)
 	requireContains(t, string(script), `option.dataset.commandRequiresArguments === 'true'`)
 	requireContains(t, string(script), `input.form?.requestSubmit()`)
+	requireContains(t, string(script), `if (!event.detail?.preserveInput)`)
 	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger")
 }
 
@@ -699,6 +704,116 @@ func TestMessageHandlerRenamesCurrentChatCommand(t *testing.T) {
 	}
 }
 
+func TestMessageHandlerUndoesAndRedoesLatestTurn(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, title) VALUES (1, 'Conversation');
+		INSERT INTO messages (chat_id, position, role, content, model) VALUES
+			(1, 0, 'user', 'Earlier question', NULL),
+			(1, 1, 'assistant', 'Earlier answer', 'model-a'),
+			(1, 2, 'user', 'Latest <question>', NULL),
+			(1, 3, 'assistant', 'Latest answer', 'model-b');
+	`); err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
+
+	undo := postForm(t, handler, "/messages?chat=1", url.Values{"message": {"/undo"}})
+	if undo.Code != http.StatusOK {
+		t.Fatalf("undo status = %d, want %d; body = %q", undo.Code, http.StatusOK, undo.Body.String())
+	}
+	if got := undo.Header().Get("HX-Retarget"); got != "#message-list" {
+		t.Errorf("undo HX-Retarget = %q", got)
+	}
+	if got := undo.Header().Get("HX-Reswap"); got != "outerHTML" {
+		t.Errorf("undo HX-Reswap = %q", got)
+	}
+	if got := undo.Header().Get("HX-Trigger-After-Settle"); got != `{"kritui:command":{"preserveInput":true}}` {
+		t.Errorf("undo HX-Trigger-After-Settle = %q", got)
+	}
+	requireContains(t, undo.Body.String(),
+		`id="message-list"`,
+		"Earlier question",
+		"Earlier answer",
+		`id="message"`,
+		`value="Latest &lt;question&gt;"`,
+		`hx-swap-oob="outerHTML"`,
+	)
+	requireNotContains(t, undo.Body.String(), "Latest answer")
+	active, err := kritui_db.GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get messages after undo: %v", err)
+	}
+	if len(active) != 2 || active[1].Content != "Earlier answer" {
+		t.Errorf("active messages after undo = %#v", active)
+	}
+	var hidden int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE undo_sequence IS NOT NULL`).Scan(&hidden); err != nil {
+		t.Fatalf("count hidden messages: %v", err)
+	}
+	if hidden != 2 {
+		t.Errorf("hidden messages = %d, want 2", hidden)
+	}
+
+	redo := postForm(t, handler, "/messages?chat=1", url.Values{"message": {"/redo"}})
+	if redo.Code != http.StatusOK {
+		t.Fatalf("redo status = %d, want %d; body = %q", redo.Code, http.StatusOK, redo.Body.String())
+	}
+	requireContains(t, redo.Body.String(), "Latest &lt;question&gt;", "Latest answer", `id="message"`, `value=""`)
+	active, err = kritui_db.GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get messages after redo: %v", err)
+	}
+	if len(active) != 4 || active[3].Content != "Latest answer" {
+		t.Errorf("active messages after redo = %#v", active)
+	}
+}
+
+func TestMessageHandlerNewMessageDiscardsRedoHistory(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "test-model")
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, title) VALUES (1, 'Conversation');
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', 'Original question'),
+			(1, 1, 'assistant', 'Original answer');
+	`); err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+	if _, err := kritui_db.UndoLatestTurn(context.Background(), database, 1); err != nil {
+		t.Fatalf("undo original turn: %v", err)
+	}
+	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
+
+	response := postForm(t, handler, "/messages?chat=1", url.Values{
+		"message": {"Replacement question"},
+		"model":   {"test-model"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("replacement status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	messages, err := kritui_db.GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get replacement messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "Replacement question" {
+		t.Errorf("replacement messages = %#v", messages)
+	}
+	var hidden int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE undo_sequence IS NOT NULL`).Scan(&hidden); err != nil {
+		t.Fatalf("count hidden messages: %v", err)
+	}
+	if hidden != 0 {
+		t.Errorf("hidden messages = %d, want 0", hidden)
+	}
+
+	redo := postForm(t, handler, "/messages?chat=1", url.Values{"message": {"/redo"}})
+	if redo.Code != http.StatusConflict {
+		t.Fatalf("redo status = %d, want %d; body = %q", redo.Code, http.StatusConflict, redo.Body.String())
+	}
+	requireContains(t, redo.Body.String(), "Nothing to redo.")
+}
+
 func TestMessageHandlerRejectsInvalidSlashCommands(t *testing.T) {
 	database := openTestDatabase(t)
 	chatID, err := kritui_db.InsertChat(context.Background(), database, "Existing", nil, nil)
@@ -716,8 +831,13 @@ func TestMessageHandlerRejectsInvalidSlashCommands(t *testing.T) {
 		{name: "unknown", chatID: chatID, message: "/missing", status: http.StatusBadRequest, want: "Unknown command /missing."},
 		{name: "malformed", chatID: chatID, message: "/History", status: http.StatusBadRequest, want: "Invalid slash command."},
 		{name: "navigation arguments", chatID: chatID, message: "/history extra", status: http.StatusBadRequest, want: "/history does not accept arguments."},
+		{name: "undo arguments", chatID: chatID, message: "/undo extra", status: http.StatusBadRequest, want: "/undo does not accept arguments."},
 		{name: "rename title", chatID: chatID, message: "/rename", status: http.StatusBadRequest, want: "Usage: /rename &lt;title&gt;."},
 		{name: "missing chat", chatID: chatID + 1, message: "/rename New title", status: http.StatusNotFound, want: "Chat not found."},
+		{name: "nothing to undo", chatID: chatID, message: "/undo", status: http.StatusConflict, want: "Nothing to undo."},
+		{name: "nothing to redo", chatID: chatID, message: "/redo", status: http.StatusConflict, want: "Nothing to redo."},
+		{name: "undo missing chat", chatID: chatID + 1, message: "/undo", status: http.StatusNotFound, want: "Chat not found."},
+		{name: "redo missing chat", chatID: chatID + 1, message: "/redo", status: http.StatusNotFound, want: "Chat not found."},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -759,6 +879,27 @@ func TestMessageHandlerRequiresSlashAsFirstCharacter(t *testing.T) {
 	if content != "/new" {
 		t.Errorf("stored content = %q, want /new", content)
 	}
+}
+
+func TestMessageRetryHandlerIgnoresUndoneUserMessage(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES (1, 0, 'user', 'undone');
+	`); err != nil {
+		t.Fatalf("insert user message: %v", err)
+	}
+	if _, err := kritui_db.UndoLatestTurn(context.Background(), database, 1); err != nil {
+		t.Fatalf("undo user message: %v", err)
+	}
+
+	response := postForm(t, messageRetryHandler(database, newTestToolRegistry(t), newToolCallStore()), "/messages/retry?chat=1", url.Values{
+		"model": {"test-model"},
+	})
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusConflict, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "No message is waiting for completion.")
 }
 
 func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
@@ -3512,6 +3653,46 @@ func TestMigrateDatabaseHistoricalSchemas(t *testing.T) {
 			}
 			assertMigratedDatabase(t, database)
 		})
+	}
+}
+
+func TestMigrateDatabaseAddsUndoSequence(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	if _, err := database.Exec(`
+		CREATE TABLE messages (
+			id INTEGER PRIMARY KEY,
+			chat_id INTEGER NOT NULL,
+			position INTEGER NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT ''
+		) STRICT;
+		INSERT INTO messages (chat_id, position, role, content) VALUES (1, 0, 'user', 'existing');
+		PRAGMA user_version = 8;
+	`); err != nil {
+		t.Fatalf("initialize version eight database: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	var version, columns int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'undo_sequence'`).Scan(&columns); err != nil {
+		t.Fatalf("inspect undo sequence column: %v", err)
+	}
+	var sequence sql.NullInt64
+	if err := database.QueryRow(`SELECT undo_sequence FROM messages WHERE id = 1`).Scan(&sequence); err != nil {
+		t.Fatalf("read existing message undo sequence: %v", err)
+	}
+	if version != len(databaseMigrations) || columns != 1 || sequence.Valid {
+		t.Errorf("migrated database = version %d, columns %d, sequence %#v", version, columns, sequence)
 	}
 }
 

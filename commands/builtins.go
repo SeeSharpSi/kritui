@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/a-h/templ"
 )
 
 const commandEvent = "kritui:command"
@@ -111,21 +113,77 @@ func (c *renameCommand) validate() error {
 	return nil
 }
 
+// MessageHistoryFunc changes one chat's visible history and returns its
+// server-rendered replacement.
+type MessageHistoryFunc func(ctx context.Context, chatID int64) (templ.Component, error)
+
+type messageHistoryCommand struct {
+	definition Definition
+	change     MessageHistoryFunc
+}
+
+// NewMessageHistoryCommand creates an argument-free command that replaces the
+// current message list after changing stored history.
+func NewMessageHistoryCommand(name, description string, change MessageHistoryFunc) Command {
+	return &messageHistoryCommand{
+		definition: Definition{Name: name, Description: description},
+		change:     change,
+	}
+}
+
+func (c *messageHistoryCommand) Definition() Definition {
+	return c.definition
+}
+
+func (c *messageHistoryCommand) Execute(ctx context.Context, invocation Invocation) (Result, error) {
+	if invocation.Arguments != "" {
+		return Result{}, noArgumentsError(invocation.Name)
+	}
+	body, err := c.change(ctx, invocation.ChatID)
+	if err != nil {
+		return Result{}, err
+	}
+	trigger, err := encodeCommandEvent(map[string]any{"preserveInput": true})
+	if err != nil {
+		return Result{}, err
+	}
+	header := make(http.Header)
+	header.Set("HX-Retarget", "#message-list")
+	header.Set("HX-Reswap", "outerHTML")
+	header.Set("HX-Trigger-After-Settle", trigger)
+	return Result{Status: http.StatusOK, Header: header, Body: body}, nil
+}
+
+func (c *messageHistoryCommand) validate() error {
+	if c.change == nil {
+		return errors.New("message history function is required")
+	}
+	return nil
+}
+
 func completedResult(panelID string) (Result, error) {
-	detail := map[string]string{}
+	detail := map[string]any{}
 	if panelID != "" {
 		detail["panel"] = panelID
 	}
-	trigger, err := json.Marshal(map[string]any{commandEvent: detail})
+	trigger, err := encodeCommandEvent(detail)
 	if err != nil {
-		return Result{}, fmt.Errorf("commands: encode completion event: %w", err)
+		return Result{}, err
 	}
 	header := make(http.Header)
-	header.Set("HX-Trigger", string(trigger))
+	header.Set("HX-Trigger", trigger)
 	return Result{
 		Status: http.StatusNoContent,
 		Header: header,
 	}, nil
+}
+
+func encodeCommandEvent(detail map[string]any) (string, error) {
+	trigger, err := json.Marshal(map[string]any{commandEvent: detail})
+	if err != nil {
+		return "", fmt.Errorf("commands: encode completion event: %w", err)
+	}
+	return string(trigger), nil
 }
 
 func noArgumentsError(name string) error {

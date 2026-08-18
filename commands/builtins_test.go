@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+
+	"github.com/a-h/templ"
 )
 
 func TestRedirectCommand(t *testing.T) {
@@ -68,6 +70,40 @@ func TestRenameCommand(t *testing.T) {
 	}
 }
 
+func TestMessageHistoryCommand(t *testing.T) {
+	var gotChatID int64
+	command := NewMessageHistoryCommand("undo", "Undo", func(_ context.Context, chatID int64) (templ.Component, error) {
+		gotChatID = chatID
+		return templ.Raw("changed"), nil
+	})
+
+	result, err := command.Execute(context.Background(), Invocation{Name: "undo", ChatID: 7})
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if gotChatID != 7 {
+		t.Errorf("chat ID = %d, want 7", gotChatID)
+	}
+	if result.Status != http.StatusOK || result.Body == nil {
+		t.Errorf("result = %#v, want 200 with body", result)
+	}
+	if got := result.Header.Get("HX-Retarget"); got != "#message-list" {
+		t.Errorf("HX-Retarget = %q", got)
+	}
+	if got := result.Header.Get("HX-Reswap"); got != "outerHTML" {
+		t.Errorf("HX-Reswap = %q", got)
+	}
+	if got := result.Header.Get("HX-Trigger-After-Settle"); got != `{"kritui:command":{"preserveInput":true}}` {
+		t.Errorf("HX-Trigger-After-Settle = %q", got)
+	}
+
+	_, err = command.Execute(context.Background(), Invocation{Name: "undo", Arguments: "extra"})
+	var userError *UserError
+	if !errors.As(err, &userError) || userError.Status != http.StatusBadRequest {
+		t.Fatalf("Execute(arguments) error = %v, want bad-request UserError", err)
+	}
+}
+
 func TestRegistryValidatesBuiltinDependencies(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -76,6 +112,7 @@ func TestRegistryValidatesBuiltinDependencies(t *testing.T) {
 		{name: "redirect location", command: NewRedirectCommand("new", "New", "")},
 		{name: "panel ID", command: NewPanelCommand("history", "History", "")},
 		{name: "rename function", command: NewRenameCommand(nil)},
+		{name: "message history function", command: NewMessageHistoryCommand("undo", "Undo", nil)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS messages (
     total_tokens INTEGER,
     cost REAL,
     tool_call_id TEXT,
+    undo_sequence INTEGER CHECK (undo_sequence IS NULL OR undo_sequence > 0),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (chat_id, position),
     UNIQUE (id, role),
@@ -126,4 +127,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
