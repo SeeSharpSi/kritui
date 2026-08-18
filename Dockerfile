@@ -4,6 +4,8 @@ FROM golang:1.25.3-alpine AS build
 
 LABEL io.github.seesharpsi.kritui="true"
 
+RUN apk add --no-cache git
+
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -39,6 +41,20 @@ LABEL io.github.seesharpsi.kritui="true" \
 USER root
 
 COPY --from=build --chown=0:0 --chmod=0555 /out/kritui /usr/local/bin/kritui
+COPY --from=build /lib/ld-musl-*.so.1 /lib/
+COPY --from=build /lib/ /opt/git/lib/
+COPY --from=build /usr/lib/ /opt/git/lib/
+COPY --from=build /usr/bin/git /opt/git/bin/git
+COPY --from=build /usr/libexec/git-core/ /opt/git/libexec/git-core/
+COPY --from=build /usr/share/git-core/ /opt/git/share/git-core/
+
+COPY --chmod=0555 --chown=0:0 <<'EOF' /usr/local/bin/git
+#!/bin/sh
+export LD_LIBRARY_PATH=/opt/git/lib
+export GIT_EXEC_PATH=/opt/git/libexec/git-core
+export GIT_TEMPLATE_DIR=/opt/git/share/git-core/templates
+exec /opt/git/bin/git "$@"
+EOF
 
 COPY --chown=0:0 --chmod=0444 <<'EOF' /usr/local/searxng/kritui-settings.yml
 use_default_settings:
@@ -143,7 +159,9 @@ fi
 exit "$status"
 EOF
 
-RUN mkdir -p /data && chown 977:977 /data
+RUN /usr/local/bin/git --version \
+    && mkdir -p /data \
+    && chown 977:977 /data
 
 ENV SEARXNG_SETTINGS_PATH=/usr/local/searxng/kritui-settings.yml \
     SEARXNG_URL=http://127.0.0.1:8081 \

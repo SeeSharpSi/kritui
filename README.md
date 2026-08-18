@@ -36,7 +36,7 @@ docker run --rm \
   kritui:latest
 ```
 
-The named volume persists the SQLite database. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`.
+The named volume persists the SQLite database. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`. It also includes isolated Git runtime files required by the optional Git tool capability.
 
 ## Container Publishing
 
