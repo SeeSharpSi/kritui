@@ -325,6 +325,8 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		"Earlier question",
 		"Earlier answer",
+		`class="message-copy-button"`,
+		`aria-label="Copy message"`,
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
@@ -341,6 +343,9 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	)
 	if count := strings.Count(response.Body.String(), `class="message-edit-toggle"`); count != 1 {
 		t.Errorf("message edit button count = %d, want 1", count)
+	}
+	if count := strings.Count(response.Body.String(), `class="message-copy-button"`); count != 1 {
+		t.Errorf("message copy button count = %d, want 1", count)
 	}
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>", `role="button"`, `hx-replace-url`)
 }
@@ -2172,6 +2177,7 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		"Hello",
 		"selected-model",
+		`class="message-copy-button"`,
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/1/messages/1"`,
 		`hx-post="/messages/complete?chat=1"`,

@@ -829,6 +829,7 @@ main {
                     }
                 }
 
+                .message-copy-button,
                 .message-edit-toggle,
                 .message-edit-cancel {
                     position: absolute;
@@ -857,12 +858,39 @@ main {
                     }
                 }
 
+                .message-copy-button {
+                    right: 2rem;
+
+                    .message-copy-confirmation {
+                        display: none;
+                    }
+
+                    &.copied {
+                        color: var(--color-text);
+                        opacity: 1;
+
+                        .message-copy-default {
+                            display: none;
+                        }
+
+                        .message-copy-confirmation {
+                            display: grid;
+                        }
+                    }
+
+                    &.copy-failed {
+                        color: var(--color-error);
+                        opacity: 1;
+                    }
+                }
+
                 .message-edit-cancel {
                     display: none;
                 }
 
                 &.editing {
                     >.message-content,
+                    >.message-copy-button,
                     >.message-edit-toggle {
                         display: none;
                     }
@@ -870,6 +898,23 @@ main {
                     >.message-edit-form,
                     >.message-edit-cancel {
                         display: grid;
+                    }
+                }
+
+                @media (pointer: coarse) {
+                    &:has(.message-edit-toggle) {
+                        margin-bottom: 3rem;
+                    }
+
+                    .message-copy-button,
+                    .message-edit-toggle,
+                    .message-edit-cancel {
+                        width: 2.75rem;
+                        height: 2.75rem;
+                    }
+
+                    .message-copy-button {
+                        right: 2.75rem;
                     }
                 }
             }

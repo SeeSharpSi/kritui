@@ -400,6 +400,61 @@ function closeMessageEditor(message, restoreFocus = true) {
     }
 }
 
+const messageCopyResetTimers = new WeakMap();
+
+async function copyMessage(button) {
+    const text = button.closest('.message.user')?.querySelector('.message-content')?.textContent;
+    if (text === undefined) {
+        return;
+    }
+
+    let copied = false;
+    if (navigator.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            copied = true;
+        } catch {
+            // Fall back for browsers that expose Clipboard API but deny access.
+        }
+    }
+
+    if (!copied) {
+        const activeElement = document.activeElement;
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.readOnly = true;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        textarea.style.pointerEvents = 'none';
+        document.body.append(textarea);
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+        try {
+            copied = document.execCommand('copy');
+        } catch {
+            copied = false;
+        }
+        textarea.remove();
+        if (activeElement instanceof HTMLElement) {
+            activeElement.focus({ preventScroll: true });
+        }
+    }
+
+    const label = copied ? 'Copied' : 'Copy failed';
+    button.classList.remove('copied', 'copy-failed');
+    button.classList.add(copied ? 'copied' : 'copy-failed');
+    button.setAttribute('aria-label', label);
+    button.title = label;
+
+    clearTimeout(messageCopyResetTimers.get(button));
+    messageCopyResetTimers.set(button, setTimeout(() => {
+        button.classList.remove('copied', 'copy-failed');
+        button.setAttribute('aria-label', 'Copy message');
+        button.title = 'Copy message';
+        messageCopyResetTimers.delete(button);
+    }, 1600));
+}
+
 let appendPickerSelection = null;
 
 document.addEventListener('htmx:oobBeforeSwap', (event) => {
@@ -529,6 +584,11 @@ document.addEventListener('click', (event) => {
         const input = message.querySelector('.message-edit-input');
         input.focus();
         input.select();
+    }
+
+    const messageCopyButton = event.target.closest('.message-copy-button');
+    if (messageCopyButton) {
+        copyMessage(messageCopyButton);
     }
 
     const messageCancelButton = event.target.closest('.message-edit-cancel');

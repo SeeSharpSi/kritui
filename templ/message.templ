@@ -127,6 +127,15 @@ templ UserMessage(chatID string, message llm.Message) {
 			</form>
 			<button
 				type="button"
+				class="message-copy-button"
+				aria-label="Copy message"
+				title="Copy message"
+			>
+				<span class="message-copy-default">@Icon("M8 8h12v12H8z", "M16 5V4H4v12h1")</span>
+				<span class="message-copy-confirmation">@Icon("m5 12 4 4L19 6")</span>
+			</button>
+			<button
+				type="button"
 				class="message-edit-toggle"
 				aria-controls={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }
 				aria-expanded="false"
