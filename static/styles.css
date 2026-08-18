@@ -771,7 +771,9 @@ main {
         }
 
         .message {
+            box-sizing: border-box;
             width: fit-content;
+            max-width: 100%;
             margin: .75rem 0;
             padding: .7rem 1rem;
             border-radius: .75rem;
@@ -1026,6 +1028,18 @@ main {
 
                     pre code {
                         overflow-wrap: normal;
+                    }
+
+                    @media (max-width: 42rem) {
+                        pre {
+                            overflow-x: hidden;
+                            overflow-wrap: anywhere;
+                            white-space: pre-wrap;
+                        }
+
+                        pre code {
+                            overflow-wrap: anywhere;
+                        }
                     }
 
                     blockquote {
