@@ -29,16 +29,30 @@ type Definition struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-// Tool is one capability exposed to an LLM. Execute must validate arguments
-// against Definition.Parameters before performing side effects.
+// Tool is one model-callable function. Execute must validate arguments against
+// Definition.Parameters before performing side effects.
 type Tool interface {
 	Definition() Definition
 	Execute(ctx context.Context, arguments json.RawMessage) (string, error)
 }
 
+// CapabilityTool optionally groups several tools under one selectable
+// capability name. Ordinary tools expose their Definition.Name as a
+// single-tool capability; multiple tools may share a capability only when
+// every one of them implements CapabilityTool.
+type CapabilityTool interface {
+	Tool
+	Capability() string
+}
+
 type registeredTool struct {
 	definition Definition
 	tool       Tool
+	capability string
+}
+
+type capabilityGroup struct {
+	explicitOnly bool
 }
 
 // Registry is an immutable set of tools and is safe for concurrent use. Tool
@@ -46,16 +60,20 @@ type registeredTool struct {
 // concurrent calls. Use Select to derive a least-privilege registry for a user
 // or request.
 type Registry struct {
-	byName map[string]registeredTool
-	order  []string
+	byName       map[string]registeredTool
+	order        []string
+	capabilities map[string]capabilityGroup
+	capOrder     []string
 }
 
 // NewRegistry creates a registry and validates every tool definition. Tool
 // order is preserved so outbound LLM requests remain deterministic.
 func NewRegistry(toolList ...Tool) (*Registry, error) {
 	registry := &Registry{
-		byName: make(map[string]registeredTool, len(toolList)),
-		order:  make([]string, 0, len(toolList)),
+		byName:       make(map[string]registeredTool, len(toolList)),
+		order:        make([]string, 0, len(toolList)),
+		capabilities: make(map[string]capabilityGroup, len(toolList)),
+		capOrder:     make([]string, 0, len(toolList)),
 	}
 
 	for index, tool := range toolList {
@@ -72,9 +90,31 @@ func NewRegistry(toolList ...Tool) (*Registry, error) {
 		}
 
 		definition = cloneDefinition(definition)
+		capability := definition.Name
+		grouped := false
+		if capabilityTool, ok := tool.(CapabilityTool); ok {
+			capability = capabilityTool.Capability()
+			if err := validateName(capability, "capability"); err != nil {
+				return nil, fmt.Errorf("tools: register %q: %w", definition.Name, err)
+			}
+			grouped = true
+		}
+
+		if group, exists := registry.capabilities[capability]; exists {
+			if !grouped || !group.explicitOnly {
+				return nil, fmt.Errorf("tools: register %q: capability %q may be shared only by CapabilityTool implementations", definition.Name, capability)
+			}
+		} else {
+			registry.capabilities[capability] = capabilityGroup{
+				explicitOnly: grouped,
+			}
+			registry.capOrder = append(registry.capOrder, capability)
+		}
+
 		registry.byName[definition.Name] = registeredTool{
 			definition: definition,
 			tool:       tool,
+			capability: capability,
 		}
 		registry.order = append(registry.order, definition.Name)
 	}
@@ -82,9 +122,11 @@ func NewRegistry(toolList ...Tool) (*Registry, error) {
 	return registry, nil
 }
 
-// Names returns registered tool names in registration order.
+// Names returns selectable capability names in registration order. An ordinary
+// tool contributes its own definition name, while CapabilityTool
+// implementations contribute their shared capability name.
 func (r *Registry) Names() []string {
-	return slices.Clone(r.order)
+	return slices.Clone(r.capOrder)
 }
 
 // Definitions returns tool definitions in registration order. Returned values
@@ -97,30 +139,48 @@ func (r *Registry) Definitions() []Definition {
 	return definitions
 }
 
-// Lookup returns a registered tool by name.
+// Lookup returns a registered tool by its executable definition name.
 func (r *Registry) Lookup(name string) (Tool, bool) {
 	registered, ok := r.byName[name]
 	return registered.tool, ok
 }
 
-// Select returns a registry containing only named tools. Unknown names return
-// an error rather than silently broadening or partially applying access.
-// Registry order is retained, and repeated names are ignored.
-func (r *Registry) Select(names ...string) (*Registry, error) {
-	selectedNames := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		if _, exists := r.byName[name]; !exists {
-			return nil, fmt.Errorf("%w: %q", ErrToolNotFound, name)
+// HasCapability reports whether name is a selectable capability in this
+// registry.
+func (r *Registry) HasCapability(name string) bool {
+	_, ok := r.capabilities[name]
+	return ok
+}
+
+// Select returns a registry containing only tools whose capabilities were
+// named. Unknown capability names return an error rather than silently
+// broadening or partially applying access. Capability and definition order are
+// retained, repeated names are ignored, and every executable tool sharing a
+// selected capability is included.
+func (r *Registry) Select(capabilities ...string) (*Registry, error) {
+	selectedCapabilities := make(map[string]struct{}, len(capabilities))
+	for _, capability := range capabilities {
+		if _, exists := r.capabilities[capability]; !exists {
+			return nil, fmt.Errorf("%w: %q", ErrToolNotFound, capability)
 		}
-		selectedNames[name] = struct{}{}
+		selectedCapabilities[capability] = struct{}{}
 	}
 
 	selected := &Registry{
-		byName: make(map[string]registeredTool, len(selectedNames)),
-		order:  make([]string, 0, len(selectedNames)),
+		byName:       make(map[string]registeredTool, len(selectedCapabilities)),
+		order:        make([]string, 0, len(selectedCapabilities)),
+		capabilities: make(map[string]capabilityGroup, len(selectedCapabilities)),
+		capOrder:     make([]string, 0, len(selectedCapabilities)),
+	}
+	for _, capability := range r.capOrder {
+		if _, enabled := selectedCapabilities[capability]; !enabled {
+			continue
+		}
+		selected.capabilities[capability] = r.capabilities[capability]
+		selected.capOrder = append(selected.capOrder, capability)
 	}
 	for _, name := range r.order {
-		if _, enabled := selectedNames[name]; !enabled {
+		if _, enabled := selectedCapabilities[r.byName[name].capability]; !enabled {
 			continue
 		}
 		selected.byName[name] = r.byName[name]
@@ -146,15 +206,22 @@ func (r *Registry) Execute(ctx context.Context, name string, arguments json.RawM
 	return registered.tool.Execute(ctx, arguments)
 }
 
+func validateName(name, kind string) error {
+	if name == "" {
+		return fmt.Errorf("%s name is required", kind)
+	}
+	if len(name) > maxToolNameLength {
+		return fmt.Errorf("%s name %q exceeds %d characters", kind, name, maxToolNameLength)
+	}
+	if !toolNamePattern.MatchString(name) {
+		return fmt.Errorf("%s name %q may contain only letters, digits, underscores, and hyphens", kind, name)
+	}
+	return nil
+}
+
 func validateDefinition(definition Definition) error {
-	if definition.Name == "" {
-		return errors.New("tool name is required")
-	}
-	if len(definition.Name) > maxToolNameLength {
-		return fmt.Errorf("tool name %q exceeds %d characters", definition.Name, maxToolNameLength)
-	}
-	if !toolNamePattern.MatchString(definition.Name) {
-		return fmt.Errorf("tool name %q may contain only letters, digits, underscores, and hyphens", definition.Name)
+	if err := validateName(definition.Name, "tool"); err != nil {
+		return err
 	}
 	if strings.TrimSpace(definition.Description) == "" {
 		return fmt.Errorf("tool %q description is required", definition.Name)

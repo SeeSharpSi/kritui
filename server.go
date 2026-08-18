@@ -62,11 +62,12 @@ func main() {
 	if err := kritui_db.EnsureDefaultModel(context.Background(), database, os.Getenv("LLM_MODEL")); err != nil {
 		log.Fatalf("initialize settings: %v", err)
 	}
-	toolRegistry, err := tools.NewRegistry(
+	toolList := []tools.Tool{
 		tools.NewWebFetchTool(),
 		tools.NewWebSearchTool(os.Getenv("SEARXNG_URL")),
-		tools.NewGitTool(),
-	)
+	}
+	toolList = append(toolList, tools.NewGitTools()...)
+	toolRegistry, err := tools.NewRegistry(toolList...)
 	if err != nil {
 		log.Fatalf("register tools: %v", err)
 	}

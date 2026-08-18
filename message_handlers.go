@@ -305,9 +305,26 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		conversation.SetMaxToolRounds(maxToolRounds)
 		conversation.SetToolCallLogger(toolCallLogger)
 		conversation.SetToolCallObserver(tracker.observe)
-		if _, err := conversation.Complete(r.Context()); err != nil {
-			log.Printf("complete message: %v", err)
-			message := completionErrorMessage(err)
+		completionContext := r.Context()
+		var gitSession *tools.GitSession
+		if request.selected.HasCapability("git") {
+			gitSession = tools.NewGitSession()
+			defer func() {
+				if err := gitSession.Close(); err != nil {
+					log.Printf("clean git session: %v", err)
+				}
+			}()
+			completionContext = gitSession.Context(completionContext)
+		}
+		_, completionErr := conversation.Complete(completionContext)
+		if gitSession != nil {
+			if err := gitSession.Close(); err != nil {
+				log.Printf("clean git session: %v", err)
+			}
+		}
+		if completionErr != nil {
+			log.Printf("complete message: %v", completionErr)
+			message := completionErrorMessage(completionErr)
 			renderCompletionError(w, r, http.StatusFailedDependency, request.chat, message, request.model, request.selected.Names())
 			return
 		}

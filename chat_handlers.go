@@ -335,8 +335,8 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 	}
 }
 
-// selectedDefaultTools returns submitted tool names after validating them
-// against the registry. Unknown names return an error.
+// selectedDefaultTools returns submitted capability names after validating
+// them against the registry. Unknown capabilities return an error.
 func selectedDefaultTools(registry *tools.Registry, names []string) ([]string, error) {
 	selected := make([]string, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
@@ -345,7 +345,7 @@ func selectedDefaultTools(registry *tools.Registry, names []string) ([]string, e
 		if name == "" {
 			continue
 		}
-		if _, exists := registry.Lookup(name); !exists {
+		if !registry.HasCapability(name) {
 			return nil, fmt.Errorf("unknown tool %q", name)
 		}
 		if _, duplicate := seen[name]; duplicate {
