@@ -10,6 +10,8 @@
 - Run the app with `go run .`; it listens on fixed address `:8080`.
 - Only edit files specified by the user. If you need to edit other files, ask before doing so.
 - Full verification: `go test ./...` then `go vet ./...`. Current tests use local `httptest` servers and need no external services.
+- `Dockerfile` generates templates, runs full tests and vet, then builds the binary. Keep every imported package directory in its explicit `COPY` list.
+- `.forgejo/workflows/container.yml` publishes commit-SHA and `main` tags to the Forgejo registry after successful `main` builds. Registry credentials remain organization Actions settings, never repository files.
 - Focus a package with `go test ./llm` or `go test ./tools`; focus one test with, for example, `go test ./llm -run '^TestComplete$'`.
 - After large changes, update the AGENTS.md file accordingly. Keep it concise.
 

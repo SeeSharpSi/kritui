@@ -1,0 +1,55 @@
+name: Build container
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: kritui-container-main
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: docker
+    timeout-minutes: 45
+    env:
+      DOCKER_BUILDKIT: "1"
+      IMAGE: git.skrittle.net/the_rebel_alliance/kritui
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Docker CLI
+        run: apt-get update && apt-get install --yes --no-install-recommends docker.io
+
+      - name: Log in to Forgejo registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login git.skrittle.net --username "${{ vars.REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Build image
+        run: |
+          docker build \
+            --build-arg "VCS_REF=$FORGEJO_SHA" \
+            --tag "$IMAGE:$FORGEJO_SHA" \
+            --tag "$IMAGE:main" \
+            .
+
+      - name: Push immutable image
+        run: docker push "$IMAGE:$FORGEJO_SHA"
+
+      - name: Publish main channel
+        run: docker push "$IMAGE:main"
+
+      - name: Verify published manifests
+        run: |
+          docker manifest inspect "$IMAGE:$FORGEJO_SHA" >/dev/null
+          docker manifest inspect "$IMAGE:main" >/dev/null
+
+      - name: Log out of Forgejo registry
+        if: always()
+        run: docker logout git.skrittle.net

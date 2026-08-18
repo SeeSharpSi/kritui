@@ -38,6 +38,19 @@ docker run --rm \
 
 The named volume persists the SQLite database. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`.
 
+## Container Publishing
+
+Forgejo Actions builds and publishes the image after every push to `main`:
+
+```text
+git.skrittle.net/the_rebel_alliance/kritui:<full-commit-sha>
+git.skrittle.net/the_rebel_alliance/kritui:main
+```
+
+The immutable commit tag is pushed before the mutable `main` channel. The build generates templ sources and requires `go test ./...` and `go vet ./...` to pass before either tag is published. Registry credentials come from organization variable `REGISTRY_USERNAME` and secret `REGISTRY_TOKEN`; they must never be committed.
+
+Repository setup requires Actions and Packages units enabled, organization runner `docker` visible under `Settings -> Actions -> Runners`, and organization-scoped publisher settings. `REGISTRY_USERNAME` names restricted package publisher account; `REGISTRY_TOKEN` is limited to package writes. Workflow receives no production host or application credential.
+
 Rebuilding the same tag can leave the previous image dangling. Kritui images carry a project label, so future dangling builds can be reviewed and removed without pruning images from other projects:
 
 ```sh
@@ -81,7 +94,8 @@ go vet ./...
 - `server.go`, `*_handlers.go`, `tool_stream.go`: HTTP server, chat flow, and persistence wiring
 - `templ/`, `static/`: server-rendered components and embedded browser assets
 - `llm/`: non-streaming API client and tool-capable conversation loop
-- `tools/`: validated tool registry and web-fetch tool
+- `commands/`: slash-command registry and built-ins
+- `tools/`: validated model-tool registry and implementations
 - `db/`: SQLite schema and queries
 
 The server registers `webfetch` and `websearch`. Only tools selected in the chat options are exposed to the LLM for that request.

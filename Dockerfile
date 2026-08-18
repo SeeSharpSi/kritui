@@ -11,6 +11,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY *.go ./
+COPY commands/ ./commands/
 COPY db/ ./db/
 COPY llm/ ./llm/
 COPY markdown/ ./markdown/
@@ -21,14 +22,19 @@ COPY tools/ ./tools/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go run github.com/a-h/templ/cmd/templ@v0.3.1020 generate \
+    && go test ./... \
+    && go vet ./... \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/kritui .
 
 FROM searxng/searxng:2026.8.3-aa059419f
 
+ARG VCS_REF=unknown
+
 LABEL io.github.seesharpsi.kritui="true" \
     org.opencontainers.image.title="Kritui" \
     org.opencontainers.image.description="Server-rendered LLM chat UI bundled with SearXNG" \
-    org.opencontainers.image.source="https://github.com/SeeSharpSi/kritui"
+    org.opencontainers.image.source="https://git.skrittle.net/the_rebel_alliance/kritui" \
+    org.opencontainers.image.revision="$VCS_REF"
 
 USER root
 
