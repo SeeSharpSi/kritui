@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -1916,6 +1917,129 @@ func TestSettingsHandlerRejectsInvalidDefaultTools(t *testing.T) {
 	}
 }
 
+func TestSettingsHandlerRendersNtfyDestinationWithoutSecret(t *testing.T) {
+	database := openTestDatabase(t)
+	apiKey := "secret-token"
+	if err := kritui_db.SaveNtfySettings(context.Background(), database, kritui_db.NtfySettingsUpdate{
+		Endpoint: "https://ntfy.example",
+		Topic:    "kritui",
+		APIKey:   &apiKey,
+	}); err != nil {
+		t.Fatalf("save ntfy settings: %v", err)
+	}
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+
+	response := httptest.NewRecorder()
+	settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(),
+		`id="ntfy-settings"`,
+		`name="ntfy_endpoint" value="https://ntfy.example"`,
+		`name="ntfy_topic" value="kritui"`,
+		"Clear stored API key",
+	)
+	requireNotContains(t, response.Body.String(), apiKey, `name="ntfy_api_key" value=`)
+}
+
+func TestNtfySettingsHandlerStoresAndPreservesSecret(t *testing.T) {
+	database := openTestDatabase(t)
+	handler := ntfySettingsHandler(database)
+	apiKey := "secret-token"
+
+	response := postForm(t, handler, "/settings/ntfy?chat=8", url.Values{
+		"ntfy_endpoint": {"https://ntfy.example"},
+		"ntfy_topic":    {"kritui"},
+		"ntfy_api_key":  {apiKey},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("save status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "Notification settings saved.", "Clear stored API key")
+	requireNotContains(t, response.Body.String(), apiKey, `name="ntfy_api_key" value=`)
+
+	config, err := kritui_db.GetNtfyPublishConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get ntfy config: %v", err)
+	}
+	if config.APIKey != apiKey {
+		t.Errorf("stored API key = %q, want submitted key", config.APIKey)
+	}
+
+	response = postForm(t, handler, "/settings/ntfy?chat=8", url.Values{
+		"ntfy_endpoint": {"https://ntfy.example/new"},
+		"ntfy_topic":    {"new-topic"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("preserve status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireNotContains(t, response.Body.String(), apiKey)
+	config, err = kritui_db.GetNtfyPublishConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get ntfy config after preserve: %v", err)
+	}
+	if config.APIKey != apiKey || config.Endpoint != "https://ntfy.example/new" || config.Topic != "new-topic" {
+		t.Errorf("config after preserve = %#v, want destination update and preserved key", config)
+	}
+
+	response = postForm(t, handler, "/settings/ntfy?chat=8", url.Values{
+		"ntfy_endpoint":      {config.Endpoint},
+		"ntfy_topic":         {config.Topic},
+		"clear_ntfy_api_key": {"1"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "Clear stored API key") {
+		t.Error("clear response reports configured API key")
+	}
+	config, err = kritui_db.GetNtfyPublishConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get ntfy config after clear: %v", err)
+	}
+	if config.APIKey != "" {
+		t.Errorf("API key after clear = %q, want empty", config.APIKey)
+	}
+}
+
+func TestNtfySettingsHandlerRejectsInvalidValuesWithoutSecret(t *testing.T) {
+	database := openTestDatabase(t)
+	secret := "secret-token"
+	response := postForm(t, ntfySettingsHandler(database), "/settings/ntfy?chat=8", url.Values{
+		"ntfy_endpoint": {"https://ntfy.example"},
+		"ntfy_api_key":  {secret},
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "Endpoint and topic must both be set or empty.")
+	requireNotContains(t, response.Body.String(), secret)
+}
+
+func TestHomeHandlerRendersNtfyDestinationWithoutSecret(t *testing.T) {
+	database := openTestDatabase(t)
+	apiKey := "secret-token"
+	if err := kritui_db.SaveNtfySettings(context.Background(), database, kritui_db.NtfySettingsUpdate{
+		Endpoint: "https://ntfy.example",
+		Topic:    "kritui",
+		APIKey:   &apiKey,
+	}); err != nil {
+		t.Fatalf("save ntfy settings: %v", err)
+	}
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+
+	response := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), `name="ntfy_endpoint" value="https://ntfy.example"`, `name="ntfy_topic" value="kritui"`)
+	requireNotContains(t, response.Body.String(), apiKey)
+}
+
 func TestHomeHandlerAllocatesChatWithDefaultTools(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
@@ -3210,6 +3334,100 @@ func TestMessageCompletionHandlerStoresRawMarkdown(t *testing.T) {
 	}
 }
 
+func TestMessageCompletionHandlerNotifiesAfterPersistence(t *testing.T) {
+	database := openTestDatabase(t)
+	observations := make(chan struct {
+		method        string
+		path          string
+		authorization string
+		title         string
+		message       string
+		assistants    int
+	}, 1)
+	ntfyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read ntfy body: %v", err)
+		}
+		var assistants int
+		if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 1 AND role = 'assistant'`).Scan(&assistants); err != nil {
+			t.Errorf("count persisted assistants: %v", err)
+		}
+		observations <- struct {
+			method        string
+			path          string
+			authorization string
+			title         string
+			message       string
+			assistants    int
+		}{
+			method:        r.Method,
+			path:          r.URL.Path,
+			authorization: r.Header.Get("Authorization"),
+			title:         r.Header.Get("Title"),
+			message:       string(body),
+			assistants:    assistants,
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer ntfyServer.Close()
+
+	if err := kritui_db.SaveNtfySettings(context.Background(), database, kritui_db.NtfySettingsUpdate{
+		Endpoint: ntfyServer.URL,
+		Topic:    "responses",
+		APIKey:   stringPointer("ntfy-secret"),
+	}); err != nil {
+		t.Fatalf("save ntfy settings: %v", err)
+	}
+
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"Answer"},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer modelServer.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", modelServer.URL)
+
+	toolCalls := newToolCallStore()
+	insertAcceptedUser(t, database, 1, "Question")
+	response := completeForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), toolCalls, "/messages/complete?chat=1", url.Values{
+		"model":   {"selected-model"},
+		"request": {newToolCallRequest(t, toolCalls, 1)},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("completion status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	select {
+	case observation := <-observations:
+		if observation.method != http.MethodPost || observation.path != "/responses" {
+			t.Errorf("ntfy request = %s %q, want POST /responses", observation.method, observation.path)
+		}
+		if observation.authorization != "Bearer ntfy-secret" {
+			t.Errorf("ntfy Authorization = %q, want bearer token", observation.authorization)
+		}
+		if observation.title != "Kritui response ready" {
+			t.Errorf("ntfy title = %q, want response title", observation.title)
+		}
+		if observation.message != "Chat 1 has a response." {
+			t.Errorf("ntfy message = %q, want metadata message", observation.message)
+		}
+		if observation.assistants != 1 {
+			t.Errorf("assistant count during notification = %d, want persisted response", observation.assistants)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ntfy notification")
+	}
+}
+
+func stringPointer(value string) *string {
+	return &value
+}
+
 func TestMessageCompletionHandlerRejectsStaleGeneratedResponse(t *testing.T) {
 	database := openTestDatabase(t)
 	modelStarted := make(chan struct{})
@@ -3858,6 +4076,41 @@ func TestMigrateDatabaseAddsUndoSequence(t *testing.T) {
 	}
 	if version != len(databaseMigrations) || columns != 1 || sequence.Valid {
 		t.Errorf("migrated database = version %d, columns %d, sequence %#v", version, columns, sequence)
+	}
+}
+
+func TestMigrateDatabaseAddsNtfySettings(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+
+	if _, err := database.Exec(`
+		CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1)) STRICT;
+		INSERT INTO settings (id) VALUES (1);
+		PRAGMA user_version = 9;
+	`); err != nil {
+		t.Fatalf("initialize version nine database: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	var columns int
+	if err := database.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('settings')
+		WHERE name IN ('ntfy_endpoint', 'ntfy_topic', 'ntfy_api_key')
+	`).Scan(&columns); err != nil {
+		t.Fatalf("inspect ntfy columns: %v", err)
+	}
+	if columns != 3 {
+		t.Errorf("ntfy column count = %d, want 3", columns)
+	}
+	if _, err := kritui_db.GetNtfySettings(context.Background(), database); err != nil {
+		t.Fatalf("get migrated ntfy settings: %v", err)
 	}
 }
 

@@ -17,6 +17,7 @@ COPY commands/ ./commands/
 COPY db/ ./db/
 COPY llm/ ./llm/
 COPY markdown/ ./markdown/
+COPY ntfy/ ./ntfy/
 COPY static/ ./static/
 COPY templ/ ./templ/
 COPY tools/ ./tools/

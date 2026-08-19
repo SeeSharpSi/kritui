@@ -5,7 +5,10 @@ CREATE TABLE IF NOT EXISTS settings (
     default_model TEXT,
     max_tool_rounds INTEGER CHECK (max_tool_rounds IS NULL OR max_tool_rounds BETWEEN 1 AND 100),
     default_tools_configured INTEGER NOT NULL DEFAULT 0 CHECK (default_tools_configured IN (0, 1)),
-    prompt_appends_configured INTEGER NOT NULL DEFAULT 0 CHECK (prompt_appends_configured IN (0, 1))
+    prompt_appends_configured INTEGER NOT NULL DEFAULT 0 CHECK (prompt_appends_configured IN (0, 1)),
+    ntfy_endpoint TEXT,
+    ntfy_topic TEXT,
+    ntfy_api_key TEXT
 ) STRICT;
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -127,4 +130,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;
