@@ -25,6 +25,31 @@ type SettingsUpdate struct {
 	PromptAppends []PromptAppend
 }
 
+// NtfySettings contains values safe to render in the settings page.
+// APIKeyConfigured reports secret presence without exposing the secret.
+type NtfySettings struct {
+	Endpoint         string
+	Topic            string
+	APIKeyConfigured bool
+}
+
+// NtfyPublishConfig contains credentials needed for one notification.
+// Keep this type out of template and HTTP response data.
+type NtfyPublishConfig struct {
+	Endpoint string
+	Topic    string
+	APIKey   string
+}
+
+// NtfySettingsUpdate changes notification settings. A nil APIKey preserves
+// the existing key; ClearAPIKey removes it.
+type NtfySettingsUpdate struct {
+	Endpoint    string
+	Topic       string
+	APIKey      *string
+	ClearAPIKey bool
+}
+
 // SaveSettings stores all submitted settings in one transaction.
 func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error {
 	tx, err := db.BeginTx(ctx, nil)
@@ -49,6 +74,118 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit set settings: %w", err)
+	}
+	return nil
+}
+
+// GetNtfySettings returns notification values safe for frontend rendering.
+func GetNtfySettings(ctx context.Context, db *sql.DB) (NtfySettings, error) {
+	var endpoint, topic sql.NullString
+	var apiKeyConfigured bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT ntfy_endpoint, ntfy_topic,
+			CASE WHEN ntfy_api_key IS NOT NULL AND trim(ntfy_api_key) <> '' THEN 1 ELSE 0 END
+		FROM settings
+		WHERE id = 1
+	`).Scan(&endpoint, &topic, &apiKeyConfigured); err != nil {
+		return NtfySettings{}, fmt.Errorf("get ntfy settings: %w", err)
+	}
+	return NtfySettings{
+		Endpoint:         nullSettingString(endpoint),
+		Topic:            nullSettingString(topic),
+		APIKeyConfigured: apiKeyConfigured,
+	}, nil
+}
+
+// GetNtfyPublishConfig returns notification credentials for backend use.
+func GetNtfyPublishConfig(ctx context.Context, db *sql.DB) (NtfyPublishConfig, error) {
+	config, err := getNtfyPublishConfig(ctx, db)
+	if err != nil {
+		return NtfyPublishConfig{}, fmt.Errorf("get ntfy publish config: %w", err)
+	}
+	return config, nil
+}
+
+type settingReader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func getNtfyPublishConfig(ctx context.Context, db settingReader) (NtfyPublishConfig, error) {
+	var endpoint, topic, apiKey sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT ntfy_endpoint, ntfy_topic, ntfy_api_key
+		FROM settings
+		WHERE id = 1
+	`).Scan(&endpoint, &topic, &apiKey); err != nil {
+		return NtfyPublishConfig{}, err
+	}
+	return NtfyPublishConfig{
+		Endpoint: nullSettingString(endpoint),
+		Topic:    nullSettingString(topic),
+		APIKey:   nullSettingString(apiKey),
+	}, nil
+}
+
+func nullSettingString(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return strings.TrimSpace(value.String)
+}
+
+// SaveNtfySettings atomically updates notification destination and secret.
+func SaveNtfySettings(ctx context.Context, db *sql.DB, update NtfySettingsUpdate) error {
+	endpoint := strings.TrimSpace(update.Endpoint)
+	topic := strings.TrimSpace(update.Topic)
+	if (endpoint == "") != (topic == "") {
+		return fmt.Errorf("set ntfy settings: endpoint and topic must both be set or empty")
+	}
+	if update.ClearAPIKey && update.APIKey != nil {
+		return fmt.Errorf("set ntfy settings: API key cannot be replaced and cleared together")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin set ntfy settings: %w", err)
+	}
+	defer tx.Rollback()
+
+	if endpoint == "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE settings
+			SET ntfy_endpoint = NULL, ntfy_topic = NULL, ntfy_api_key = NULL
+			WHERE id = 1
+		`); err != nil {
+			return fmt.Errorf("clear ntfy settings: %w", err)
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE settings
+			SET ntfy_endpoint = ?, ntfy_topic = ?
+			WHERE id = 1
+		`, endpoint, topic); err != nil {
+			return fmt.Errorf("set ntfy destination: %w", err)
+		}
+
+		switch {
+		case update.ClearAPIKey:
+			if _, err := tx.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = NULL WHERE id = 1`); err != nil {
+				return fmt.Errorf("clear ntfy API key: %w", err)
+			}
+		case update.APIKey != nil:
+			apiKey := strings.TrimSpace(*update.APIKey)
+			var value any
+			if apiKey != "" {
+				value = apiKey
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = ? WHERE id = 1`, value); err != nil {
+				return fmt.Errorf("set ntfy API key: %w", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set ntfy settings: %w", err)
 	}
 	return nil
 }

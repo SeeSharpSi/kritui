@@ -18,6 +18,7 @@ import (
 	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
+	"seesharpsi/kritui/ntfy"
 	"seesharpsi/kritui/templ"
 	"seesharpsi/kritui/tools"
 )
@@ -353,7 +354,32 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 		}
 		return
 	}
+	scheduleNtfyCompletion(database, request.chatID)
 	terminal = renderCompletionFragment(ctx, templates.CompletedMessage(request.chat, completedMessages...))
+}
+
+func scheduleNtfyCompletion(database *sql.DB, chatID int64) {
+	config, err := kritui_db.GetNtfyPublishConfig(context.Background(), database)
+	if err != nil {
+		log.Printf("get ntfy publish config: %v", err)
+		return
+	}
+	if strings.TrimSpace(config.Endpoint) == "" || strings.TrimSpace(config.Topic) == "" {
+		return
+	}
+	go sendNtfyCompletion(config, chatID)
+}
+
+func sendNtfyCompletion(config kritui_db.NtfyPublishConfig, chatID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := (ntfy.Client{}).Publish(ctx, ntfy.Config{
+		Endpoint: config.Endpoint,
+		Topic:    config.Topic,
+		APIKey:   config.APIKey,
+	}, "Kritui response ready", fmt.Sprintf("Chat %d has a response.", chatID)); err != nil {
+		log.Printf("send ntfy notification: %v", err)
+	}
 }
 
 func renderCompletionFragment(ctx context.Context, component templ.Component) string {

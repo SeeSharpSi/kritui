@@ -217,3 +217,97 @@ func TestSaveSettingsPreservesPromptAppendsWhenOmitted(t *testing.T) {
 		t.Errorf("typed settings = (%q, %d), want (saved-model, 12)", model, rounds)
 	}
 }
+
+func TestNtfySettingsKeepSecretOutOfPublicValues(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	apiKey := "secret-token"
+
+	if err := SaveNtfySettings(ctx, database, NtfySettingsUpdate{
+		Endpoint: "https://ntfy.example",
+		Topic:    "kritui",
+		APIKey:   &apiKey,
+	}); err != nil {
+		t.Fatalf("SaveNtfySettings() error: %v", err)
+	}
+
+	public, err := GetNtfySettings(ctx, database)
+	if err != nil {
+		t.Fatalf("GetNtfySettings() error: %v", err)
+	}
+	if public.Endpoint != "https://ntfy.example" || public.Topic != "kritui" || !public.APIKeyConfigured {
+		t.Errorf("public ntfy settings = %#v, want destination and configured state", public)
+	}
+
+	private, err := GetNtfyPublishConfig(ctx, database)
+	if err != nil {
+		t.Fatalf("GetNtfyPublishConfig() error: %v", err)
+	}
+	if private.APIKey != apiKey {
+		t.Errorf("private API key = %q, want stored key", private.APIKey)
+	}
+
+	if err := SaveNtfySettings(ctx, database, NtfySettingsUpdate{
+		Endpoint: "https://ntfy.example/new",
+		Topic:    "new-topic",
+	}); err != nil {
+		t.Fatalf("SaveNtfySettings() destination update error: %v", err)
+	}
+	private, err = GetNtfyPublishConfig(ctx, database)
+	if err != nil {
+		t.Fatalf("GetNtfyPublishConfig() after destination update: %v", err)
+	}
+	if private.APIKey != apiKey {
+		t.Errorf("API key after destination update = %q, want preserved key", private.APIKey)
+	}
+
+	if err := SaveNtfySettings(ctx, database, NtfySettingsUpdate{
+		Endpoint:    private.Endpoint,
+		Topic:       private.Topic,
+		ClearAPIKey: true,
+	}); err != nil {
+		t.Fatalf("SaveNtfySettings() clear error: %v", err)
+	}
+	public, err = GetNtfySettings(ctx, database)
+	if err != nil {
+		t.Fatalf("GetNtfySettings() after clear: %v", err)
+	}
+	if public.APIKeyConfigured {
+		t.Error("public API key state = configured after clear, want unset")
+	}
+}
+
+func TestSaveNtfySettingsClearsDestinationAndSecret(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	apiKey := "secret-token"
+	if err := SaveNtfySettings(ctx, database, NtfySettingsUpdate{
+		Endpoint: "https://ntfy.example",
+		Topic:    "kritui",
+		APIKey:   &apiKey,
+	}); err != nil {
+		t.Fatalf("seed SaveNtfySettings() error: %v", err)
+	}
+
+	if err := SaveNtfySettings(ctx, database, NtfySettingsUpdate{}); err != nil {
+		t.Fatalf("clear SaveNtfySettings() error: %v", err)
+	}
+	public, err := GetNtfySettings(ctx, database)
+	if err != nil {
+		t.Fatalf("GetNtfySettings() error: %v", err)
+	}
+	private, err := GetNtfyPublishConfig(ctx, database)
+	if err != nil {
+		t.Fatalf("GetNtfyPublishConfig() error: %v", err)
+	}
+	if public.Endpoint != "" || public.Topic != "" || public.APIKeyConfigured || private.APIKey != "" {
+		t.Errorf("cleared ntfy settings = %#v / %#v, want empty", public, private)
+	}
+}
+
+func TestSaveNtfySettingsRejectsPartialDestination(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if err := SaveNtfySettings(context.Background(), database, NtfySettingsUpdate{Endpoint: "https://ntfy.example"}); err == nil {
+		t.Fatal("SaveNtfySettings() error = nil, want partial destination error")
+	}
+}

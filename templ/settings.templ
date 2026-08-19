@@ -7,7 +7,7 @@ import (
 	kritui_db "seesharpsi/kritui/db"
 )
 
-templ SettingsPage(chatID string, models []string, selectedModel string, maxToolRounds int, toolNames []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, saved bool, visible bool, errorMessage string) {
+templ SettingsPage(chatID string, models []string, selectedModel string, maxToolRounds int, toolNames []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, ntfySettings kritui_db.NtfySettings, saved bool, visible bool, errorMessage string) {
 	<section
 		id="settings-page"
 		class="panel-page settings-page"
@@ -20,107 +20,189 @@ templ SettingsPage(chatID string, models []string, selectedModel string, maxTool
 			<h1 id="settings-heading" tabindex="-1" data-panel-initial-focus>Settings</h1>
 			<p>Defaults applied when starting a new chat.</p>
 		</header>
+		<div class="settings-form">
+			<form
+				class="settings-main-form"
+				hx-post={ "/settings?chat=" + chatID }
+				hx-target="#settings-page"
+				hx-swap="outerHTML"
+			>
+				<input type="hidden" name="append_form" value="1"/>
+				if saved {
+					<p class="settings-status" role="status">Settings saved.</p>
+				}
+				if errorMessage != "" {
+					<p class="settings-status settings-error" role="alert">{ errorMessage }</p>
+				}
+				<section class="settings-section" aria-labelledby="chat-defaults-heading">
+					<header class="settings-section-heading">
+						<h2 id="chat-defaults-heading">Chat defaults</h2>
+						<p>Starting point for every new conversation.</p>
+					</header>
+					<div class="settings-fields">
+						<div class="settings-field">
+							<div class="settings-field-copy">
+								<label for="default-model">Default model</label>
+								<p class="settings-help">Preselected for each new chat.</p>
+							</div>
+							<div class="settings-control">
+								<select id="default-model" name="model" required>
+									for _, model := range models {
+										<option
+											value={ model }
+											if model == selectedModel {
+												selected
+											}
+										>{ model }</option>
+									}
+								</select>
+								<button type="submit">Save</button>
+							</div>
+						</div>
+						<div class="settings-field">
+							<div class="settings-field-copy">
+								<label for="max-tool-rounds">Max tool-call rounds</label>
+								<p class="settings-help">Tool-call chains per response.</p>
+							</div>
+							<div class="settings-control">
+								<input
+									id="max-tool-rounds"
+									type="number"
+									name="max_tool_rounds"
+									value={ strconv.Itoa(maxToolRounds) }
+									min="1"
+									max="100"
+									required
+								/>
+								<button type="submit">Save</button>
+							</div>
+						</div>
+						<div class="settings-field">
+							<div class="settings-field-copy">
+								<h3 id="default-tools-heading">Default tools</h3>
+								<p class="settings-help">Preselected for each new chat.</p>
+							</div>
+							<div class="settings-tool-control">
+								<div class="settings-tool-options" role="group" aria-labelledby="default-tools-heading">
+									for _, tool := range toolNames {
+										<label class="settings-tool-option">
+											<input
+												type="checkbox"
+												name="default_tool"
+												value={ tool }
+												if slices.Contains(defaultTools, tool) {
+													checked
+												}
+											/>
+											<span>{ tool }</span>
+										</label>
+									}
+								</div>
+								<button class="settings-tool-save" type="submit">Save</button>
+							</div>
+						</div>
+					</div>
+				</section>
+				<section class="settings-section" aria-labelledby="prompt-appends-heading">
+					<header class="settings-section-heading">
+						<h2 id="prompt-appends-heading">Prompt appends</h2>
+						<p>Presets appear in chat options; selected text is added to messages.</p>
+					</header>
+					<div class="settings-append-list">
+						for _, preset := range promptAppends {
+							<fieldset class="settings-append">
+								<legend>{ preset.Name }</legend>
+								<input type="hidden" name="append_id" value={ preset.ID }/>
+								<label class="settings-append-default">
+									<input
+										type="checkbox"
+										name="default_append"
+										value={ preset.ID }
+										if preset.EnabledByDefault {
+											checked
+										}
+									/>
+									<span>Enable for new chats</span>
+								</label>
+								<div class="settings-append-field">
+									<label for={ "append-name-" + preset.ID }>Name</label>
+									<input id={ "append-name-" + preset.ID } type="text" name={ "append_name_" + preset.ID } value={ preset.Name } maxlength="80" required/>
+								</div>
+								<div class="settings-append-field">
+									<label for={ "append-text-" + preset.ID }>Text</label>
+									<textarea id={ "append-text-" + preset.ID } name={ "append_text_" + preset.ID } rows="3" required>{ preset.Text }</textarea>
+								</div>
+								<button class="settings-remove" type="submit" name="remove_append" value={ preset.ID } formnovalidate>Remove</button>
+							</fieldset>
+						}
+					</div>
+					<div class="settings-append-actions">
+						<button class="settings-add" type="submit" name="append_action" value="add" formnovalidate>Add append</button>
+						<button type="submit">Save</button>
+					</div>
+				</section>
+			</form>
+			@NtfySettings(chatID, ntfySettings, false, "")
+		</div>
+	</section>
+}
+
+templ NtfySettings(chatID string, settings kritui_db.NtfySettings, saved bool, errorMessage string) {
+	<section id="ntfy-settings" class="settings-section" aria-labelledby="ntfy-settings-heading">
+		<header class="settings-section-heading">
+			<h2 id="ntfy-settings-heading">ntfy notifications</h2>
+			<p>Send notification when response completes. Leave endpoint and topic empty to disable.</p>
+		</header>
 		<form
-			class="settings-form"
-			hx-post={ "/settings?chat=" + chatID }
-			hx-target="#settings-page"
+			class="settings-notification-form"
+			hx-post={ "/settings/ntfy?chat=" + chatID }
+			hx-target="#ntfy-settings"
 			hx-swap="outerHTML"
 		>
-			<input type="hidden" name="append_form" value="1" />
 			if saved {
-				<p class="settings-status" role="status">Settings saved.</p>
+				<p class="settings-status" role="status">Notification settings saved.</p>
 			}
 			if errorMessage != "" {
 				<p class="settings-status settings-error" role="alert">{ errorMessage }</p>
 			}
-			<section class="settings-section" aria-labelledby="chat-defaults-heading">
-				<header class="settings-section-heading">
-					<h2 id="chat-defaults-heading">Chat defaults</h2>
-					<p>Starting point for every new conversation.</p>
-				</header>
-				<div class="settings-fields">
-					<div class="settings-field">
-						<div class="settings-field-copy">
-							<label for="default-model">Default model</label>
-							<p class="settings-help">Preselected for each new chat.</p>
-						</div>
-						<div class="settings-control">
-							<select id="default-model" name="model" required>
-								for _, model := range models {
-									<option value={ model } if model == selectedModel { selected }>{ model }</option>
-								}
-							</select>
-							<button type="submit">Save</button>
-						</div>
+			<div class="settings-fields">
+				<div class="settings-field">
+					<div class="settings-field-copy">
+						<label for="ntfy-endpoint">Endpoint</label>
+						<p class="settings-help">Base URL, for example https://ntfy.sh.</p>
 					</div>
-					<div class="settings-field">
-						<div class="settings-field-copy">
-							<label for="max-tool-rounds">Max tool-call rounds</label>
-							<p class="settings-help">Tool-call chains per response.</p>
-						</div>
-						<div class="settings-control">
-							<input
-								id="max-tool-rounds"
-								type="number"
-								name="max_tool_rounds"
-								value={ strconv.Itoa(maxToolRounds) }
-								min="1"
-								max="100"
-								required
-							/>
-							<button type="submit">Save</button>
-						</div>
-					</div>
-					<div class="settings-field">
-						<div class="settings-field-copy">
-							<h3 id="default-tools-heading">Default tools</h3>
-							<p class="settings-help">Preselected for each new chat.</p>
-						</div>
-						<div class="settings-tool-control">
-							<div class="settings-tool-options" role="group" aria-labelledby="default-tools-heading">
-								for _, tool := range toolNames {
-									<label class="settings-tool-option">
-										<input type="checkbox" name="default_tool" value={ tool } if slices.Contains(defaultTools, tool) { checked } />
-										<span>{ tool }</span>
-									</label>
-								}
-							</div>
-							<button class="settings-tool-save" type="submit">Save</button>
-						</div>
+					<div class="settings-control">
+						<input id="ntfy-endpoint" type="url" name="ntfy_endpoint" value={ settings.Endpoint } maxlength="2048"/>
 					</div>
 				</div>
-			</section>
-			<section class="settings-section" aria-labelledby="prompt-appends-heading">
-				<header class="settings-section-heading">
-					<h2 id="prompt-appends-heading">Prompt appends</h2>
-					<p>Presets appear in chat options; selected text is added to messages.</p>
-				</header>
-				<div class="settings-append-list">
-					for _, preset := range promptAppends {
-						<fieldset class="settings-append">
-							<legend>{ preset.Name }</legend>
-							<input type="hidden" name="append_id" value={ preset.ID } />
-							<label class="settings-append-default">
-								<input type="checkbox" name="default_append" value={ preset.ID } if preset.EnabledByDefault { checked } />
-								<span>Enable for new chats</span>
+				<div class="settings-field">
+					<div class="settings-field-copy">
+						<label for="ntfy-topic">Topic</label>
+						<p class="settings-help">Letters, numbers, hyphens, and underscores; maximum 64 characters.</p>
+					</div>
+					<div class="settings-control">
+						<input id="ntfy-topic" type="text" name="ntfy_topic" value={ settings.Topic } maxlength="64" pattern="[-_A-Za-z0-9]{1,64}"/>
+					</div>
+				</div>
+				<div class="settings-field">
+					<div class="settings-field-copy">
+						<label for="ntfy-api-key">API key</label>
+						<p class="settings-help">Stored on server. Never shown here. Blank preserves existing key.</p>
+					</div>
+					<div class="settings-control settings-control-column">
+						<input id="ntfy-api-key" type="password" name="ntfy_api_key" autocomplete="new-password"/>
+						if settings.APIKeyConfigured {
+							<label class="settings-notification-clear">
+								<input type="checkbox" name="clear_ntfy_api_key" value="1"/>
+								<span>Clear stored API key</span>
 							</label>
-							<div class="settings-append-field">
-								<label for={ "append-name-" + preset.ID }>Name</label>
-								<input id={ "append-name-" + preset.ID } type="text" name={ "append_name_" + preset.ID } value={ preset.Name } maxlength="80" required />
-							</div>
-							<div class="settings-append-field">
-								<label for={ "append-text-" + preset.ID }>Text</label>
-								<textarea id={ "append-text-" + preset.ID } name={ "append_text_" + preset.ID } rows="3" required>{ preset.Text }</textarea>
-							</div>
-							<button class="settings-remove" type="submit" name="remove_append" value={ preset.ID } formnovalidate>Remove</button>
-						</fieldset>
-					}
+						}
+					</div>
 				</div>
-				<div class="settings-append-actions">
-					<button class="settings-add" type="submit" name="append_action" value="add" formnovalidate>Add append</button>
-					<button type="submit">Save</button>
-				</div>
-			</section>
+			</div>
+			<div class="settings-actions">
+				<button type="submit">Save notifications</button>
+			</div>
 		</form>
 	</section>
 }

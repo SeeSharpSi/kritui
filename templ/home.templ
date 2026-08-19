@@ -8,7 +8,7 @@ import (
 	"seesharpsi/kritui/llm"
 )
 
-templ Home(chatID string, chatURL string, messages []llm.Message, models []string, selectedModel string, defaultModel string, maxToolRounds int, tools []string, enabledTools []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, enabledAppendIDs []string, completionRequestID string, completionStarted bool, commandDefinitions []commands.Definition) {
+templ Home(chatID string, chatURL string, messages []llm.Message, models []string, selectedModel string, defaultModel string, maxToolRounds int, tools []string, enabledTools []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, ntfySettings kritui_db.NtfySettings, enabledAppendIDs []string, completionRequestID string, completionStarted bool, commandDefinitions []commands.Definition) {
 	@Layout("Kritui") {
 		<main hx-history="false">
 			<section class="chat">
@@ -25,7 +25,7 @@ templ Home(chatID string, chatURL string, messages []llm.Message, models []strin
 						}
 					}
 					<div id="page-panel">
-						@SettingsPage(chatID, models, defaultModel, maxToolRounds, tools, defaultTools, promptAppends, false, false, "")
+						@SettingsPage(chatID, models, defaultModel, maxToolRounds, tools, defaultTools, promptAppends, ntfySettings, false, false, "")
 						@HistoryPage(chatID)
 					</div>
 				</div>

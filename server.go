@@ -91,6 +91,7 @@ func main() {
 	mux.HandleFunc("GET /history", historyHandler(database))
 	mux.HandleFunc("GET /settings", settingsHandler(database, toolRegistry))
 	mux.HandleFunc("POST /settings", settingsHandler(database, toolRegistry))
+	mux.HandleFunc("POST /settings/ntfy", ntfySettingsHandler(database))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, commandRegistry, toolCalls))
@@ -306,6 +307,26 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateNormalizedDatabaseStorage,
 	func(ctx context.Context, tx *sql.Tx) error {
 		return addColumnIfMissing(ctx, tx, "messages", "undo_sequence", `INTEGER CHECK (undo_sequence IS NULL OR undo_sequence > 0)`)
+	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		var tableCount int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM sqlite_master
+			WHERE type = 'table' AND name = 'settings'
+		`).Scan(&tableCount); err != nil {
+			return fmt.Errorf("inspect settings table: %w", err)
+		}
+		if tableCount == 0 {
+			return nil
+		}
+		if err := addColumnIfMissing(ctx, tx, "settings", "ntfy_endpoint", `TEXT`); err != nil {
+			return err
+		}
+		if err := addColumnIfMissing(ctx, tx, "settings", "ntfy_topic", `TEXT`); err != nil {
+			return err
+		}
+		return addColumnIfMissing(ctx, tx, "settings", "ntfy_api_key", `TEXT`)
 	},
 }
 
