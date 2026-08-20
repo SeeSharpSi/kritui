@@ -21,6 +21,7 @@ import (
 	"seesharpsi/kritui/ntfy"
 	"seesharpsi/kritui/templ"
 	"seesharpsi/kritui/tools"
+	"seesharpsi/kritui/tools/git"
 )
 
 type messageRequest struct {
@@ -324,9 +325,9 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 	conversation.SetToolCallLogger(toolCallLogger)
 	conversation.SetToolCallObserver(tracker.observe)
 	completionContext := ctx
-	var gitSession *tools.GitSession
+	var gitSession *git.GitSession
 	if request.selected.HasCapability("git") {
-		gitSession = tools.NewGitSession()
+		gitSession = git.NewGitSession()
 		defer func() {
 			if err := gitSession.Close(); err != nil {
 				log.Printf("clean git session: %v", err)

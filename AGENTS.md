@@ -12,7 +12,7 @@
 - Full verification: `go test ./...` then `go vet ./...`. Current tests use local `httptest` servers and need no external services.
 - `Dockerfile` generates templates, runs full tests and vet, then builds the binary. Keep every imported package directory in its explicit `COPY` list. Build and runtime stages both require Git because Git-tool tests and production Git tools execute its CLI.
 - `.forgejo/workflows/container.yml` publishes commit-SHA and `main` tags to the Forgejo registry after successful `main` builds. Registry credentials remain organization Actions settings, never repository files.
-- Focus a package with `go test ./llm` or `go test ./tools`; focus one test with, for example, `go test ./llm -run '^TestComplete$'`.
+- Focus a package with `go test ./llm`, `go test ./tools`, or `go test ./tools/git`; focus one test with, for example, `go test ./llm -run '^TestComplete$'`.
 - After large changes, update the AGENTS.md file accordingly. Keep it concise.
 
 # Architecture

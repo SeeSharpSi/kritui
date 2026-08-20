@@ -22,6 +22,7 @@ import (
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/templ"
 	"seesharpsi/kritui/tools"
+	"seesharpsi/kritui/tools/git"
 
 	_ "modernc.org/sqlite"
 )
@@ -66,7 +67,7 @@ func main() {
 		tools.NewWebFetchTool(),
 		tools.NewWebSearchTool(os.Getenv("SEARXNG_URL")),
 	}
-	toolList = append(toolList, tools.NewGitTools()...)
+	toolList = append(toolList, git.NewGitTools()...)
 	toolRegistry, err := tools.NewRegistry(toolList...)
 	if err != nil {
 		log.Fatalf("register tools: %v", err)

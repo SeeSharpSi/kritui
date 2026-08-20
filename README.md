@@ -95,7 +95,8 @@ go vet ./...
 - `templ/`, `static/`: server-rendered components and embedded browser assets
 - `llm/`: non-streaming API client and tool-capable conversation loop
 - `commands/`: slash-command registry and built-ins
-- `tools/`: validated model-tool registry and implementations
+- `tools/`: validated model-tool registry and web-tool implementations
+- `tools/git/`: read-only public Git repository inspection tools
 - `db/`: SQLite schema and queries
 
 The server registers `webfetch` and `websearch`. Only tools selected in the chat options are exposed to the LLM for that request.

@@ -1,4 +1,4 @@
-package tools
+package git
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"seesharpsi/kritui/tools"
 )
 
 const (
@@ -111,7 +113,7 @@ func TestGitToolsRegistry(t *testing.T) {
 		t.Fatalf("NewGitTools() returned %d tools, want 5", len(gitTools))
 	}
 
-	registry, err := NewRegistry(gitTools...)
+	registry, err := tools.NewRegistry(gitTools...)
 	if err != nil {
 		t.Fatalf("NewRegistry() error: %v", err)
 	}
@@ -128,7 +130,7 @@ func TestGitToolsRegistry(t *testing.T) {
 	}
 
 	for index, tool := range gitTools {
-		if capability, ok := tool.(CapabilityTool); !ok || capability.Capability() != "git" {
+		if capability, ok := tool.(tools.CapabilityTool); !ok || capability.Capability() != "git" {
 			t.Fatalf("tool %d does not report capability git", index)
 		}
 	}
@@ -614,4 +616,12 @@ func TestGitDiff(t *testing.T) {
 	if strings.Count(got, "\n") != 4 {
 		t.Fatalf("gitDiff(paged) = %q, want 4 lines plus marker", got)
 	}
+}
+
+func toolNames(definitions []tools.Definition) []string {
+	names := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		names = append(names, definition.Name)
+	}
+	return names
 }

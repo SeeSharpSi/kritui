@@ -1,4 +1,4 @@
-package tools
+package git
 
 import (
 	"bytes"
@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 	"unicode"
+
+	"seesharpsi/kritui/tools"
 )
 
 const (
@@ -168,9 +170,9 @@ type gitDiffArguments struct {
 // NewGitTools creates focused, read-only public repository inspection tools.
 // They share clones through a GitSession and appear as one selectable git
 // capability.
-func NewGitTools() []Tool {
+func NewGitTools() []tools.Tool {
 	runtime := newGitRuntime()
-	return []Tool{
+	return []tools.Tool{
 		&gitTool{runtime: runtime, operation: gitTreeOperation},
 		&gitTool{runtime: runtime, operation: gitReadOperation},
 		&gitTool{runtime: runtime, operation: gitSearchOperation},
@@ -183,18 +185,18 @@ func (*gitTool) Capability() string {
 	return gitCapability
 }
 
-func (t *gitTool) Definition() Definition {
+func (t *gitTool) Definition() tools.Definition {
 	switch t.operation {
 	case gitTreeOperation:
-		return Definition{Name: "git_tree", Description: gitTreeDescription, Parameters: json.RawMessage(gitTreeParameters)}
+		return tools.Definition{Name: "git_tree", Description: gitTreeDescription, Parameters: json.RawMessage(gitTreeParameters)}
 	case gitReadOperation:
-		return Definition{Name: "git_read", Description: gitReadDescription, Parameters: json.RawMessage(gitReadParameters)}
+		return tools.Definition{Name: "git_read", Description: gitReadDescription, Parameters: json.RawMessage(gitReadParameters)}
 	case gitSearchOperation:
-		return Definition{Name: "git_search", Description: gitSearchDescription, Parameters: json.RawMessage(gitSearchParameters)}
+		return tools.Definition{Name: "git_search", Description: gitSearchDescription, Parameters: json.RawMessage(gitSearchParameters)}
 	case gitLogOperation:
-		return Definition{Name: "git_log", Description: gitLogDescription, Parameters: json.RawMessage(gitLogParameters)}
+		return tools.Definition{Name: "git_log", Description: gitLogDescription, Parameters: json.RawMessage(gitLogParameters)}
 	case gitDiffOperation:
-		return Definition{Name: "git_diff", Description: gitDiffDescription, Parameters: json.RawMessage(gitDiffParameters)}
+		return tools.Definition{Name: "git_diff", Description: gitDiffDescription, Parameters: json.RawMessage(gitDiffParameters)}
 	default:
 		panic("unknown git operation")
 	}
