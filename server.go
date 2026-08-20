@@ -100,6 +100,7 @@ func main() {
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
 	mux.HandleFunc("GET /messages/tools", messageToolStreamHandler(toolCalls))
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
+	mux.HandleFunc("GET /favicon.ico", faviconHandler(staticFiles))
 	mux.HandleFunc("GET /sw.js", serviceWorkerHandler(staticFiles))
 
 	log.Println("listening on http://localhost:8080")
@@ -186,6 +187,18 @@ func newHTTPServer(handler http.Handler) *http.Server {
 		Handler:           handler,
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
+func faviconHandler(files embed.FS) http.HandlerFunc {
+	icon, err := files.ReadFile("static/favicon.ico")
+	if err != nil {
+		panic("embedded favicon missing")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/x-icon")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(icon)
 	}
 }
 
