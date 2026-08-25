@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -566,6 +567,211 @@ func TestCompleteUsesRequestedModelWhenResponseOmitsModel(t *testing.T) {
 				t.Errorf("message model = %q, want requested-model", message.Model)
 			}
 		})
+	}
+}
+
+func TestCompleteFallsBackOnHTTP500AndRemembersWinner(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.RequestURI())
+		if r.URL.Path != "/v1/chat/completions" {
+			http.Error(w, "unsupported protocol", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"model":"configured-model",
+			"choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+
+	var selected []EndpointType
+	client, err := New("key", "configured-model", server.URL+"/v1/responses?api-version=1", ClientOptions{
+		EndpointSelected: func(endpointType EndpointType) {
+			selected = append(selected, endpointType)
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	for range 2 {
+		message, err := client.complete(context.Background(), []Message{{Role: "user", Content: "question"}}, nil)
+		if err != nil {
+			t.Fatalf("complete() error: %v", err)
+		}
+		if message.Content != "answer" {
+			t.Errorf("completion content = %q, want answer", message.Content)
+		}
+	}
+
+	wantPaths := []string{
+		"/v1/responses?api-version=1",
+		"/v1/chat/messages?api-version=1",
+		"/v1/chat/completions?api-version=1",
+		"/v1/chat/completions?api-version=1",
+	}
+	if !slices.Equal(paths, wantPaths) {
+		t.Errorf("request paths = %v, want %v", paths, wantPaths)
+	}
+	if !slices.Equal(selected, []EndpointType{EndpointChatCompletions}) {
+		t.Errorf("selected endpoint callbacks = %v, want chat_completions once", selected)
+	}
+}
+
+func TestCompleteUsesPreferredEndpointFirst(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		_, _ = w.Write([]byte(`{
+			"role":"assistant",
+			"model":"configured-model",
+			"content":[{"type":"text","text":"answer"}],
+			"stop_reason":"end_turn"
+		}`))
+	}))
+	defer server.Close()
+
+	callbackCalled := false
+	client, err := New("key", "configured-model", server.URL+"/v1/responses", ClientOptions{
+		PreferredEndpoint: EndpointMessages,
+		EndpointSelected: func(EndpointType) {
+			callbackCalled = true
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	message, err := client.complete(context.Background(), []Message{{Role: "user", Content: "question"}}, nil)
+	if err != nil {
+		t.Fatalf("complete() error: %v", err)
+	}
+	if message.Content != "answer" {
+		t.Errorf("completion content = %q, want answer", message.Content)
+	}
+	if !slices.Equal(paths, []string{"/v1/chat/messages"}) {
+		t.Errorf("request paths = %v, want Messages only", paths)
+	}
+	if callbackCalled {
+		t.Error("EndpointSelected called for unchanged preferred endpoint")
+	}
+}
+
+func TestCompleteDoesNotFallbackOnOtherStatus(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		http.Error(w, "unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client, err := New("key", "model", server.URL+"/v1/responses")
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	_, err = client.complete(context.Background(), []Message{{Role: "user", Content: "question"}}, nil)
+	var apiError *APIError
+	if !errors.As(err, &apiError) || apiError.StatusCode != http.StatusBadGateway {
+		t.Fatalf("complete() error = %v, want HTTP 502 APIError", err)
+	}
+	if !slices.Equal(paths, []string{"/v1/responses"}) {
+		t.Errorf("request paths = %v, want no fallback", paths)
+	}
+}
+
+func TestMessagesConversationWithToolCall(t *testing.T) {
+	promptContext := PromptContext{CurrentTime: time.Date(2026, time.August, 2, 18, 30, 0, 0, time.UTC)}
+	wantSystemPrompt := systemPromptWithContext(promptContext)
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber++
+		if r.URL.RequestURI() != "/v1/chat/messages?api-version=1" {
+			t.Errorf("request URI = %q, want Messages endpoint", r.URL.RequestURI())
+		}
+		if r.Header.Get("Authorization") != "Bearer secret-key" || r.Header.Get("X-Api-Key") != "secret-key" {
+			t.Errorf("authentication headers = Authorization %q, X-Api-Key %q", r.Header.Get("Authorization"), r.Header.Get("X-Api-Key"))
+		}
+		if r.Header.Get("Anthropic-Version") != "2023-06-01" {
+			t.Errorf("Anthropic-Version = %q", r.Header.Get("Anthropic-Version"))
+		}
+
+		var request struct {
+			Model     string            `json:"model"`
+			MaxTokens int               `json:"max_tokens"`
+			System    string            `json:"system"`
+			Messages  []messagesMessage `json:"messages"`
+			Tools     []messagesTool    `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Model != "configured-model" || request.MaxTokens != messagesMaxTokens {
+			t.Errorf("request model/max tokens = %q/%d", request.Model, request.MaxTokens)
+		}
+		if request.System != wantSystemPrompt {
+			t.Errorf("system prompt = %q, want %q", request.System, wantSystemPrompt)
+		}
+		if len(request.Tools) != 1 || request.Tools[0].Name != "lookup" {
+			t.Errorf("tools = %#v, want lookup", request.Tools)
+		}
+
+		switch requestNumber {
+		case 1:
+			if len(request.Messages) != 1 || request.Messages[0].Role != "user" || len(request.Messages[0].Content) != 1 || request.Messages[0].Content[0].Text != "question" {
+				t.Errorf("first Messages input = %#v", request.Messages)
+			}
+			_, _ = w.Write([]byte(`{
+				"role":"assistant",
+				"model":"configured-model",
+				"content":[{"type":"tool_use","id":"call-1","name":"lookup","input":{"key":"value"}}],
+				"stop_reason":"tool_use",
+				"usage":{"input_tokens":2,"output_tokens":3}
+			}`))
+		case 2:
+			if len(request.Messages) != 3 {
+				t.Fatalf("second Messages input length = %d, want 3", len(request.Messages))
+			}
+			call := request.Messages[1].Content[0]
+			if request.Messages[1].Role != "assistant" || call.Type != "tool_use" || call.ID != "call-1" || call.Name != "lookup" || string(call.Input) != `{"key":"value"}` {
+				t.Errorf("assistant tool use = %#v", request.Messages[1])
+			}
+			result := request.Messages[2].Content[0]
+			if request.Messages[2].Role != "user" || result.Type != "tool_result" || result.ToolUseID != "call-1" || result.Content != "found value" {
+				t.Errorf("user tool result = %#v", request.Messages[2])
+			}
+			_, _ = w.Write([]byte(`{
+				"role":"assistant",
+				"model":"configured-model",
+				"content":[{"type":"text","text":"answer"}],
+				"stop_reason":"end_turn",
+				"usage":{"input_tokens":7,"output_tokens":11}
+			}`))
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New("secret-key", "configured-model", server.URL+"/v1/chat/messages?api-version=1")
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	registry, err := tools.NewRegistry(responseTestTool{})
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	conversation, err := NewConversation(client, registry, promptContext)
+	if err != nil {
+		t.Fatalf("NewConversation() error: %v", err)
+	}
+	if err := conversation.Send(context.Background(), "question"); err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+	final := conversation.Messages()[4]
+	if final.Content != "answer" || final.TotalTokens == nil || *final.TotalTokens != 18 {
+		t.Errorf("final message = %#v, want answer with 18 tokens", final)
+	}
+	if requestNumber != 2 {
+		t.Errorf("request count = %d, want 2", requestNumber)
 	}
 }
 

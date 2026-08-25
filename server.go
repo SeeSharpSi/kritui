@@ -359,6 +359,13 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 		}
 		return addColumnIfMissing(ctx, tx, "settings", "ntfy_api_key", `TEXT`)
 	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS model_endpoint_preferences (
+			model TEXT PRIMARY KEY CHECK (trim(model) <> ''),
+			endpoint_type TEXT NOT NULL CHECK (endpoint_type IN ('responses', 'messages', 'chat_completions'))
+		) STRICT`)
+		return err
+	},
 }
 
 type legacyChatCollections struct {

@@ -299,7 +299,20 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 		return
 	}
 	conversationMessages := messagesWithPromptAppendTexts(messages)
-	client, err := llm.New(os.Getenv("LLM_KEY"), request.model, os.Getenv("LLM_ENDPOINT"))
+	preferredEndpoint, err := kritui_db.GetModelEndpointType(ctx, database, request.model)
+	if err != nil {
+		log.Printf("get model endpoint type: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load model settings.", request.model, selectedTools))
+		return
+	}
+	client, err := llm.New(os.Getenv("LLM_KEY"), request.model, os.Getenv("LLM_ENDPOINT"), llm.ClientOptions{
+		PreferredEndpoint: preferredEndpoint,
+		EndpointSelected: func(endpointType llm.EndpointType) {
+			if err := kritui_db.SetModelEndpointType(ctx, database, request.model, endpointType); err != nil {
+				log.Printf("store model endpoint type: %v", err)
+			}
+		},
+	})
 	if err != nil {
 		log.Printf("configure llm: %v", err)
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure model.", request.model, selectedTools))

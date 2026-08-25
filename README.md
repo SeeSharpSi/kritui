@@ -1,6 +1,6 @@
 # Kritui
 
-Server-rendered LLM chat UI built with Go, templ, htmx, and SQLite. It sends conversation history to an OpenAI-compatible chat-completions endpoint and persists chats in `data.db`.
+Server-rendered LLM chat UI built with Go, templ, htmx, and SQLite. It sends conversation history to OpenAI-compatible Responses, Anthropic Messages, or Chat Completions endpoints and persists chats in `data.db`.
 
 ## Run
 
@@ -11,7 +11,7 @@ cp .env.example .env
 set -a; . ./.env; set +a
 ```
 
-`LLM_ENDPOINT` must be the full chat-completions URL. `SEARXNG_URL` configures the server used by the optional `websearch` tool. The SearXNG instance must have the JSON response format enabled.
+`LLM_ENDPOINT` must be a full `/responses`, `/chat/messages`, or `/chat/completions` URL. Kritui starts with that protocol for an unknown model. On HTTP 500, it tries the remaining protocols and stores the successful per-model preference in SQLite. `SEARXNG_URL` configures the server used by the optional `websearch` tool. The SearXNG instance must have the JSON response format enabled.
 
 Generate templates and start the server:
 

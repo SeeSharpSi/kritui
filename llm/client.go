@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"seesharpsi/kritui/tools"
@@ -25,6 +26,29 @@ const (
 	defaultCompletionTimeout   = 10 * time.Minute
 	providerConnectTimeout     = 10 * time.Second
 )
+
+// EndpointType identifies a provider request and response protocol.
+type EndpointType string
+
+const (
+	EndpointResponses       EndpointType = "responses"
+	EndpointMessages        EndpointType = "messages"
+	EndpointChatCompletions EndpointType = "chat_completions"
+)
+
+type endpointCandidate struct {
+	typeName EndpointType
+	url      string
+}
+
+var endpointDefinitions = []struct {
+	typeName EndpointType
+	suffix   string
+}{
+	{typeName: EndpointResponses, suffix: "/responses"},
+	{typeName: EndpointMessages, suffix: "/chat/messages"},
+	{typeName: EndpointChatCompletions, suffix: "/chat/completions"},
+}
 
 // Message is one message in a chat completion conversation.
 type Message struct {
@@ -158,17 +182,22 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("llm: endpoint returned HTTP %d: %s", e.StatusCode, e.Message)
 }
 
-// Client sends requests to one OpenAI-compatible chat completion endpoint.
+// Client sends requests to OpenAI-compatible Responses, Anthropic Messages,
+// and Chat Completions endpoints. It is safe for concurrent use.
 type Client struct {
 	apiKey              string
 	model               string
-	endpoint            string
+	endpoints           []endpointCandidate
+	configuredEndpoint  EndpointType
 	modelsEndpoint      string
-	responses           bool
 	httpClient          *http.Client
 	modelsTimeout       time.Duration
 	completeTimeout     time.Duration
 	maxResponseBodySize int64
+	endpointSelected    func(EndpointType)
+	endpointMu          sync.RWMutex
+	preferredEndpoint   EndpointType
+	selectedEndpoint    EndpointType
 }
 
 // ClientOptions configures provider request deadlines and response limits.
@@ -178,11 +207,17 @@ type ClientOptions struct {
 	ModelsTimeout       time.Duration
 	CompletionTimeout   time.Duration
 	MaxResponseBodySize int64
+	// PreferredEndpoint is attempted first when the configured URL has a
+	// recognized endpoint suffix.
+	PreferredEndpoint EndpointType
+	// EndpointSelected runs after a protocol produces a valid completion and
+	// differs from PreferredEndpoint. It must be safe for synchronous use.
+	EndpointSelected func(EndpointType)
 }
 
-// New creates a client. Endpoint must be the full Chat Completions or Responses
-// URL; New does not append a path to it. A path ending in /responses selects
-// the Responses API; all other paths use Chat Completions.
+// New creates a client. Endpoint must be a full Responses, Messages, or Chat
+// Completions URL. Recognized suffixes enable HTTP-500 fallback through sibling
+// protocol URLs; custom paths retain their previous Chat Completions behavior.
 func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, error) {
 	if len(options) > 1 {
 		return nil, errors.New("llm: at most one client options value is allowed")
@@ -208,11 +243,7 @@ func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, err
 		return nil, errors.New("llm: endpoint must not contain a fragment")
 	}
 
-	path := strings.TrimRight(parsedEndpoint.Path, "/")
-	responses := path != "" && strings.HasSuffix(path, "/responses")
-	path = strings.TrimSuffix(path, "/chat/completions")
-	path = strings.TrimSuffix(path, "/responses")
-	parsedEndpoint.Path = strings.TrimRight(path, "/") + "/models"
+	endpoints, configuredEndpoint, modelsEndpoint := configureEndpoints(parsedEndpoint, endpoint)
 
 	configuration := ClientOptions{}
 	if len(options) == 1 {
@@ -226,6 +257,9 @@ func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, err
 	}
 	if configuration.MaxResponseBodySize < 0 {
 		return nil, errors.New("llm: maximum response body size must not be negative")
+	}
+	if configuration.PreferredEndpoint != "" && !validEndpointType(configuration.PreferredEndpoint) {
+		return nil, fmt.Errorf("llm: unsupported preferred endpoint type %q", configuration.PreferredEndpoint)
 	}
 	if configuration.ModelsTimeout == 0 {
 		configuration.ModelsTimeout = defaultModelsTimeout
@@ -243,13 +277,15 @@ func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, err
 	return &Client{
 		apiKey:              apiKey,
 		model:               model,
-		endpoint:            endpoint,
-		modelsEndpoint:      parsedEndpoint.String(),
-		responses:           responses,
+		endpoints:           endpoints,
+		configuredEndpoint:  configuredEndpoint,
+		modelsEndpoint:      modelsEndpoint,
 		httpClient:          configuration.HTTPClient,
 		modelsTimeout:       configuration.ModelsTimeout,
 		completeTimeout:     configuration.CompletionTimeout,
 		maxResponseBodySize: configuration.MaxResponseBodySize,
+		endpointSelected:    configuration.EndpointSelected,
+		preferredEndpoint:   configuration.PreferredEndpoint,
 	}, nil
 }
 
@@ -259,11 +295,32 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.completeTimeout)
 	defer cancel()
-	if c.responses {
-		return c.completeResponse(ctx, messages, definitions)
+
+	endpoints := c.orderedEndpoints()
+	for index, endpoint := range endpoints {
+		var message Message
+		var err error
+		switch endpoint.typeName {
+		case EndpointResponses:
+			message, err = c.completeResponse(ctx, endpoint, messages, definitions)
+		case EndpointMessages:
+			message, err = c.completeMessages(ctx, endpoint, messages, definitions)
+		case EndpointChatCompletions:
+			message, err = c.completeChat(ctx, endpoint, messages, definitions)
+		default:
+			return Message{}, fmt.Errorf("llm: unsupported endpoint type %q", endpoint.typeName)
+		}
+		if err == nil {
+			c.rememberEndpoint(endpoint.typeName)
+			return message, nil
+		}
+		if index == len(endpoints)-1 || !isHTTP500(err) {
+			return Message{}, err
+		}
 	}
-	return c.completeChat(ctx, messages, definitions)
+	return Message{}, errors.New("llm: no completion endpoints are configured")
 }
+
 func (c *Client) Models(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.modelsTimeout)
 	defer cancel()
@@ -303,12 +360,12 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
-func (c *Client) postJSON(ctx context.Context, payload any, target any) error {
+func (c *Client) postJSON(ctx context.Context, endpoint endpointCandidate, payload any, target any) error {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("llm: encode request: %w", err)
 	}
-	resp, err := c.post(ctx, encoded)
+	resp, err := c.post(ctx, endpoint, encoded)
 	if err != nil {
 		return err
 	}
@@ -319,14 +376,18 @@ func (c *Client) postJSON(ctx context.Context, payload any, target any) error {
 	return nil
 }
 
-func (c *Client) post(ctx context.Context, payload []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
+func (c *Client) post(ctx context.Context, endpoint endpointCandidate, payload []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("llm: create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if endpoint.typeName == EndpointMessages {
+		req.Header.Set("X-Api-Key", c.apiKey)
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -337,6 +398,125 @@ func (c *Client) post(ctx context.Context, payload []byte) (*http.Response, erro
 		return nil, endpointError(resp)
 	}
 	return resp, nil
+}
+
+func configureEndpoints(parsedEndpoint *url.URL, configuredURL string) ([]endpointCandidate, EndpointType, string) {
+	path := strings.TrimRight(parsedEndpoint.Path, "/")
+	configuredType := EndpointChatCompletions
+	basePath := path
+	recognized := false
+
+	aliases := []struct {
+		typeName EndpointType
+		suffix   string
+	}{
+		{typeName: EndpointChatCompletions, suffix: "/chat/completions"},
+		{typeName: EndpointMessages, suffix: "/chat/messages"},
+		{typeName: EndpointResponses, suffix: "/responses"},
+		{typeName: EndpointMessages, suffix: "/messages"},
+	}
+	for _, alias := range aliases {
+		if strings.HasSuffix(path, alias.suffix) {
+			configuredType = alias.typeName
+			basePath = strings.TrimSuffix(path, alias.suffix)
+			recognized = true
+			break
+		}
+	}
+
+	modelsURL := *parsedEndpoint
+	if recognized {
+		modelsURL.Path = strings.TrimRight(basePath, "/") + "/models"
+	} else {
+		modelsURL.Path = strings.TrimRight(path, "/") + "/models"
+	}
+	modelsURL.RawPath = ""
+
+	if !recognized {
+		return []endpointCandidate{{typeName: configuredType, url: configuredURL}}, configuredType, modelsURL.String()
+	}
+
+	endpoints := make([]endpointCandidate, 0, len(endpointDefinitions))
+	for _, definition := range endpointDefinitions {
+		endpointURL := *parsedEndpoint
+		endpointURL.Path = strings.TrimRight(basePath, "/") + definition.suffix
+		endpointURL.RawPath = ""
+		value := endpointURL.String()
+		if definition.typeName == configuredType {
+			value = configuredURL
+		}
+		endpoints = append(endpoints, endpointCandidate{typeName: definition.typeName, url: value})
+	}
+	return endpoints, configuredType, modelsURL.String()
+}
+
+func validEndpointType(endpointType EndpointType) bool {
+	switch endpointType {
+	case EndpointResponses, EndpointMessages, EndpointChatCompletions:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) orderedEndpoints() []endpointCandidate {
+	c.endpointMu.RLock()
+	start := c.selectedEndpoint
+	preferred := c.preferredEndpoint
+	c.endpointMu.RUnlock()
+	if start == "" {
+		start = preferred
+	}
+	if !c.hasEndpoint(start) {
+		start = c.configuredEndpoint
+	}
+
+	startIndex := 0
+	for index, definition := range endpointDefinitions {
+		if definition.typeName == start {
+			startIndex = index
+			break
+		}
+	}
+	ordered := make([]endpointCandidate, 0, len(c.endpoints))
+	for offset := range endpointDefinitions {
+		typeName := endpointDefinitions[(startIndex+offset)%len(endpointDefinitions)].typeName
+		for _, endpoint := range c.endpoints {
+			if endpoint.typeName == typeName {
+				ordered = append(ordered, endpoint)
+				break
+			}
+		}
+	}
+	return ordered
+}
+
+func (c *Client) hasEndpoint(endpointType EndpointType) bool {
+	for _, endpoint := range c.endpoints {
+		if endpoint.typeName == endpointType {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) rememberEndpoint(endpointType EndpointType) {
+	c.endpointMu.Lock()
+	c.selectedEndpoint = endpointType
+	changed := c.preferredEndpoint != endpointType
+	if changed {
+		c.preferredEndpoint = endpointType
+	}
+	callback := c.endpointSelected
+	c.endpointMu.Unlock()
+	if changed && callback != nil {
+		callback(endpointType)
+	}
+}
+
+func isHTTP500(err error) bool {
+	var apiError *APIError
+	return errors.As(err, &apiError) && apiError.StatusCode == http.StatusInternalServerError
 }
 
 func defaultHTTPClient() *http.Client {

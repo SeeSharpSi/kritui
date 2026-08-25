@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io"
 	"mime/multipart"
@@ -3498,6 +3499,61 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 	}
 }
 
+func TestMessageCompletionPersistsSuccessfulEndpointType(t *testing.T) {
+	database := openTestDatabase(t)
+	insertAcceptedUser(t, database, 1, "First question")
+
+	var paths []string
+	chatRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			http.Error(w, "unsupported protocol", http.StatusInternalServerError)
+			return
+		}
+		chatRequests++
+		_, _ = fmt.Fprintf(w, `{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"Answer %d"},"finish_reason":"stop"}]
+		}`, chatRequests)
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL+"/v1/responses")
+
+	toolCalls := newToolCallStore()
+	handler := messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil)
+	first := completeForm(t, handler, toolCalls, "/messages/complete?chat=1", url.Values{
+		"model":   {"selected-model"},
+		"request": {newToolCallRequest(t, toolCalls, 1)},
+	})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first completion status = %d, want %d; body = %q", first.Code, http.StatusOK, first.Body.String())
+	}
+	if endpointType, err := kritui_db.GetModelEndpointType(context.Background(), database, "selected-model"); err != nil {
+		t.Fatalf("get stored endpoint type: %v", err)
+	} else if endpointType != llm.EndpointChatCompletions {
+		t.Errorf("stored endpoint type = %q, want chat_completions", endpointType)
+	}
+
+	insertAcceptedUser(t, database, 1, "Second question")
+	second := completeForm(t, handler, toolCalls, "/messages/complete?chat=1", url.Values{
+		"model":   {"selected-model"},
+		"request": {newToolCallRequest(t, toolCalls, 1)},
+	})
+	if second.Code != http.StatusOK {
+		t.Fatalf("second completion status = %d, want %d; body = %q", second.Code, http.StatusOK, second.Body.String())
+	}
+
+	wantPaths := []string{"/v1/responses", "/v1/chat/messages", "/v1/chat/completions", "/v1/chat/completions"}
+	if !slices.Equal(paths, wantPaths) {
+		t.Errorf("provider paths = %v, want %v", paths, wantPaths)
+	}
+	requireContains(t, first.Body.String(), "Answer 1")
+	requireContains(t, second.Body.String(), "Answer 2")
+}
+
 func TestMessageCompletionHandlerRendersToolCallLimitError(t *testing.T) {
 	database := openTestDatabase(t)
 	fetched := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -4076,6 +4132,32 @@ func TestMigrateDatabaseAddsNtfySettings(t *testing.T) {
 	}
 	if _, err := kritui_db.GetNtfySettings(context.Background(), database); err != nil {
 		t.Fatalf("get migrated ntfy settings: %v", err)
+	}
+}
+
+func TestMigrateDatabaseAddsModelEndpointPreferences(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	if _, err := database.Exec(`PRAGMA user_version = 10`); err != nil {
+		t.Fatalf("initialize version ten database: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	if err := kritui_db.SetModelEndpointType(context.Background(), database, "model", llm.EndpointMessages); err != nil {
+		t.Fatalf("set migrated model endpoint type: %v", err)
+	}
+	endpointType, err := kritui_db.GetModelEndpointType(context.Background(), database, "model")
+	if err != nil {
+		t.Fatalf("get migrated model endpoint type: %v", err)
+	}
+	if endpointType != llm.EndpointMessages {
+		t.Errorf("migrated endpoint type = %q, want messages", endpointType)
 	}
 }
 

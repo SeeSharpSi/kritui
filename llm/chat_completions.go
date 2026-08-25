@@ -13,7 +13,7 @@ type completionTool struct {
 	Function tools.Definition `json:"function"`
 }
 
-func (c *Client) completeChat(ctx context.Context, messages []Message, definitions []tools.Definition) (Message, error) {
+func (c *Client) completeChat(ctx context.Context, endpoint endpointCandidate, messages []Message, definitions []tools.Definition) (Message, error) {
 	requestTools := make([]completionTool, len(definitions))
 	for index, definition := range definitions {
 		requestTools[index] = completionTool{
@@ -39,7 +39,7 @@ func (c *Client) completeChat(ctx context.Context, messages []Message, definitio
 		} `json:"choices"`
 		Usage Usage `json:"usage"`
 	}
-	if err := c.postJSON(ctx, payload, &response); err != nil {
+	if err := c.postJSON(ctx, endpoint, payload, &response); err != nil {
 		return Message{}, err
 	}
 	if len(response.Choices) == 0 {

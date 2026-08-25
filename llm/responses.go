@@ -26,7 +26,7 @@ type responseTool struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-func (c *Client) completeResponse(ctx context.Context, messages []Message, definitions []tools.Definition) (Message, error) {
+func (c *Client) completeResponse(ctx context.Context, endpoint endpointCandidate, messages []Message, definitions []tools.Definition) (Message, error) {
 	input := make([]any, 0, len(messages))
 	for _, message := range messages {
 		if responseOutput := message.ProviderMetadata.ResponsesOutput(); len(responseOutput) > 0 {
@@ -84,7 +84,7 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 			Cost        *float64 `json:"cost,omitempty"`
 		} `json:"usage"`
 	}
-	if err := c.postJSON(ctx, payload, &response); err != nil {
+	if err := c.postJSON(ctx, endpoint, payload, &response); err != nil {
 		return Message{}, err
 	}
 
