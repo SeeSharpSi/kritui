@@ -335,7 +335,7 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 		}()
 		completionContext = gitSession.Context(completionContext)
 	}
-	_, completionErr := conversation.Complete(completionContext)
+	completionErr := conversation.Complete(completionContext)
 	if completionErr != nil {
 		log.Printf("complete message: %v", completionErr)
 		message := completionErrorMessage(completionErr)

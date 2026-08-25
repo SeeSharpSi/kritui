@@ -78,7 +78,7 @@ func TestProviderOperationsTimeOut(t *testing.T) {
 		{
 			name: "completion",
 			invoke: func(ctx context.Context, client *Client) error {
-				_, err := client.Complete(ctx, []Message{{Role: "user", Content: "Hello"}})
+				_, err := client.complete(ctx, []Message{{Role: "user", Content: "Hello"}}, nil)
 				return err
 			},
 		},
@@ -127,7 +127,7 @@ func TestProviderOperationsRejectOversizedResponses(t *testing.T) {
 			name:     "completion",
 			response: `{"choices":[{"message":{"role":"assistant","content":"` + strings.Repeat("x", 256) + `"},"finish_reason":"stop"}]}`,
 			invoke: func(client *Client) error {
-				_, err := client.Complete(context.Background(), []Message{{Role: "user", Content: "Hello"}})
+				_, err := client.complete(context.Background(), []Message{{Role: "user", Content: "Hello"}}, nil)
 				return err
 			},
 		},
@@ -197,21 +197,22 @@ func TestComplete(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	completion, err := client.Complete(context.Background(), []Message{{Role: "user", Content: "Hello"}})
+	message, err := client.complete(context.Background(), []Message{{Role: "user", Content: "Hello"}}, nil)
 	if err != nil {
-		t.Fatalf("Complete() error: %v", err)
+		t.Fatalf("complete() error: %v", err)
 	}
-	if completion.ID != "completion-1" || completion.Model != "configured-model" {
-		t.Errorf("completion metadata = %#v", completion)
+	if message.Role != "assistant" || message.Content != "Hi" {
+		t.Errorf("message = %#v, want assistant Hi message", message)
 	}
-	if completion.Message.Role != "assistant" || completion.Message.Content != "Hi" {
-		t.Errorf("message = %#v, want assistant Hi message", completion.Message)
+	if message.Model != "configured-model" {
+		t.Errorf("model = %q, want configured-model", message.Model)
 	}
-	if completion.FinishReason != "stop" {
-		t.Errorf("finish reason = %q, want stop", completion.FinishReason)
+	totalTokens := 3
+	if message.TotalTokens == nil || *message.TotalTokens != totalTokens {
+		t.Errorf("total tokens = %v, want %d", message.TotalTokens, totalTokens)
 	}
-	if completion.Usage != (Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}) {
-		t.Errorf("usage = %#v, want token counts 1, 2, 3", completion.Usage)
+	if message.Cost != nil {
+		t.Errorf("cost = %v, want nil", *message.Cost)
 	}
 }
 
@@ -221,7 +222,7 @@ func TestCompleteRequiresMessages(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	if _, err := client.Complete(context.Background(), nil); err == nil {
+	if _, err := client.complete(context.Background(), nil, nil); err == nil {
 		t.Fatal("Complete() error = nil, want missing messages error")
 	}
 }
@@ -295,7 +296,7 @@ func TestCompleteReturnsAPIError(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	_, err = client.Complete(context.Background(), []Message{{Role: "user", Content: "Hello"}})
+	_, err = client.complete(context.Background(), []Message{{Role: "user", Content: "Hello"}}, nil)
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("Complete() error = %v, want *APIError", err)
@@ -319,7 +320,7 @@ func TestCompleteRejectsResponseWithoutChoices(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	_, err = client.Complete(context.Background(), []Message{{Role: "user", Content: "Hello"}})
+	_, err = client.complete(context.Background(), []Message{{Role: "user", Content: "Hello"}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "no choices") {
 		t.Fatalf("Complete() error = %v, want no choices error", err)
 	}
@@ -328,11 +329,10 @@ func TestCompleteRejectsResponseWithoutChoices(t *testing.T) {
 func TestCompleteValidatesChatCompletionResponse(t *testing.T) {
 	validCall := `{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}`
 	tests := []struct {
-		name       string
-		choice     string
-		wantError  string
-		wantCalls  int
-		wantReason string
+		name      string
+		choice    string
+		wantError string
+		wantCalls int
 	}{
 		{
 			name:      "missing role",
@@ -385,26 +385,22 @@ func TestCompleteValidatesChatCompletionResponse(t *testing.T) {
 			wantError: "has no function name",
 		},
 		{
-			name:       "valid length response",
-			choice:     `{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}`,
-			wantReason: "length",
+			name:   "valid length response",
+			choice: `{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}`,
 		},
 		{
-			name:       "missing finish reason with content",
-			choice:     `{"message":{"role":"assistant","content":"answer"}}`,
-			wantReason: "stop",
+			name:   "missing finish reason with content",
+			choice: `{"message":{"role":"assistant","content":"answer"}}`,
 		},
 		{
-			name:       "missing finish reason with tool calls",
-			choice:     `{"message":{"role":"assistant","tool_calls":[` + validCall + `]}}`,
-			wantCalls:  1,
-			wantReason: "tool_calls",
+			name:      "missing finish reason with tool calls",
+			choice:    `{"message":{"role":"assistant","tool_calls":[` + validCall + `]}}`,
+			wantCalls: 1,
 		},
 		{
-			name:       "valid tool calls",
-			choice:     `{"message":{"role":"assistant","tool_calls":[` + validCall + `]},"finish_reason":"tool_calls"}`,
-			wantCalls:  1,
-			wantReason: "tool_calls",
+			name:      "valid tool calls",
+			choice:    `{"message":{"role":"assistant","tool_calls":[` + validCall + `]},"finish_reason":"tool_calls"}`,
+			wantCalls: 1,
 		},
 	}
 
@@ -419,7 +415,7 @@ func TestCompleteValidatesChatCompletionResponse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New() error: %v", err)
 			}
-			completion, err := client.Complete(context.Background(), []Message{{Role: "user", Content: "question"}})
+			message, err := client.complete(context.Background(), []Message{{Role: "user", Content: "question"}}, nil)
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {
 					t.Fatalf("Complete() error = %v, want error containing %q", err, test.wantError)
@@ -429,8 +425,8 @@ func TestCompleteValidatesChatCompletionResponse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Complete() error: %v", err)
 			}
-			if len(completion.Message.ToolCalls) != test.wantCalls || completion.FinishReason != test.wantReason {
-				t.Errorf("completion = %#v, want %d calls and reason %q", completion, test.wantCalls, test.wantReason)
+			if len(message.ToolCalls) != test.wantCalls {
+				t.Errorf("tool calls = %d (%#v), want %d", len(message.ToolCalls), message, test.wantCalls)
 			}
 		})
 	}
@@ -449,7 +445,7 @@ func TestConversationRejectsDuplicateToolCallIDsBeforeExecution(t *testing.T) {
 	defer server.Close()
 
 	conversation := newCountingToolConversation(t, server.URL, &executions)
-	_, err := conversation.Send(context.Background(), "question")
+	err := conversation.Send(context.Background(), "question")
 	if err == nil || !strings.Contains(err.Error(), "duplicate tool call ID") {
 		t.Fatalf("Send() error = %v, want duplicate ID error", err)
 	}
@@ -475,7 +471,7 @@ func TestConversationChecksToolRoundLimitBeforeExecution(t *testing.T) {
 	defer server.Close()
 
 	conversation := newCountingToolConversation(t, server.URL, &executions)
-	_, err := conversation.Send(context.Background(), "question")
+	err := conversation.Send(context.Background(), "question")
 	const wantError = "llm: reached maximum of 16 consecutive tool-call rounds"
 	if err == nil || err.Error() != wantError {
 		t.Fatalf("Send() error = %v, want %q", err, wantError)
@@ -506,7 +502,7 @@ func TestConversationRespectsConfiguredToolRoundLimit(t *testing.T) {
 
 	conversation := newCountingToolConversation(t, server.URL, &executions)
 	conversation.SetMaxToolRounds(3)
-	_, err := conversation.Send(context.Background(), "question")
+	err := conversation.Send(context.Background(), "question")
 	const wantError = "llm: reached maximum of 3 consecutive tool-call rounds"
 	if err == nil || err.Error() != wantError {
 		t.Fatalf("Send() error = %v, want %q", err, wantError)
@@ -562,12 +558,12 @@ func TestCompleteUsesRequestedModelWhenResponseOmitsModel(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New() error: %v", err)
 			}
-			completion, err := client.Complete(context.Background(), []Message{{Role: "user", Content: "Hello"}})
+			message, err := client.complete(context.Background(), []Message{{Role: "user", Content: "Hello"}}, nil)
 			if err != nil {
-				t.Fatalf("Complete() error: %v", err)
+				t.Fatalf("complete() error: %v", err)
 			}
-			if completion.Model != "requested-model" || completion.Message.Model != "requested-model" {
-				t.Errorf("completion model = %q, message model = %q; want requested-model", completion.Model, completion.Message.Model)
+			if message.Model != "requested-model" {
+				t.Errorf("message model = %q, want requested-model", message.Model)
 			}
 		})
 	}
@@ -683,15 +679,17 @@ func TestResponsesConversationWithToolCall(t *testing.T) {
 		toolCallResults = append(toolCallResults, result)
 	})
 
-	completion, err := conversation.Send(context.Background(), "question")
+	err = conversation.Send(context.Background(), "question")
 	if err != nil {
 		t.Fatalf("Send() error: %v", err)
 	}
-	if completion.ID != "response-2" || completion.Message.Content != "answer" || completion.FinishReason != "stop" {
-		t.Errorf("completion = %#v, want final Responses answer", completion)
+	messages := conversation.Messages()
+	final := messages[len(messages)-1]
+	if final.Role != "assistant" || final.Content != "answer" {
+		t.Errorf("final message = %#v, want assistant answer", final)
 	}
-	if completion.Usage != (Usage{PromptTokens: 7, CompletionTokens: 11, TotalTokens: 18}) {
-		t.Errorf("usage = %#v, want Responses token counts", completion.Usage)
+	if final.TotalTokens == nil || *final.TotalTokens != 18 {
+		t.Errorf("total tokens = %v, want 18", final.TotalTokens)
 	}
 	if requestNumber != 2 {
 		t.Errorf("request count = %d, want 2", requestNumber)

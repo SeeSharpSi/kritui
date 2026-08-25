@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -120,11 +119,6 @@ func (t WebFetchTool) Execute(ctx context.Context, arguments json.RawMessage) (s
 	}
 	if response.ContentLength > webFetchMaxResponseSize {
 		return "", errors.New("webfetch: response too large (exceeds 5MB limit)")
-	}
-	if contentLength := response.Header.Get("Content-Length"); contentLength != "" {
-		if size, parseErr := strconv.ParseInt(contentLength, 10, 64); parseErr == nil && size > webFetchMaxResponseSize {
-			return "", errors.New("webfetch: response too large (exceeds 5MB limit)")
-		}
 	}
 
 	content, err := io.ReadAll(io.LimitReader(response.Body, webFetchMaxResponseSize+1))

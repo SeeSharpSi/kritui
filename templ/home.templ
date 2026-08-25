@@ -8,25 +8,55 @@ import (
 	"seesharpsi/kritui/llm"
 )
 
-templ Home(chatID string, chatURL string, messages []llm.Message, models []string, selectedModel string, defaultModel string, maxToolRounds int, tools []string, enabledTools []string, defaultTools []string, promptAppends []kritui_db.PromptAppend, ntfySettings kritui_db.NtfySettings, enabledAppendIDs []string, completionRequestID string, completionStarted bool, commandDefinitions []commands.Definition) {
+// HomeData groups every input the chat page renders. Field names replace a
+// sixteen-parameter positional list so same-typed values cannot transpose.
+type HomeData struct {
+	ChatID              string
+	ChatURL             string
+	Messages            []llm.Message
+	Models              []string
+	SelectedModel       string
+	DefaultModel        string
+	MaxToolRounds       int
+	Tools               []string
+	EnabledTools        []string
+	DefaultTools        []string
+	PromptAppends       []kritui_db.PromptAppend
+	NtfySettings        kritui_db.NtfySettings
+	EnabledAppendIDs    []string
+	CompletionRequestID string
+	CompletionStarted   bool
+	CommandDefinitions  []commands.Definition
+}
+
+templ Home(data HomeData) {
 	@Layout("Kritui") {
 		<main hx-history="false">
 			<section class="chat">
 				<div class="message-panel">
-					@MessageList(chatID, messages, false) {
-						if completionRequestID != "" {
-							if completionStarted {
-								@ActiveCompletion(chatID, completionRequestID, selectedModel, enabledTools)
+					@MessageList(data.ChatID, data.Messages, false) {
+						if data.CompletionRequestID != "" {
+							if data.CompletionStarted {
+								@ActiveCompletion(data.ChatID, data.CompletionRequestID, data.SelectedModel, data.EnabledTools)
 							} else {
-								@PendingCompletion(chatID, completionRequestID, selectedModel, enabledTools)
+								@PendingCompletion(data.ChatID, data.CompletionRequestID, data.SelectedModel, data.EnabledTools)
 							}
-						} else if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
-							@CompletionError(chatID, "Completion was interrupted. Retry the completion.", selectedModel, enabledTools)
+						} else if len(data.Messages) > 0 && data.Messages[len(data.Messages)-1].Role == "user" {
+							@CompletionError(data.ChatID, "Completion was interrupted. Retry the completion.", data.SelectedModel, data.EnabledTools)
 						}
 					}
 					<div id="page-panel">
-						@SettingsPage(chatID, models, defaultModel, maxToolRounds, tools, defaultTools, promptAppends, ntfySettings, false, false, "")
-						@HistoryPage(chatID)
+						@SettingsPage(SettingsPanelData{
+							ChatID:        data.ChatID,
+							Models:        data.Models,
+							SelectedModel: data.DefaultModel,
+							MaxToolRounds: data.MaxToolRounds,
+							ToolNames:     data.Tools,
+							DefaultTools:  data.DefaultTools,
+							PromptAppends: data.PromptAppends,
+							NtfySettings:  data.NtfySettings,
+						})
+						@HistoryPage(data.ChatID)
 					</div>
 				</div>
 				@SettingsButton()
@@ -36,18 +66,18 @@ templ Home(chatID string, chatURL string, messages []llm.Message, models []strin
 							<summary>
 								Model
 								<strong>
-									{ selectedModel }
+									{ data.SelectedModel }
 								</strong>
 							</summary>
 							<div class="model-options">
-								for _, model := range models {
+								for _, model := range data.Models {
 									<label>
 										<input
 											type="radio"
 											name="model"
 											value={ model }
 											form="message-form"
-											if model == selectedModel {
+											if model == data.SelectedModel {
 												checked
 											}
 											onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
@@ -62,16 +92,16 @@ templ Home(chatID string, chatURL string, messages []llm.Message, models []strin
 								Tools
 							</summary>
 							<div class="tool-options">
-								for _, tool := range tools {
+								for _, tool := range data.Tools {
 									<label>
-										<input type="checkbox" name="tool" value={ tool } form="message-form" if slices.Contains(enabledTools, tool) { checked }/>
+										<input type="checkbox" name="tool" value={ tool } form="message-form" if slices.Contains(data.EnabledTools, tool) { checked }/>
 										<span>{ tool }</span>
 										<span class="tool-state" aria-hidden="true"></span>
 									</label>
 								}
 							</div>
 						</details>
-						@AppendsPicker(promptAppends, enabledAppendIDs, false)
+						@AppendsPicker(data.PromptAppends, data.EnabledAppendIDs, false)
 					</div>
 					<summary style="outline: none;">
 						<span class="visually-hidden">Toggle chat options</span>
@@ -81,19 +111,19 @@ templ Home(chatID string, chatURL string, messages []llm.Message, models []strin
 			</section>
 			<form
 				id="message-form"
-				hx-post={ "/messages?chat=" + chatID }
+				hx-post={ "/messages?chat=" + data.ChatID }
 				hx-target="#messages"
 				hx-swap="beforeend"
 				hx-trigger="submit queue:none"
 				hx-sync="#messages:drop"
 				hx-disabled-elt="find button[type='submit']"
-				if chatURL != "" {
-					hx-replace-url={ chatURL }
+				if data.ChatURL != "" {
+					hx-replace-url={ data.ChatURL }
 				}
 			>
 				<label for="message" class="visually-hidden">Message</label>
 				<div id="command-autocomplete" class="command-autocomplete" role="listbox" aria-label="Slash commands" hidden>
-					for _, definition := range commandDefinitions {
+					for _, definition := range data.CommandDefinitions {
 						<div
 							id={ "command-option-" + definition.Name }
 							class="command-option"

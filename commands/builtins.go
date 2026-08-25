@@ -13,152 +13,96 @@ import (
 
 const commandEvent = "kritui:command"
 
-type redirectCommand struct {
-	definition Definition
-	location   string
-}
-
-// NewRedirectCommand creates an argument-free command that redirects the page.
-func NewRedirectCommand(name, description, location string) Command {
-	return &redirectCommand{
-		definition: Definition{Name: name, Description: description},
-		location:   location,
-	}
-}
-
-func (c *redirectCommand) Definition() Definition {
-	return c.definition
-}
-
-func (c *redirectCommand) Execute(_ context.Context, invocation Invocation) (Result, error) {
-	if invocation.Arguments != "" {
-		return Result{}, noArgumentsError(invocation.Name)
-	}
-	header := make(http.Header)
-	header.Set("HX-Redirect", c.location)
-	return Result{
-		Status: http.StatusNoContent,
-		Header: header,
-	}, nil
-}
-
-func (c *redirectCommand) validate() error {
-	if strings.TrimSpace(c.location) == "" {
-		return errors.New("redirect location is required")
-	}
-	return nil
-}
-
-type panelCommand struct {
-	definition Definition
-	panelID    string
-}
-
-// NewPanelCommand creates an argument-free command that opens an existing UI panel.
-func NewPanelCommand(name, description, panelID string) Command {
-	return &panelCommand{
-		definition: Definition{Name: name, Description: description},
-		panelID:    panelID,
-	}
-}
-
-func (c *panelCommand) Definition() Definition {
-	return c.definition
-}
-
-func (c *panelCommand) Execute(_ context.Context, invocation Invocation) (Result, error) {
-	if invocation.Arguments != "" {
-		return Result{}, noArgumentsError(invocation.Name)
-	}
-	return completedResult(c.panelID)
-}
-
-func (c *panelCommand) validate() error {
-	if strings.TrimSpace(c.panelID) == "" {
-		return errors.New("panel ID is required")
-	}
-	return nil
-}
-
 // RenameFunc persists a title for one chat.
 type RenameFunc func(ctx context.Context, chatID int64, title string) error
-
-type renameCommand struct {
-	rename RenameFunc
-}
-
-// NewRenameCommand creates /rename with injected persistence behavior.
-func NewRenameCommand(rename RenameFunc) Command {
-	return &renameCommand{rename: rename}
-}
-
-func (c *renameCommand) Definition() Definition {
-	return Definition{Name: "rename", Description: "Rename the current chat", RequiresArguments: true}
-}
-
-func (c *renameCommand) Execute(ctx context.Context, invocation Invocation) (Result, error) {
-	if invocation.Arguments == "" {
-		return Result{}, &UserError{Status: http.StatusBadRequest, Message: "Usage: /rename <title>."}
-	}
-	if err := c.rename(ctx, invocation.ChatID, invocation.Arguments); err != nil {
-		return Result{}, err
-	}
-	return completedResult("")
-}
-
-func (c *renameCommand) validate() error {
-	if c.rename == nil {
-		return errors.New("rename function is required")
-	}
-	return nil
-}
 
 // MessageHistoryFunc changes one chat's visible history and returns its
 // server-rendered replacement.
 type MessageHistoryFunc func(ctx context.Context, chatID int64) (templ.Component, error)
 
-type messageHistoryCommand struct {
-	definition Definition
-	change     MessageHistoryFunc
+// NewRedirectCommand creates an argument-free command that redirects the page.
+func NewRedirectCommand(name, description, location string) (Command, error) {
+	if strings.TrimSpace(location) == "" {
+		return Command{}, errors.New("commands: redirect location is required")
+	}
+	return NewCommand(
+		Definition{Name: name, Description: description},
+		func(_ context.Context, invocation Invocation) (Result, error) {
+			if invocation.Arguments != "" {
+				return Result{}, noArgumentsError(invocation.Name)
+			}
+			header := make(http.Header)
+			header.Set("HX-Redirect", location)
+			return Result{
+				Status: http.StatusNoContent,
+				Header: header,
+			}, nil
+		},
+	)
+}
+
+// NewPanelCommand creates an argument-free command that opens an existing UI panel.
+func NewPanelCommand(name, description, panelID string) (Command, error) {
+	if strings.TrimSpace(panelID) == "" {
+		return Command{}, errors.New("commands: panel ID is required")
+	}
+	return NewCommand(
+		Definition{Name: name, Description: description},
+		func(_ context.Context, invocation Invocation) (Result, error) {
+			if invocation.Arguments != "" {
+				return Result{}, noArgumentsError(invocation.Name)
+			}
+			return completedResult(panelID)
+		},
+	)
+}
+
+// NewRenameCommand creates /rename with injected persistence behavior.
+func NewRenameCommand(rename RenameFunc) (Command, error) {
+	if rename == nil {
+		return Command{}, errors.New("commands: rename function is required")
+	}
+	return NewCommand(
+		Definition{Name: "rename", Description: "Rename the current chat", RequiresArguments: true},
+		func(ctx context.Context, invocation Invocation) (Result, error) {
+			if invocation.Arguments == "" {
+				return Result{}, &UserError{Status: http.StatusBadRequest, Message: "Usage: /rename <title>."}
+			}
+			if err := rename(ctx, invocation.ChatID, invocation.Arguments); err != nil {
+				return Result{}, err
+			}
+			return completedResult("")
+		},
+	)
 }
 
 // NewMessageHistoryCommand creates an argument-free command that replaces the
 // current message list after changing stored history.
-func NewMessageHistoryCommand(name, description string, change MessageHistoryFunc) Command {
-	return &messageHistoryCommand{
-		definition: Definition{Name: name, Description: description},
-		change:     change,
+func NewMessageHistoryCommand(name, description string, change MessageHistoryFunc) (Command, error) {
+	if change == nil {
+		return Command{}, errors.New("commands: message history function is required")
 	}
-}
-
-func (c *messageHistoryCommand) Definition() Definition {
-	return c.definition
-}
-
-func (c *messageHistoryCommand) Execute(ctx context.Context, invocation Invocation) (Result, error) {
-	if invocation.Arguments != "" {
-		return Result{}, noArgumentsError(invocation.Name)
-	}
-	body, err := c.change(ctx, invocation.ChatID)
-	if err != nil {
-		return Result{}, err
-	}
-	trigger, err := encodeCommandEvent(map[string]any{"preserveInput": true})
-	if err != nil {
-		return Result{}, err
-	}
-	header := make(http.Header)
-	header.Set("HX-Retarget", "#message-list")
-	header.Set("HX-Reswap", "outerHTML")
-	header.Set("HX-Trigger-After-Settle", trigger)
-	return Result{Status: http.StatusOK, Header: header, Body: body}, nil
-}
-
-func (c *messageHistoryCommand) validate() error {
-	if c.change == nil {
-		return errors.New("message history function is required")
-	}
-	return nil
+	return NewCommand(
+		Definition{Name: name, Description: description},
+		func(ctx context.Context, invocation Invocation) (Result, error) {
+			if invocation.Arguments != "" {
+				return Result{}, noArgumentsError(invocation.Name)
+			}
+			body, err := change(ctx, invocation.ChatID)
+			if err != nil {
+				return Result{}, err
+			}
+			trigger, err := encodeCommandEvent(map[string]any{"preserveInput": true})
+			if err != nil {
+				return Result{}, err
+			}
+			header := make(http.Header)
+			header.Set("HX-Retarget", "#message-list")
+			header.Set("HX-Reswap", "outerHTML")
+			header.Set("HX-Trigger-After-Settle", trigger)
+			return Result{Status: http.StatusOK, Header: header, Body: body}, nil
+		},
+	)
 }
 
 func completedResult(panelID string) (Result, error) {

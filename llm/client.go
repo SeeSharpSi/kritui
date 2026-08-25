@@ -62,10 +62,6 @@ func NewResponsesProviderMetadata(output []json.RawMessage) (ProviderMetadata, e
 	return ProviderMetadata{responsesOutput: cloneRawMessages(output)}, nil
 }
 
-func newResponsesProviderMetadata(output []json.RawMessage) (ProviderMetadata, error) {
-	return NewResponsesProviderMetadata(output)
-}
-
 // ResponsesOutput returns a deep copy of stored Responses API output items.
 func (m ProviderMetadata) ResponsesOutput() []json.RawMessage {
 	return cloneRawMessages(m.responsesOutput)
@@ -145,21 +141,10 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
-// Usage reports token counts returned by the endpoint.
+// Usage reports the persisted token accounting returned by the endpoint.
 type Usage struct {
-	PromptTokens     int      `json:"prompt_tokens"`
-	CompletionTokens int      `json:"completion_tokens"`
-	TotalTokens      int      `json:"total_tokens"`
-	Cost             *float64 `json:"cost,omitempty"`
-}
-
-// Completion is the first choice returned by a chat completion request.
-type Completion struct {
-	ID           string
-	Model        string
-	Message      Message
-	FinishReason string
-	Usage        Usage
+	TotalTokens int      `json:"total_tokens"`
+	Cost        *float64 `json:"cost,omitempty"`
 }
 
 // APIError describes a non-successful response from the endpoint.
@@ -268,12 +253,17 @@ func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, err
 	}, nil
 }
 
-// Complete requests a non-streaming chat completion for messages.
-func (c *Client) Complete(ctx context.Context, messages []Message) (Completion, error) {
-	return c.complete(ctx, messages, nil)
+func (c *Client) complete(ctx context.Context, messages []Message, definitions []tools.Definition) (Message, error) {
+	if len(messages) == 0 {
+		return Message{}, errors.New("llm: at least one message is required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.completeTimeout)
+	defer cancel()
+	if c.responses {
+		return c.completeResponse(ctx, messages, definitions)
+	}
+	return c.completeChat(ctx, messages, definitions)
 }
-
-// Models returns model identifiers advertised by the endpoint.
 func (c *Client) Models(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.modelsTimeout)
 	defer cancel()
@@ -311,18 +301,6 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 		}
 	}
 	return models, nil
-}
-
-func (c *Client) complete(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
-	if len(messages) == 0 {
-		return Completion{}, errors.New("llm: at least one message is required")
-	}
-	ctx, cancel := context.WithTimeout(ctx, c.completeTimeout)
-	defer cancel()
-	if c.responses {
-		return c.completeResponse(ctx, messages, definitions)
-	}
-	return c.completeChat(ctx, messages, definitions)
 }
 
 func (c *Client) postJSON(ctx context.Context, payload any, target any) error {
@@ -421,7 +399,7 @@ func endpointError(resp *http.Response) error {
 }
 
 func applyUsage(message *Message, usage Usage) {
-	if usage.TotalTokens != 0 || usage.PromptTokens != 0 || usage.CompletionTokens != 0 {
+	if usage.TotalTokens != 0 {
 		total := usage.TotalTokens
 		message.TotalTokens = &total
 	}

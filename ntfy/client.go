@@ -76,12 +76,8 @@ func (c Client) Publish(ctx context.Context, config Config, title, message strin
 	if err != nil {
 		return err
 	}
-	requestContext := ctx
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		requestContext, cancel = context.WithTimeout(ctx, defaultRequestTimeout)
-		defer cancel()
-	}
+	requestContext, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
 	request, err := http.NewRequestWithContext(requestContext, http.MethodPost, address, strings.NewReader(message))
 	if err != nil {
 		return fmt.Errorf("ntfy: create request: %w", err)
@@ -124,7 +120,6 @@ func (c Client) httpClient() HTTPDoer {
 }
 
 var defaultHTTPClient = &http.Client{
-	Timeout: defaultRequestTimeout,
 	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	},

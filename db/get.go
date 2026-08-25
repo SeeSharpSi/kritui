@@ -59,31 +59,6 @@ type messageQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-// GetChats returns chats from most recently updated to least recently updated.
-func GetChats(ctx context.Context, db *sql.DB) ([]Chat, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT chats.id, chats.title, chats.created_at, chats.updated_at
-		FROM chats
-		WHERE EXISTS (
-			SELECT 1
-			FROM messages
-			WHERE messages.chat_id = chats.id
-		)
-		ORDER BY chats.updated_at DESC, chats.id DESC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("get chats: %w", err)
-	}
-	chats, err := scanChats(rows)
-	if err != nil {
-		return nil, err
-	}
-	if err := loadChatTools(ctx, db, chats); err != nil {
-		return nil, err
-	}
-	return chats, nil
-}
-
 // GetChatsPage returns chats after the supplied cursor, ordered from most to
 // least recently updated. An empty cursor returns the first page.
 func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, beforeID int64, limit int) ([]Chat, error) {

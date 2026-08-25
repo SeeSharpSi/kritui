@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"reflect"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode"
 
@@ -54,10 +52,22 @@ type Result struct {
 	Body   templ.Component
 }
 
-// Command is one capability exposed through slash-command input.
-type Command interface {
-	Definition() Definition
-	Execute(ctx context.Context, invocation Invocation) (Result, error)
+// Command couples one validated definition with its execute behavior.
+type Command struct {
+	definition Definition
+	execute    func(ctx context.Context, invocation Invocation) (Result, error)
+}
+
+// NewCommand validates the definition and binds it to an execute function so
+// dependency problems surface at construction instead of registration time.
+func NewCommand(definition Definition, execute func(context.Context, Invocation) (Result, error)) (Command, error) {
+	if err := validateDefinition(definition); err != nil {
+		return Command{}, err
+	}
+	if execute == nil {
+		return Command{}, errors.New("commands: execute function is required")
+	}
+	return Command{definition: definition, execute: execute}, nil
 }
 
 // UserError is safe to display to the user with its HTTP status.
@@ -73,44 +83,34 @@ func (e *UserError) Error() string {
 	return e.Message
 }
 
-type registeredCommand struct {
-	definition Definition
-	command    Command
-}
-
 // Registry is an immutable set of commands and is safe for concurrent use.
 // Command implementations remain responsible for concurrency safety.
 type Registry struct {
-	byName map[string]registeredCommand
+	byName map[string]Command
 	order  []string
 }
 
-// NewRegistry creates a registry and validates every command definition.
+// NewRegistry creates a registry and revalidates every command definition so
+// directly constructed Command values cannot bypass validation.
 func NewRegistry(commandList ...Command) (*Registry, error) {
 	registry := &Registry{
-		byName: make(map[string]registeredCommand, len(commandList)),
+		byName: make(map[string]Command, len(commandList)),
 		order:  make([]string, 0, len(commandList)),
 	}
 
 	for index, command := range commandList {
-		if isNilCommand(command) {
+		if command.execute == nil {
 			return nil, fmt.Errorf("commands: register command at index %d: command is nil", index)
 		}
-		definition := command.Definition()
-		if err := validateDefinition(definition); err != nil {
+		if err := validateDefinition(command.definition); err != nil {
 			return nil, fmt.Errorf("commands: register command at index %d: %w", index, err)
 		}
-		if validator, ok := command.(interface{ validate() error }); ok {
-			if err := validator.validate(); err != nil {
-				return nil, fmt.Errorf("commands: register %q: %w", definition.Name, err)
-			}
-		}
-		if _, exists := registry.byName[definition.Name]; exists {
-			return nil, fmt.Errorf("commands: register %q: duplicate command name", definition.Name)
+		if _, exists := registry.byName[command.definition.Name]; exists {
+			return nil, fmt.Errorf("commands: register %q: duplicate command name", command.definition.Name)
 		}
 
-		registry.byName[definition.Name] = registeredCommand{definition: definition, command: command}
-		registry.order = append(registry.order, definition.Name)
+		registry.byName[command.definition.Name] = command
+		registry.order = append(registry.order, command.definition.Name)
 	}
 
 	return registry, nil
@@ -138,11 +138,6 @@ func Parse(input string) (Parsed, bool, error) {
 	return Parsed{Name: name, Arguments: arguments}, true, nil
 }
 
-// Names returns registered command names in registration order.
-func (r *Registry) Names() []string {
-	return slices.Clone(r.order)
-}
-
 // Definitions returns command definitions in registration order.
 func (r *Registry) Definitions() []Definition {
 	definitions := make([]Definition, 0, len(r.order))
@@ -152,12 +147,6 @@ func (r *Registry) Definitions() []Definition {
 	return definitions
 }
 
-// Lookup returns a registered command by name.
-func (r *Registry) Lookup(name string) (Command, bool) {
-	registered, ok := r.byName[name]
-	return registered.command, ok
-}
-
 // Execute invokes a registered command.
 func (r *Registry) Execute(ctx context.Context, parsed Parsed, chatID int64) (Result, error) {
 	registered, exists := r.byName[parsed.Name]
@@ -165,7 +154,7 @@ func (r *Registry) Execute(ctx context.Context, parsed Parsed, chatID int64) (Re
 		return Result{}, fmt.Errorf("%w: %q", ErrCommandNotFound, parsed.Name)
 	}
 
-	return registered.command.Execute(ctx, Invocation{
+	return registered.execute(ctx, Invocation{
 		Name:      parsed.Name,
 		ChatID:    chatID,
 		Arguments: parsed.Arguments,
@@ -186,18 +175,4 @@ func validateDefinition(definition Definition) error {
 		return fmt.Errorf("command %q description is required", definition.Name)
 	}
 	return nil
-}
-
-func isNilCommand(command Command) bool {
-	if command == nil {
-		return true
-	}
-
-	value := reflect.ValueOf(command)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
-		return false
-	}
 }

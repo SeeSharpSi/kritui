@@ -44,7 +44,7 @@ type gitSessionContextKey struct{}
 type GitSession struct {
 	mu           sync.Mutex
 	closed       bool
-	repositories map[*gitRuntime]map[string]*gitRepository
+	repositories map[string]*gitRepository
 }
 
 type gitRuntime struct {
@@ -71,7 +71,7 @@ func newGitRuntime() *gitRuntime {
 
 // NewGitSession creates an empty request-scoped Git session.
 func NewGitSession() *GitSession {
-	return &GitSession{repositories: make(map[*gitRuntime]map[string]*gitRepository)}
+	return &GitSession{repositories: make(map[string]*gitRepository)}
 }
 
 // Context returns a child context through which Git tools access this session.
@@ -91,11 +91,9 @@ func (s *GitSession) Close() error {
 		return nil
 	}
 	s.closed = true
-	var repositories []*gitRepository
-	for _, byKey := range s.repositories {
-		for _, repository := range byKey {
-			repositories = append(repositories, repository)
-		}
+	repositories := make([]*gitRepository, 0, len(s.repositories))
+	for _, repository := range s.repositories {
+		repositories = append(repositories, repository)
 	}
 	s.repositories = nil
 	s.mu.Unlock()
@@ -142,15 +140,10 @@ func (r *gitRuntime) repository(ctx context.Context, session *GitSession, addres
 	if session.closed {
 		return nil, errors.New("git: request session is closed")
 	}
-	byKey := session.repositories[r]
-	if byKey == nil {
-		byKey = make(map[string]*gitRepository)
-		session.repositories[r] = byKey
-	}
-	if repository := byKey[key]; repository != nil {
+	if repository := session.repositories[key]; repository != nil {
 		return repository, nil
 	}
-	if len(byKey) >= gitMaxRepositoriesPerSession {
+	if len(session.repositories) >= gitMaxRepositoriesPerSession {
 		return nil, fmt.Errorf("git: at most %d repositories may be inspected in one response", gitMaxRepositoriesPerSession)
 	}
 
@@ -158,7 +151,7 @@ func (r *gitRuntime) repository(ctx context.Context, session *GitSession, addres
 	if err != nil {
 		return nil, err
 	}
-	byKey[key] = repository
+	session.repositories[key] = repository
 	return repository, nil
 }
 

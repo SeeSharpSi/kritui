@@ -19,7 +19,7 @@ func TestGetMaxToolRoundsFallsBackWhenUnset(t *testing.T) {
 
 func TestSetAndGetMaxToolRounds(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
-	if err := SetMaxToolRounds(context.Background(), database, 42); err != nil {
+	if err := setMaxToolRounds(context.Background(), database, 42); err != nil {
 		t.Fatalf("SetMaxToolRounds() error: %v", err)
 	}
 	rounds, err := GetMaxToolRounds(context.Background(), database, 1)
@@ -34,7 +34,7 @@ func TestSetAndGetMaxToolRounds(t *testing.T) {
 func TestSetMaxToolRoundsRejectsInvalidValues(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
 	for _, rounds := range []int{0, -1, MaxConfigurableToolRounds + 1} {
-		if err := SetMaxToolRounds(context.Background(), database, rounds); err == nil {
+		if err := setMaxToolRounds(context.Background(), database, rounds); err == nil {
 			t.Errorf("SetMaxToolRounds(%d) error = nil, want error", rounds)
 		}
 	}
@@ -62,8 +62,8 @@ func TestGetDefaultEnabledToolsFallsBackWhenUnset(t *testing.T) {
 
 func TestSetAndGetDefaultEnabledTools(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
-	if err := SetDefaultEnabledTools(context.Background(), database, []string{"webfetch", "git"}); err != nil {
-		t.Fatalf("SetDefaultEnabledTools() error: %v", err)
+	if err := setDefaultEnabledTools(context.Background(), database, []string{"webfetch", "git"}); err != nil {
+		t.Fatalf("setDefaultEnabledTools() error: %v", err)
 	}
 	names, err := GetDefaultEnabledTools(context.Background(), database, nil)
 	if err != nil {
@@ -76,8 +76,8 @@ func TestSetAndGetDefaultEnabledTools(t *testing.T) {
 
 func TestSetDefaultEnabledToolsStoresOrderedRows(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
-	if err := SetDefaultEnabledTools(context.Background(), database, []string{"webfetch", "git"}); err != nil {
-		t.Fatalf("SetDefaultEnabledTools() error: %v", err)
+	if err := setDefaultEnabledTools(context.Background(), database, []string{"webfetch", "git"}); err != nil {
+		t.Fatalf("setDefaultEnabledTools() error: %v", err)
 	}
 	rows, err := database.Query(`SELECT position, name FROM default_tools ORDER BY position`)
 	if err != nil {
@@ -101,11 +101,11 @@ func TestSetDefaultEnabledToolsStoresOrderedRows(t *testing.T) {
 
 func TestSetDefaultEnabledToolsReplacesWithExplicitEmptyList(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
-	if err := SetDefaultEnabledTools(context.Background(), database, []string{"webfetch"}); err != nil {
-		t.Fatalf("SetDefaultEnabledTools() error: %v", err)
+	if err := setDefaultEnabledTools(context.Background(), database, []string{"webfetch"}); err != nil {
+		t.Fatalf("setDefaultEnabledTools() error: %v", err)
 	}
-	if err := SetDefaultEnabledTools(context.Background(), database, []string{}); err != nil {
-		t.Fatalf("SetDefaultEnabledTools() error: %v", err)
+	if err := setDefaultEnabledTools(context.Background(), database, []string{}); err != nil {
+		t.Fatalf("setDefaultEnabledTools() error: %v", err)
 	}
 	names, err := GetDefaultEnabledTools(context.Background(), database, []string{"fallback"})
 	if err != nil {
@@ -132,10 +132,7 @@ func TestSaveSettingsRollsBackWhenPromptAppendsWriteFails(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed SaveSettings() error: %v", err)
 	}
-	chatID, err := InsertChat(ctx, database, "rollback chat", []string{"git"}, []string{"keep", "gone"})
-	if err != nil {
-		t.Fatalf("InsertChat() error: %v", err)
-	}
+	chatID := insertNamedChat(t, database, "rollback chat", []string{"git"}, []string{"keep", "gone"})
 
 	if _, err := database.Exec(`
 		CREATE TRIGGER fail_prompt_appends_insert
@@ -148,7 +145,7 @@ func TestSaveSettingsRollsBackWhenPromptAppendsWriteFails(t *testing.T) {
 		t.Fatalf("inject failure trigger: %v", err)
 	}
 
-	err = SaveSettings(ctx, database, SettingsUpdate{
+	err := SaveSettings(ctx, database, SettingsUpdate{
 		Model:         "new-model",
 		MaxToolRounds: 9,
 		DefaultTools:  []string{"webfetch"},
@@ -189,8 +186,8 @@ func TestSaveSettingsPreservesPromptAppendsWhenOmitted(t *testing.T) {
 	ctx := context.Background()
 	database := openMessagesTestDatabase(t, "")
 	appends := []PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction."}}
-	if err := SetPromptAppends(ctx, database, appends); err != nil {
-		t.Fatalf("SetPromptAppends() error: %v", err)
+	if err := setPromptAppends(ctx, database, appends); err != nil {
+		t.Fatalf("setPromptAppends() error: %v", err)
 	}
 
 	if err := SaveSettings(ctx, database, SettingsUpdate{
@@ -224,9 +221,10 @@ func TestNtfySettingsKeepSecretOutOfPublicValues(t *testing.T) {
 	apiKey := "secret-token"
 
 	if err := SaveNtfySettings(ctx, database, NtfySettingsUpdate{
-		Endpoint: "https://ntfy.example",
-		Topic:    "kritui",
-		APIKey:   &apiKey,
+		Endpoint:     "https://ntfy.example",
+		Topic:        "kritui",
+		APIKeyChange: NtfyReplaceAPIKey,
+		APIKeyValue:  apiKey,
 	}); err != nil {
 		t.Fatalf("SaveNtfySettings() error: %v", err)
 	}
@@ -262,9 +260,9 @@ func TestNtfySettingsKeepSecretOutOfPublicValues(t *testing.T) {
 	}
 
 	if err := SaveNtfySettings(ctx, database, NtfySettingsUpdate{
-		Endpoint:    private.Endpoint,
-		Topic:       private.Topic,
-		ClearAPIKey: true,
+		Endpoint:     private.Endpoint,
+		Topic:        private.Topic,
+		APIKeyChange: NtfyClearAPIKey,
 	}); err != nil {
 		t.Fatalf("SaveNtfySettings() clear error: %v", err)
 	}
@@ -282,9 +280,10 @@ func TestSaveNtfySettingsClearsDestinationAndSecret(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
 	apiKey := "secret-token"
 	if err := SaveNtfySettings(ctx, database, NtfySettingsUpdate{
-		Endpoint: "https://ntfy.example",
-		Topic:    "kritui",
-		APIKey:   &apiKey,
+		Endpoint:     "https://ntfy.example",
+		Topic:        "kritui",
+		APIKeyChange: NtfyReplaceAPIKey,
+		APIKeyValue:  apiKey,
 	}); err != nil {
 		t.Fatalf("seed SaveNtfySettings() error: %v", err)
 	}

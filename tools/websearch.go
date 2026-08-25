@@ -123,15 +123,10 @@ func (t WebSearchTool) Execute(ctx context.Context, arguments json.RawMessage) (
 	if len(payload.Results) > params.maxResults {
 		payload.Results = payload.Results[:params.maxResults]
 	}
-
-	result := webSearchResponse{
-		Query:   payload.Query,
-		Results: payload.Results,
+	if payload.Query == "" {
+		payload.Query = params.query
 	}
-	if result.Query == "" {
-		result.Query = params.query
-	}
-	encoded, err := json.Marshal(result)
+	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("websearch: encode results: %w", err)
 	}
@@ -192,11 +187,6 @@ func webSearchEndpoint(serverURL, query string) (string, error) {
 }
 
 type searXNGResponse struct {
-	Query   string            `json:"query"`
-	Results []webSearchResult `json:"results"`
-}
-
-type webSearchResponse struct {
 	Query   string            `json:"query"`
 	Results []webSearchResult `json:"results"`
 }

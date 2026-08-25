@@ -695,3 +695,16 @@ func insertMessagesTestUser(t *testing.T, database *sql.DB) {
 		t.Fatalf("insert user message: %v", err)
 	}
 }
+
+func insertNamedChat(t *testing.T, database *sql.DB, title string, tools, appendIDs []string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var id int64
+	if err := database.QueryRowContext(ctx, `INSERT INTO chats (title) VALUES (?) RETURNING id`, title).Scan(&id); err != nil {
+		t.Fatalf("insert chat %q: %v", title, err)
+	}
+	if err := replaceChatOptions(ctx, database, id, tools, appendIDs); err != nil {
+		t.Fatalf("store options for chat %q: %v", title, err)
+	}
+	return id
+}

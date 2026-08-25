@@ -9,9 +9,21 @@ import (
 	"github.com/a-h/templ"
 )
 
+func execCommand(t *testing.T, command Command, parsed Parsed) (Result, error) {
+	t.Helper()
+	registry, err := NewRegistry(command)
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	return registry.Execute(context.Background(), parsed, 0)
+}
+
 func TestRedirectCommand(t *testing.T) {
-	command := NewRedirectCommand("new", "Start a new chat", "/")
-	result, err := command.Execute(context.Background(), Invocation{Name: "new"})
+	command, err := NewRedirectCommand("new", "Start a new chat", "/")
+	if err != nil {
+		t.Fatalf("NewRedirectCommand() error: %v", err)
+	}
+	result, err := execCommand(t, command, Parsed{Name: "new"})
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
@@ -19,7 +31,7 @@ func TestRedirectCommand(t *testing.T) {
 		t.Errorf("result = %#v, want 204 redirect to /", result)
 	}
 
-	_, err = command.Execute(context.Background(), Invocation{Name: "new", Arguments: "extra"})
+	_, err = execCommand(t, command, Parsed{Name: "new", Arguments: "extra"})
 	var userError *UserError
 	if !errors.As(err, &userError) || userError.Status != http.StatusBadRequest {
 		t.Fatalf("Execute(arguments) error = %v, want bad-request UserError", err)
@@ -27,8 +39,11 @@ func TestRedirectCommand(t *testing.T) {
 }
 
 func TestPanelCommand(t *testing.T) {
-	command := NewPanelCommand("history", "Open history", "history-page")
-	result, err := command.Execute(context.Background(), Invocation{Name: "history"})
+	command, err := NewPanelCommand("history", "Open history", "history-page")
+	if err != nil {
+		t.Fatalf("NewPanelCommand() error: %v", err)
+	}
+	result, err := execCommand(t, command, Parsed{Name: "history"})
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
@@ -43,27 +58,30 @@ func TestPanelCommand(t *testing.T) {
 func TestRenameCommand(t *testing.T) {
 	var gotChatID int64
 	var gotTitle string
-	command := NewRenameCommand(func(_ context.Context, chatID int64, title string) error {
+	command, err := NewRenameCommand(func(_ context.Context, chatID int64, title string) error {
 		gotChatID = chatID
 		gotTitle = title
 		return nil
 	})
-	if definition := command.Definition(); !definition.RequiresArguments {
-		t.Errorf("Definition().RequiresArguments = false, want true")
+	if err != nil {
+		t.Fatalf("NewRenameCommand() error: %v", err)
+	}
+	if !command.definition.RequiresArguments {
+		t.Errorf("definition.RequiresArguments = false, want true")
 	}
 
-	result, err := command.Execute(context.Background(), Invocation{Name: "rename", ChatID: 7, Arguments: "New title"})
+	result, err := execCommand(t, command, Parsed{Name: "rename", Arguments: "New title"})
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
-	if gotChatID != 7 || gotTitle != "New title" {
-		t.Errorf("rename arguments = %d %q, want 7 New title", gotChatID, gotTitle)
+	if gotChatID != 0 || gotTitle != "New title" {
+		t.Errorf("rename arguments = %d %q, want 0 New title", gotChatID, gotTitle)
 	}
 	if got := result.Header.Get("HX-Trigger"); got != `{"kritui:command":{}}` {
 		t.Errorf("HX-Trigger = %q", got)
 	}
 
-	_, err = command.Execute(context.Background(), Invocation{Name: "rename"})
+	_, err = execCommand(t, command, Parsed{Name: "rename"})
 	var userError *UserError
 	if !errors.As(err, &userError) || userError.Message != "Usage: /rename <title>." {
 		t.Fatalf("Execute(empty title) error = %v, want usage UserError", err)
@@ -72,17 +90,20 @@ func TestRenameCommand(t *testing.T) {
 
 func TestMessageHistoryCommand(t *testing.T) {
 	var gotChatID int64
-	command := NewMessageHistoryCommand("undo", "Undo", func(_ context.Context, chatID int64) (templ.Component, error) {
+	command, err := NewMessageHistoryCommand("undo", "Undo", func(_ context.Context, chatID int64) (templ.Component, error) {
 		gotChatID = chatID
 		return templ.Raw("changed"), nil
 	})
+	if err != nil {
+		t.Fatalf("NewMessageHistoryCommand() error: %v", err)
+	}
 
-	result, err := command.Execute(context.Background(), Invocation{Name: "undo", ChatID: 7})
+	result, err := execCommand(t, command, Parsed{Name: "undo"})
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
-	if gotChatID != 7 {
-		t.Errorf("chat ID = %d, want 7", gotChatID)
+	if gotChatID != 0 {
+		t.Errorf("chat ID = %d, want default zero injected by Execute", gotChatID)
 	}
 	if result.Status != http.StatusOK || result.Body == nil {
 		t.Errorf("result = %#v, want 200 with body", result)
@@ -97,7 +118,7 @@ func TestMessageHistoryCommand(t *testing.T) {
 		t.Errorf("HX-Trigger-After-Settle = %q", got)
 	}
 
-	_, err = command.Execute(context.Background(), Invocation{Name: "undo", Arguments: "extra"})
+	_, err = execCommand(t, command, Parsed{Name: "undo", Arguments: "extra"})
 	var userError *UserError
 	if !errors.As(err, &userError) || userError.Status != http.StatusBadRequest {
 		t.Fatalf("Execute(arguments) error = %v, want bad-request UserError", err)
@@ -106,18 +127,22 @@ func TestMessageHistoryCommand(t *testing.T) {
 
 func TestRegistryValidatesBuiltinDependencies(t *testing.T) {
 	tests := []struct {
-		name    string
-		command Command
+		name        string
+		constructor func() (Command, error)
 	}{
-		{name: "redirect location", command: NewRedirectCommand("new", "New", "")},
-		{name: "panel ID", command: NewPanelCommand("history", "History", "")},
-		{name: "rename function", command: NewRenameCommand(nil)},
-		{name: "message history function", command: NewMessageHistoryCommand("undo", "Undo", nil)},
+		{name: "redirect location", constructor: func() (Command, error) { return NewRedirectCommand("new", "New", "") }},
+		{name: "panel ID", constructor: func() (Command, error) { return NewPanelCommand("history", "History", "") }},
+		{name: "rename function", constructor: func() (Command, error) { return NewRenameCommand(nil) }},
+		{name: "message history function", constructor: func() (Command, error) { return NewMessageHistoryCommand("undo", "Undo", nil) }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := NewRegistry(test.command); err == nil {
-				t.Fatal("NewRegistry() error = nil, want validation error")
+			command, err := test.constructor()
+			if err == nil {
+				t.Fatal("constructor error = nil, want validation error")
+			}
+			if command.execute != nil {
+				t.Errorf("invalid constructor returned populated command %#v", command)
 			}
 		})
 	}

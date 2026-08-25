@@ -87,6 +87,14 @@ func (t *toolCallTracker) finish(content string) {
 	t.updates = make(chan struct{})
 }
 
+// isFinished reports whether the tracker reached its terminal state. Live
+// completion exclusivity per chat derives from this predicate.
+func (t *toolCallTracker) isFinished() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.finished
+}
+
 func (t *toolCallTracker) close() {
 	t.closeOnce.Do(func() {
 		close(t.done)
@@ -109,50 +117,60 @@ type activeCompletion struct {
 	started   bool
 }
 
+// toolCallStore tracks completion requests by opaque request ID. At most one
+// live (unclaimed or running, not yet finished) tracker may exist per chat;
+// finished trackers are retained for reconnect replay until their TTL lapses.
 type toolCallStore struct {
 	mu           sync.RWMutex
-	trackers     map[string]*toolCallTrackerEntry
-	activeChats  map[int64]string
+	entries      map[string]*toolCallTrackerEntry
 	unclaimedTTL time.Duration
 	finishedTTL  time.Duration
 }
 
 func newToolCallStore() *toolCallStore {
 	return &toolCallStore{
-		trackers:     make(map[string]*toolCallTrackerEntry),
-		activeChats:  make(map[int64]string),
+		entries:      make(map[string]*toolCallTrackerEntry),
 		unclaimedTTL: toolCallUnclaimedTrackerTTL,
 		finishedTTL:  toolCallFinishedTrackerTTL,
 	}
 }
 
+// liveEntryFor returns the unfinished entry blocking a new completion for the
+// chat, if any. Finished entries retained for replay never block.
+func (s *toolCallStore) liveEntryFor(chatID int64) (string, *toolCallTrackerEntry) {
+	for id, entry := range s.entries {
+		if entry.chatID == chatID && !entry.tracker.isFinished() {
+			return id, entry
+		}
+	}
+	return "", nil
+}
+
 func (s *toolCallStore) create(chatID int64, model string, tools []string) (string, error) {
+	s.mu.Lock()
+	if _, existing := s.liveEntryFor(chatID); existing != nil {
+		s.mu.Unlock()
+		return "", errChatCompletionActive
+	}
+
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
+		s.mu.Unlock()
 		return "", err
 	}
 	id := hex.EncodeToString(token[:])
 
-	s.mu.Lock()
-	_, active := s.activeChats[chatID]
-	if !active {
-		entry := &toolCallTrackerEntry{
-			tracker: newToolCallTracker(),
-			chatID:  chatID,
-			model:   model,
-			tools:   append([]string(nil), tools...),
-		}
-		s.trackers[id] = entry
-		s.activeChats[chatID] = id
-		entry.expiry = time.AfterFunc(s.unclaimedTTL, func() {
-			s.expireUnclaimed(id)
-		})
+	entry := &toolCallTrackerEntry{
+		tracker: newToolCallTracker(),
+		chatID:  chatID,
+		model:   model,
+		tools:   append([]string(nil), tools...),
 	}
+	s.entries[id] = entry
+	entry.expiry = time.AfterFunc(s.unclaimedTTL, func() {
+		s.expireUnclaimed(id)
+	})
 	s.mu.Unlock()
-
-	if active {
-		return "", errChatCompletionActive
-	}
 	return id, nil
 }
 
@@ -160,7 +178,7 @@ func (s *toolCallStore) claim(id string, chatID int64, model string, tools []str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry, ok := s.trackers[id]
+	entry, ok := s.entries[id]
 	if !ok || entry.started || entry.chatID != chatID {
 		return nil, false
 	}
@@ -176,12 +194,8 @@ func (s *toolCallStore) active(chatID int64) (activeCompletion, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	id, ok := s.activeChats[chatID]
-	if !ok {
-		return activeCompletion{}, false
-	}
-	entry, ok := s.trackers[id]
-	if !ok {
+	id, entry := s.liveEntryFor(chatID)
+	if entry == nil {
 		return activeCompletion{}, false
 	}
 	return activeCompletion{
@@ -196,7 +210,7 @@ func (s *toolCallStore) get(id string) (*toolCallTracker, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	entry, ok := s.trackers[id]
+	entry, ok := s.entries[id]
 	if !ok {
 		return nil, false
 	}
@@ -205,11 +219,8 @@ func (s *toolCallStore) get(id string) (*toolCallTracker, bool) {
 
 func (s *toolCallStore) delete(id string) {
 	s.mu.Lock()
-	entry, ok := s.trackers[id]
-	delete(s.trackers, id)
-	if ok && s.activeChats[entry.chatID] == id {
-		delete(s.activeChats, entry.chatID)
-	}
+	entry, ok := s.entries[id]
+	delete(s.entries, id)
 	if ok && entry.expiry != nil {
 		entry.expiry.Stop()
 	}
@@ -222,15 +233,12 @@ func (s *toolCallStore) delete(id string) {
 
 func (s *toolCallStore) finish(id string, content string) {
 	s.mu.Lock()
-	entry, ok := s.trackers[id]
+	entry, ok := s.entries[id]
 	if !ok {
 		s.mu.Unlock()
 		return
 	}
 	entry.tracker.finish(content)
-	if s.activeChats[entry.chatID] == id {
-		delete(s.activeChats, entry.chatID)
-	}
 	if entry.expiry != nil {
 		entry.expiry.Stop()
 	}
@@ -242,15 +250,12 @@ func (s *toolCallStore) finish(id string, content string) {
 
 func (s *toolCallStore) expireUnclaimed(id string) {
 	s.mu.Lock()
-	entry, ok := s.trackers[id]
+	entry, ok := s.entries[id]
 	if !ok || entry.started {
 		s.mu.Unlock()
 		return
 	}
-	delete(s.trackers, id)
-	if s.activeChats[entry.chatID] == id {
-		delete(s.activeChats, entry.chatID)
-	}
+	delete(s.entries, id)
 	s.mu.Unlock()
 
 	entry.tracker.close()

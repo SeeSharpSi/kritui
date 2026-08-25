@@ -102,10 +102,11 @@ func (c *Conversation) Messages() []Message {
 }
 
 // Send adds a user message and completes the conversation, including any tool
-// calls needed to produce the final assistant response.
-func (c *Conversation) Send(ctx context.Context, content string) (Completion, error) {
+// calls needed to produce the final assistant response. The final history is
+// retrievable through Messages.
+func (c *Conversation) Send(ctx context.Context, content string) error {
 	if c == nil || c.client == nil {
-		return Completion{}, errors.New("llm: conversation client is required")
+		return errors.New("llm: conversation client is required")
 	}
 
 	c.messages = append(c.messages, Message{Role: "user", Content: content})
@@ -114,10 +115,11 @@ func (c *Conversation) Send(ctx context.Context, content string) (Completion, er
 
 // Complete continues from current history until the model returns a response
 // without tool calls. It is useful for initial histories and for retrying a
-// failed completion without adding another user message.
-func (c *Conversation) Complete(ctx context.Context) (Completion, error) {
+// failed completion without adding another user message. The appended history
+// is retrievable through Messages.
+func (c *Conversation) Complete(ctx context.Context) error {
 	if c == nil || c.client == nil {
-		return Completion{}, errors.New("llm: conversation client is required")
+		return errors.New("llm: conversation client is required")
 	}
 
 	var definitions []tools.Definition
@@ -129,26 +131,26 @@ func (c *Conversation) Complete(ctx context.Context) (Completion, error) {
 	for {
 		completion, err := c.client.complete(ctx, c.messages, definitions)
 		if err != nil {
-			return Completion{}, err
+			return err
 		}
-		if err := validateAssistantMessage(completion.Message); err != nil {
-			return Completion{}, err
+		if err := validateAssistantMessage(completion); err != nil {
+			return err
 		}
 
-		calls := completion.Message.ToolCalls
+		calls := completion.ToolCalls
 		if len(calls) == 0 {
-			c.messages = append(c.messages, cloneMessage(completion.Message))
-			return completion, nil
+			c.messages = append(c.messages, cloneMessage(completion))
+			return nil
 		}
 		if toolRounds >= c.maxToolRounds {
-			return Completion{}, &MaxToolRoundsError{Limit: c.maxToolRounds}
+			return &MaxToolRoundsError{Limit: c.maxToolRounds}
 		}
-		c.messages = append(c.messages, cloneMessage(completion.Message))
+		c.messages = append(c.messages, cloneMessage(completion))
 
 		for _, call := range calls {
 			result, err := c.executeToolCall(ctx, call)
 			if err != nil {
-				return Completion{}, err
+				return err
 			}
 			c.messages = append(c.messages, Message{
 				Role:       "tool",

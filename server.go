@@ -113,57 +113,74 @@ func main() {
 }
 
 func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
-	return commands.NewRegistry(
-		commands.NewRedirectCommand("new", "Start a new chat", "/"),
-		commands.NewMessageHistoryCommand("undo", "Undo the last message", func(ctx context.Context, chatID int64) (templ.Component, error) {
-			result, err := kritui_db.UndoLatestTurn(ctx, database, chatID)
-			switch {
-			case errors.Is(err, kritui_db.ErrNothingToUndo):
-				return nil, &commands.UserError{Status: http.StatusConflict, Message: "Nothing to undo."}
-			case errors.Is(err, kritui_db.ErrChatNotFound):
-				return nil, &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
-			case err != nil:
-				return nil, fmt.Errorf("undo current chat: %w", err)
-			}
-			return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), result.Messages, result.Message.Content), nil
-		}),
-		commands.NewMessageHistoryCommand("redo", "Redo the last undone message", func(ctx context.Context, chatID int64) (templ.Component, error) {
-			messages, err := kritui_db.RedoLatestTurn(ctx, database, chatID)
-			switch {
-			case errors.Is(err, kritui_db.ErrNothingToRedo):
-				return nil, &commands.UserError{Status: http.StatusConflict, Message: "Nothing to redo."}
-			case errors.Is(err, kritui_db.ErrChatNotFound):
-				return nil, &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
-			case err != nil:
-				return nil, fmt.Errorf("redo current chat: %w", err)
-			}
-			return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), messages, ""), nil
-		}),
-		commands.NewPanelCommand("history", "Open chat history", "history-page"),
-		commands.NewPanelCommand("settings", "Open settings", "settings-page"),
-		commands.NewRenameCommand(func(ctx context.Context, chatID int64, title string) error {
-			title = normalizeChatTitle(title)
-			if title == "" {
-				return &commands.UserError{Status: http.StatusBadRequest, Message: "Usage: /rename <title>."}
-			}
-			result, err := database.ExecContext(ctx, `
-				UPDATE chats
-				SET title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-				WHERE id = ?
-			`, title, chatID)
-			if err != nil {
-				return fmt.Errorf("rename current chat: %w", err)
-			}
-			affected, err := result.RowsAffected()
-			if err != nil {
-				return fmt.Errorf("get renamed chat count: %w", err)
-			}
-			if affected == 0 {
-				return &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
-			}
-			return nil
-		}),
-	)
+	newCommand, err := commands.NewRedirectCommand("new", "Start a new chat", "/")
+	if err != nil {
+		return nil, err
+	}
+	undo, err := commands.NewMessageHistoryCommand("undo", "Undo the last message", func(ctx context.Context, chatID int64) (templ.Component, error) {
+		result, err := kritui_db.UndoLatestTurn(ctx, database, chatID)
+		switch {
+		case errors.Is(err, kritui_db.ErrNothingToUndo):
+			return nil, &commands.UserError{Status: http.StatusConflict, Message: "Nothing to undo."}
+		case errors.Is(err, kritui_db.ErrChatNotFound):
+			return nil, &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
+		case err != nil:
+			return nil, fmt.Errorf("undo current chat: %w", err)
+		}
+		return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), result.Messages, result.Message.Content), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	redo, err := commands.NewMessageHistoryCommand("redo", "Redo the last undone message", func(ctx context.Context, chatID int64) (templ.Component, error) {
+		messages, err := kritui_db.RedoLatestTurn(ctx, database, chatID)
+		switch {
+		case errors.Is(err, kritui_db.ErrNothingToRedo):
+			return nil, &commands.UserError{Status: http.StatusConflict, Message: "Nothing to redo."}
+		case errors.Is(err, kritui_db.ErrChatNotFound):
+			return nil, &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
+		case err != nil:
+			return nil, fmt.Errorf("redo current chat: %w", err)
+		}
+		return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), messages, ""), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	history, err := commands.NewPanelCommand("history", "Open chat history", "history-page")
+	if err != nil {
+		return nil, err
+	}
+	settings, err := commands.NewPanelCommand("settings", "Open settings", "settings-page")
+	if err != nil {
+		return nil, err
+	}
+	rename, err := commands.NewRenameCommand(func(ctx context.Context, chatID int64, title string) error {
+		title = normalizeChatTitle(title)
+		if title == "" {
+			return &commands.UserError{Status: http.StatusBadRequest, Message: "Usage: /rename <title>."}
+		}
+		result, err := database.ExecContext(ctx, `
+			UPDATE chats
+			SET title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			WHERE id = ?
+		`, title, chatID)
+		if err != nil {
+			return fmt.Errorf("rename current chat: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("get renamed chat count: %w", err)
+		}
+		if affected == 0 {
+			return &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return commands.NewRegistry(newCommand, undo, redo, history, settings, rename)
 }
 
 func openDatabase(path string) (*sql.DB, error) {

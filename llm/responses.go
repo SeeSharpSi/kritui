@@ -26,7 +26,7 @@ type responseTool struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-func (c *Client) completeResponse(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
+func (c *Client) completeResponse(ctx context.Context, messages []Message, definitions []tools.Definition) (Message, error) {
 	input := make([]any, 0, len(messages))
 	for _, message := range messages {
 		if responseOutput := message.ProviderMetadata.ResponsesOutput(); len(responseOutput) > 0 {
@@ -77,34 +77,25 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 		Tools: requestTools,
 	}
 	var response struct {
-		ID                string `json:"id"`
-		Model             string `json:"model"`
-		Status            string `json:"status"`
-		IncompleteDetails struct {
-			Reason string `json:"reason"`
-		} `json:"incomplete_details"`
+		Model  string            `json:"model"`
 		Output []json.RawMessage `json:"output"`
 		Usage  struct {
-			InputTokens  int      `json:"input_tokens"`
-			OutputTokens int      `json:"output_tokens"`
-			TotalTokens  int      `json:"total_tokens"`
-			Cost         *float64 `json:"cost,omitempty"`
+			TotalTokens int      `json:"total_tokens"`
+			Cost        *float64 `json:"cost,omitempty"`
 		} `json:"usage"`
 	}
 	if err := c.postJSON(ctx, payload, &response); err != nil {
-		return Completion{}, err
+		return Message{}, err
 	}
 
 	usage := Usage{
-		PromptTokens:     response.Usage.InputTokens,
-		CompletionTokens: response.Usage.OutputTokens,
-		TotalTokens:      response.Usage.TotalTokens,
-		Cost:             response.Usage.Cost,
+		TotalTokens: response.Usage.TotalTokens,
+		Cost:        response.Usage.Cost,
 	}
 	model := c.completionModel(response.Model)
-	providerMetadata, err := newResponsesProviderMetadata(response.Output)
+	providerMetadata, err := NewResponsesProviderMetadata(response.Output)
 	if err != nil {
-		return Completion{}, err
+		return Message{}, err
 	}
 	message := Message{
 		Role:             "assistant",
@@ -126,7 +117,7 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 			} `json:"content"`
 		}
 		if err := json.Unmarshal(rawOutput, &output); err != nil {
-			return Completion{}, fmt.Errorf("llm: decode response output: %w", err)
+			return Message{}, fmt.Errorf("llm: decode response output: %w", err)
 		}
 		switch output.Type {
 		case "message":
@@ -153,26 +144,10 @@ func (c *Client) completeResponse(ctx context.Context, messages []Message, defin
 		}
 	}
 	if message.Content == "" && len(message.ToolCalls) == 0 {
-		return Completion{}, errors.New("llm: response contained no assistant output")
+		return Message{}, errors.New("llm: response contained no assistant output")
 	}
 	if err := validateAssistantMessage(message); err != nil {
-		return Completion{}, err
+		return Message{}, err
 	}
-
-	finishReason := "stop"
-	if len(message.ToolCalls) > 0 {
-		finishReason = "tool_calls"
-	} else if response.IncompleteDetails.Reason != "" {
-		finishReason = response.IncompleteDetails.Reason
-	} else if response.Status != "" && response.Status != "completed" {
-		finishReason = response.Status
-	}
-
-	return Completion{
-		ID:           response.ID,
-		Model:        model,
-		Message:      message,
-		FinishReason: finishReason,
-		Usage:        usage,
-	}, nil
+	return message, nil
 }

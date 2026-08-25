@@ -13,7 +13,7 @@ type completionTool struct {
 	Function tools.Definition `json:"function"`
 }
 
-func (c *Client) completeChat(ctx context.Context, messages []Message, definitions []tools.Definition) (Completion, error) {
+func (c *Client) completeChat(ctx context.Context, messages []Message, definitions []tools.Definition) (Message, error) {
 	requestTools := make([]completionTool, len(definitions))
 	for index, definition := range definitions {
 		requestTools[index] = completionTool{
@@ -32,7 +32,6 @@ func (c *Client) completeChat(ctx context.Context, messages []Message, definitio
 		Tools:    requestTools,
 	}
 	var response struct {
-		ID      string `json:"id"`
 		Model   string `json:"model"`
 		Choices []struct {
 			Message      Message `json:"message"`
@@ -41,10 +40,10 @@ func (c *Client) completeChat(ctx context.Context, messages []Message, definitio
 		Usage Usage `json:"usage"`
 	}
 	if err := c.postJSON(ctx, payload, &response); err != nil {
-		return Completion{}, err
+		return Message{}, err
 	}
 	if len(response.Choices) == 0 {
-		return Completion{}, errors.New("llm: response contained no choices")
+		return Message{}, errors.New("llm: response contained no choices")
 	}
 
 	choice := response.Choices[0]
@@ -56,21 +55,13 @@ func (c *Client) completeChat(ctx context.Context, messages []Message, definitio
 		}
 	}
 	if err := validateChatCompletion(choice.Message, finishReason); err != nil {
-		return Completion{}, err
+		return Message{}, err
 	}
 
-	model := c.completionModel(response.Model)
 	message := choice.Message
-	message.Model = model
+	message.Model = c.completionModel(response.Model)
 	applyUsage(&message, response.Usage)
-
-	return Completion{
-		ID:           response.ID,
-		Model:        model,
-		Message:      message,
-		FinishReason: finishReason,
-		Usage:        response.Usage,
-	}, nil
+	return message, nil
 }
 
 func validateChatCompletion(message Message, finishReason string) error {

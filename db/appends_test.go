@@ -40,8 +40,8 @@ func TestGetPromptAppendsFallsBackToEmbeddedDefaults(t *testing.T) {
 func TestSetAndGetPromptAppends(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
 	want := []PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction.", EnabledByDefault: true}}
-	if err := SetPromptAppends(context.Background(), database, want); err != nil {
-		t.Fatalf("SetPromptAppends() error: %v", err)
+	if err := setPromptAppends(context.Background(), database, want); err != nil {
+		t.Fatalf("setPromptAppends() error: %v", err)
 	}
 	got, err := GetPromptAppends(context.Background(), database)
 	if err != nil {
@@ -97,21 +97,15 @@ func TestSetPromptAppendsPrunesRemovedChatSelections(t *testing.T) {
 	ctx := context.Background()
 	database := openMessagesTestDatabase(t, "")
 
-	chatA, err := InsertChat(ctx, database, "A", nil, []string{"keep", "remove", "keep-too"})
-	if err != nil {
-		t.Fatalf("InsertChat(A): %v", err)
-	}
-	chatB, err := InsertChat(ctx, database, "B", nil, []string{"remove"})
-	if err != nil {
-		t.Fatalf("InsertChat(B): %v", err)
-	}
+	chatA := insertNamedChat(t, database, "A", nil, []string{"keep", "remove", "keep-too"})
+	chatB := insertNamedChat(t, database, "B", nil, []string{"remove"})
 
 	values := []PromptAppend{
 		{ID: "keep", Name: "Keep", Text: "Keep it."},
 		{ID: "keep-too", Name: "Keep too", Text: "Keep too."},
 	}
-	if err := SetPromptAppends(ctx, database, values); err != nil {
-		t.Fatalf("SetPromptAppends() error: %v", err)
+	if err := setPromptAppends(ctx, database, values); err != nil {
+		t.Fatalf("setPromptAppends() error: %v", err)
 	}
 
 	gotA, err := GetChatPromptAppendIDs(ctx, database, chatA)
@@ -240,8 +234,8 @@ func TestPromptAppendIDValidationAppliesToAllAccessors(t *testing.T) {
 	ctx := context.Background()
 
 	malformed := []PromptAppend{{ID: "bad char", Name: "Bad", Text: "Bad."}}
-	if err := SetPromptAppends(ctx, database, malformed); err == nil {
-		t.Error("SetPromptAppends() malformed ID error = nil")
+	if err := setPromptAppends(ctx, database, malformed); err == nil {
+		t.Error("setPromptAppends() malformed ID error = nil")
 	}
 	if err := SaveSettings(ctx, database, SettingsUpdate{
 		Model:         "model",
@@ -255,8 +249,8 @@ func TestPromptAppendIDValidationAppliesToAllAccessors(t *testing.T) {
 		t.Error("ValidatePromptAppends() malformed ID error = nil")
 	}
 
-	if err := SetPromptAppends(ctx, database, []PromptAppend{{ID: "ok", Name: "Ok", Text: "Fine."}}); err != nil {
-		t.Fatalf("seed SetPromptAppends() error: %v", err)
+	if err := setPromptAppends(ctx, database, []PromptAppend{{ID: "ok", Name: "Ok", Text: "Fine."}}); err != nil {
+		t.Fatalf("seed setPromptAppends() error: %v", err)
 	}
 	if _, err := database.Exec(`
 		INSERT INTO prompt_appends (id, position, name, text)

@@ -508,9 +508,7 @@ func TestHomeHandlerUsesStoredDefaultModel(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
-	if err := kritui_db.SetDefaultModel(context.Background(), database, "stored-default"); err != nil {
-		t.Fatalf("set default model: %v", err)
-	}
+	seedDefaultModel(t, database, "stored-default")
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=1", nil)
 	response := httptest.NewRecorder()
@@ -629,10 +627,7 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 
 func TestMessageHandlerExecutesNavigationCommandsWithoutPersistence(t *testing.T) {
 	database := openTestDatabase(t)
-	chatID, err := kritui_db.InsertChat(context.Background(), database, "Existing", nil, nil)
-	if err != nil {
-		t.Fatalf("insert chat: %v", err)
-	}
+	chatID := seedChat(t, database, "Existing", nil, nil)
 	toolCalls := newToolCallStore()
 	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls)
 
@@ -681,10 +676,7 @@ func TestMessageHandlerExecutesNavigationCommandsWithoutPersistence(t *testing.T
 
 func TestMessageHandlerRenamesCurrentChatCommand(t *testing.T) {
 	database := openTestDatabase(t)
-	chatID, err := kritui_db.InsertChat(context.Background(), database, "Old title", nil, nil)
-	if err != nil {
-		t.Fatalf("insert chat: %v", err)
-	}
+	chatID := seedChat(t, database, "Old title", nil, nil)
 	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
 
 	response := postForm(t, handler, "/messages?chat="+strconv.FormatInt(chatID, 10), url.Values{"message": {"/rename New title"}})
@@ -822,10 +814,7 @@ func TestMessageHandlerNewMessageDiscardsRedoHistory(t *testing.T) {
 
 func TestMessageHandlerRejectsInvalidSlashCommands(t *testing.T) {
 	database := openTestDatabase(t)
-	chatID, err := kritui_db.InsertChat(context.Background(), database, "Existing", nil, nil)
-	if err != nil {
-		t.Fatalf("insert chat: %v", err)
-	}
+	chatID := seedChat(t, database, "Existing", nil, nil)
 	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
 	tests := []struct {
 		name    string
@@ -986,15 +975,11 @@ func TestMessageRejectsAppendRemovedBeforePersistence(t *testing.T) {
 		{ID: "keep", Name: "Keep", Text: "Keep it."},
 		{ID: "gone", Name: "Gone", Text: "Gone."},
 	}
-	if err := kritui_db.SetPromptAppends(ctx, database, values); err != nil {
-		t.Fatalf("SetPromptAppends(): %v", err)
-	}
+	seedPromptAppends(t, database, values)
 	// A settings save commits first and removes "gone", then the message is
 	// submitted. Resolution happens inside the message transaction, so the
 	// removed ID must be rejected against the current definitions.
-	if err := kritui_db.SetPromptAppends(ctx, database, values[:1]); err != nil {
-		t.Fatalf("SetPromptAppends(remove gone): %v", err)
-	}
+	seedPromptAppends(t, database, values[:1])
 	_, err := persistUserMessage(ctx, database, 1, "Use gone", []string{}, []string{"gone", "keep"})
 	if !errors.Is(err, errInvalidAppendSelection) {
 		t.Fatalf("persistUserMessage() error = %v, want errInvalidAppendSelection", err)
@@ -1021,9 +1006,7 @@ func TestMessageSelectionThenSettingsPruneNeverLeavesStaleAppends(t *testing.T) 
 	ctx := context.Background()
 	keep := kritui_db.PromptAppend{ID: "keep", Name: "Keep", Text: "Keep it."}
 	gone := kritui_db.PromptAppend{ID: "gone", Name: "Gone", Text: "Gone."}
-	if err := kritui_db.SetPromptAppends(ctx, database, []kritui_db.PromptAppend{keep, gone}); err != nil {
-		t.Fatalf("SetPromptAppends(): %v", err)
-	}
+	seedPromptAppends(t, database, []kritui_db.PromptAppend{keep, gone})
 	// The message transaction resolves both appends and persists the selection
 	// before the settings save that follows.
 	selected, err := persistUserMessage(ctx, database, 90, "Use both", []string{}, []string{"keep", "gone"})
@@ -1036,9 +1019,7 @@ func TestMessageSelectionThenSettingsPruneNeverLeavesStaleAppends(t *testing.T) 
 
 	// A later settings save removes "gone"; SetPromptAppends prunes it from
 	// the chat selection so no stale reference survives.
-	if err := kritui_db.SetPromptAppends(ctx, database, []kritui_db.PromptAppend{keep}); err != nil {
-		t.Fatalf("SetPromptAppends(remove gone): %v", err)
-	}
+	seedPromptAppends(t, database, []kritui_db.PromptAppend{keep})
 	ids, err := kritui_db.GetChatPromptAppendIDs(ctx, database, 90)
 	if err != nil {
 		t.Fatalf("GetChatPromptAppendIDs(): %v", err)
@@ -1531,14 +1512,12 @@ func TestSettingsHandlerClearsDefaultPromptAppend(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
-	if err := kritui_db.SetPromptAppends(context.Background(), database, []kritui_db.PromptAppend{{
+	seedPromptAppends(t, database, []kritui_db.PromptAppend{{
 		ID:               "custom",
 		Name:             "Custom",
 		Text:             "Use custom instruction.",
 		EnabledByDefault: true,
-	}}); err != nil {
-		t.Fatalf("set prompt appends: %v", err)
-	}
+	}})
 
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
 		"model":              {"saved-model"},
@@ -1614,9 +1593,7 @@ func TestSettingsHandlerRejectsMalformedAppendIDOnAdd(t *testing.T) {
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	seeded := []kritui_db.PromptAppend{{ID: "existing", Name: "Existing", Text: "Keep it."}}
-	if err := kritui_db.SetPromptAppends(context.Background(), database, seeded); err != nil {
-		t.Fatalf("set prompt appends: %v", err)
-	}
+	seedPromptAppends(t, database, seeded)
 
 	for _, malformed := range []string{"bad char!", strings.Repeat("a", 65)} {
 		response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -1656,9 +1633,7 @@ func TestSettingsHandlerRejectsMalformedRemoveAppendID(t *testing.T) {
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	seeded := []kritui_db.PromptAppend{{ID: "existing", Name: "Existing", Text: "Keep it."}}
-	if err := kritui_db.SetPromptAppends(context.Background(), database, seeded); err != nil {
-		t.Fatalf("set prompt appends: %v", err)
-	}
+	seedPromptAppends(t, database, seeded)
 
 	malformed := "bad char"
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -1848,9 +1823,7 @@ func TestSettingsHandlerStoresEmptyDefaultTools(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
-	if err := kritui_db.SetDefaultEnabledTools(context.Background(), database, []string{"webfetch"}); err != nil {
-		t.Fatalf("set default enabled tools: %v", err)
-	}
+	seedDefaultEnabledTools(t, database, []string{"webfetch"})
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
 		"model":           {"saved-model"},
 		"max_tool_rounds": {"16"},
@@ -1874,9 +1847,7 @@ func TestSettingsHandlerPreservesPromptAppendsWithoutAppendForm(t *testing.T) {
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	appends := []kritui_db.PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction."}}
-	if err := kritui_db.SetPromptAppends(context.Background(), database, appends); err != nil {
-		t.Fatalf("set prompt appends: %v", err)
-	}
+	seedPromptAppends(t, database, appends)
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
 		"model":           {"saved-model"},
 		"max_tool_rounds": {"16"},
@@ -1921,9 +1892,10 @@ func TestSettingsHandlerRendersNtfyDestinationWithoutSecret(t *testing.T) {
 	database := openTestDatabase(t)
 	apiKey := "secret-token"
 	if err := kritui_db.SaveNtfySettings(context.Background(), database, kritui_db.NtfySettingsUpdate{
-		Endpoint: "https://ntfy.example",
-		Topic:    "kritui",
-		APIKey:   &apiKey,
+		Endpoint:     "https://ntfy.example",
+		Topic:        "kritui",
+		APIKeyChange: kritui_db.NtfyReplaceAPIKey,
+		APIKeyValue:  apiKey,
 	}); err != nil {
 		t.Fatalf("save ntfy settings: %v", err)
 	}
@@ -2022,9 +1994,10 @@ func TestHomeHandlerRendersNtfyDestinationWithoutSecret(t *testing.T) {
 	database := openTestDatabase(t)
 	apiKey := "secret-token"
 	if err := kritui_db.SaveNtfySettings(context.Background(), database, kritui_db.NtfySettingsUpdate{
-		Endpoint: "https://ntfy.example",
-		Topic:    "kritui",
-		APIKey:   &apiKey,
+		Endpoint:     "https://ntfy.example",
+		Topic:        "kritui",
+		APIKeyChange: kritui_db.NtfyReplaceAPIKey,
+		APIKeyValue:  apiKey,
 	}); err != nil {
 		t.Fatalf("save ntfy settings: %v", err)
 	}
@@ -2044,9 +2017,7 @@ func TestHomeHandlerAllocatesChatWithDefaultTools(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
-	if err := kritui_db.SetDefaultEnabledTools(context.Background(), database, []string{"websearch"}); err != nil {
-		t.Fatalf("set default enabled tools: %v", err)
-	}
+	seedDefaultEnabledTools(t, database, []string{"websearch"})
 
 	page := httptest.NewRecorder()
 	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(page, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -2101,9 +2072,7 @@ func TestHomeHandlerAllocatesChatWithDefaultPromptAppends(t *testing.T) {
 		{ID: "enabled", Name: "Enabled", Text: "Enabled instruction.", EnabledByDefault: true},
 		{ID: "disabled", Name: "Disabled", Text: "Disabled instruction."},
 	}
-	if err := kritui_db.SetPromptAppends(context.Background(), database, appends); err != nil {
-		t.Fatalf("set prompt appends: %v", err)
-	}
+	seedPromptAppends(t, database, appends)
 
 	page := httptest.NewRecorder()
 	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(page, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -2603,9 +2572,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 
 func TestMessageHandlerUsesStoredDefaultWhenModelIsMissing(t *testing.T) {
 	database := openTestDatabase(t)
-	if err := kritui_db.SetDefaultModel(context.Background(), database, "stored-default"); err != nil {
-		t.Fatalf("set default model: %v", err)
-	}
+	seedDefaultModel(t, database, "stored-default")
 	toolCalls := newToolCallStore()
 	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls), "/messages?chat=1", url.Values{"message": {"Hello"}})
 
@@ -2682,7 +2649,7 @@ func TestMessageToolStreamHandlerStopsWhenUnclaimedTrackerExpires(t *testing.T) 
 	waitForTestSignal(t, response.flushes, "initial tool-call event")
 
 	toolCalls.mu.Lock()
-	entry := toolCalls.trackers[requestID]
+	entry := toolCalls.entries[requestID]
 	if entry != nil && entry.expiry != nil {
 		entry.expiry.Reset(time.Millisecond)
 	}
@@ -3124,12 +3091,9 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 
 func TestMessageCompletionHandlerExpandsStoredPromptAppendsExactlyOnce(t *testing.T) {
 	database := openTestDatabase(t)
-	ctx := context.Background()
 	firstAppend := kritui_db.PromptAppend{ID: "append-one", Name: "First", Text: "First append text."}
 	secondAppend := kritui_db.PromptAppend{ID: "append-two", Name: "Second", Text: "Second append text."}
-	if err := kritui_db.SetPromptAppends(ctx, database, []kritui_db.PromptAppend{firstAppend, secondAppend}); err != nil {
-		t.Fatalf("SetPromptAppends(): %v", err)
-	}
+	seedPromptAppends(t, database, []kritui_db.PromptAppend{firstAppend, secondAppend})
 
 	registry, err := tools.NewRegistry(responsePersistenceTestTool{})
 	if err != nil {
@@ -3373,9 +3337,10 @@ func TestMessageCompletionHandlerNotifiesAfterPersistence(t *testing.T) {
 	defer ntfyServer.Close()
 
 	if err := kritui_db.SaveNtfySettings(context.Background(), database, kritui_db.NtfySettingsUpdate{
-		Endpoint: ntfyServer.URL,
-		Topic:    "responses",
-		APIKey:   stringPointer("ntfy-secret"),
+		Endpoint:     ntfyServer.URL,
+		Topic:        "responses",
+		APIKeyChange: kritui_db.NtfyReplaceAPIKey,
+		APIKeyValue:  "ntfy-secret",
 	}); err != nil {
 		t.Fatalf("save ntfy settings: %v", err)
 	}
@@ -4566,6 +4531,81 @@ func openTestDatabase(t *testing.T) *sql.DB {
 	return database
 }
 
+func seedChat(t *testing.T, database *sql.DB, title string, tools, appends []string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var id int64
+	if err := database.QueryRowContext(ctx, `INSERT INTO chats (title) VALUES (?) RETURNING id`, title).Scan(&id); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	if err := kritui_db.UpsertChat(ctx, database, id, title, tools, appends); err != nil {
+		t.Fatalf("store chat options: %v", err)
+	}
+	return id
+}
+
+func seedDefaultModel(t *testing.T, database *sql.DB, model string) {
+	t.Helper()
+	if _, err := database.Exec(`UPDATE settings SET default_model = ? WHERE id = 1`, model); err != nil {
+		t.Fatalf("seed default model: %v", err)
+	}
+}
+
+func seedDefaultEnabledTools(t *testing.T, database *sql.DB, names []string) {
+	t.Helper()
+	tx, err := database.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin default tools seed: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM default_tools`); err != nil {
+		t.Fatalf("clear default tools: %v", err)
+	}
+	for position, name := range names {
+		if _, err := tx.Exec(`INSERT INTO default_tools (position, name) VALUES (?, ?)`, position, name); err != nil {
+			t.Fatalf("seed default tool %d: %v", position, err)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE settings SET default_tools_configured = 1 WHERE id = 1`); err != nil {
+		t.Fatalf("mark default tools configured: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit default tools seed: %v", err)
+	}
+}
+
+func seedPromptAppends(t *testing.T, database *sql.DB, values []kritui_db.PromptAppend) {
+	t.Helper()
+	tx, err := database.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin prompt appends seed: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM prompt_appends`); err != nil {
+		t.Fatalf("clear prompt appends: %v", err)
+	}
+	for position, value := range values {
+		if _, err := tx.Exec(`
+			INSERT INTO prompt_appends (id, position, name, text, enabled_by_default)
+			VALUES (?, ?, ?, ?, ?)
+		`, value.ID, position, value.Name, value.Text, value.EnabledByDefault); err != nil {
+			t.Fatalf("seed prompt append %q: %v", value.ID, err)
+		}
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM chat_prompt_appends
+		WHERE prompt_append_id NOT IN (SELECT id FROM prompt_appends)
+	`); err != nil {
+		t.Fatalf("prune seeded chat appends: %v", err)
+	}
+	if _, err := tx.Exec(`UPDATE settings SET prompt_appends_configured = 1 WHERE id = 1`); err != nil {
+		t.Fatalf("mark prompt appends configured: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit prompt appends seed: %v", err)
+	}
+}
+
 func openLegacyTestDatabase(t *testing.T, path string, version int) *sql.DB {
 	t.Helper()
 
@@ -4638,7 +4678,7 @@ func assertMigratedDatabase(t *testing.T, database *sql.DB) {
 		t.Errorf("schema version = %d, want %d", version, len(databaseMigrations))
 	}
 
-	chats, err := kritui_db.GetChats(ctx, database)
+	chats, err := kritui_db.GetChatsPage(ctx, database, "", 0, 100)
 	if err != nil {
 		t.Fatalf("get migrated chats: %v", err)
 	}
@@ -4673,9 +4713,7 @@ func assertMigratedDatabase(t *testing.T, database *sql.DB) {
 			t.Fatalf("append migrated message: %v", err)
 		}
 	}
-	if err := kritui_db.SetDefaultModel(ctx, database, "migrated-model"); err != nil {
-		t.Fatalf("set migrated setting: %v", err)
-	}
+	seedDefaultModel(t, database, "migrated-model")
 	model, err := kritui_db.GetDefaultModel(ctx, database, "fallback")
 	if err != nil {
 		t.Fatalf("get migrated setting: %v", err)

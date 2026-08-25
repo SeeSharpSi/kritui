@@ -260,7 +260,7 @@ func TestGitSessionCloseRemovesRepositories(t *testing.T) {
 	runtime.active = 1
 	repository := &gitRepository{runtime: runtime, root: root, directory: root}
 	session := NewGitSession()
-	session.repositories[runtime] = map[string]*gitRepository{"repository": repository}
+	session.repositories["repository"] = repository
 
 	if err := session.Close(); err != nil {
 		t.Fatalf("Close() error: %v", err)
@@ -290,7 +290,7 @@ func TestGitSessionRetriesFailedCleanup(t *testing.T) {
 	}
 	repository := &gitRepository{runtime: runtime, root: root, directory: root}
 	session := NewGitSession()
-	session.repositories[runtime] = map[string]*gitRepository{"repository": repository}
+	session.repositories["repository"] = repository
 
 	if err := session.Close(); err == nil || !strings.Contains(err.Error(), "injected cleanup failure") {
 		t.Fatalf("Close() error = %v, want injected cleanup failure", err)

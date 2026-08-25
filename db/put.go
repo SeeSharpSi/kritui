@@ -75,66 +75,6 @@ func AllocateChat(ctx context.Context, db *sql.DB, tools, appendIDs []string) (i
 	return id, nil
 }
 
-// InsertChat creates a chat and returns its database ID.
-func InsertChat(ctx context.Context, db *sql.DB, title string, tools, appendIDs []string) (int64, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin insert chat: %w", err)
-	}
-	defer tx.Rollback()
-
-	result, err := tx.ExecContext(ctx, `INSERT INTO chats (title) VALUES (?)`, title)
-	if err != nil {
-		return 0, fmt.Errorf("insert chat: %w", err)
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("get inserted chat ID: %w", err)
-	}
-	if err := replaceChatOptions(ctx, tx, id, tools, appendIDs); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit insert chat: %w", err)
-	}
-	return id, nil
-}
-
-// SetChatTools replaces enabled tool names stored for a chat.
-func SetChatTools(ctx context.Context, db *sql.DB, chatID int64, tools []string) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin set chat tools: %w", err)
-	}
-	defer tx.Rollback()
-
-	result, err := tx.ExecContext(ctx, `
-		UPDATE chats
-		SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-		WHERE id = ?
-	`, chatID)
-	if err != nil {
-		return fmt.Errorf("set chat tools: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("set chat tools rows affected: %w", err)
-	}
-	if affected == 0 {
-		return fmt.Errorf("set chat tools: chat %d not found", chatID)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM chat_tools WHERE chat_id = ?`, chatID); err != nil {
-		return fmt.Errorf("clear chat tools: %w", err)
-	}
-	if err := insertChatTools(ctx, tx, chatID, tools); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit set chat tools: %w", err)
-	}
-	return nil
-}
-
 // UpsertChat inserts or updates a chat and atomically replaces its options.
 // Existing non-empty titles are preserved.
 func UpsertChat(ctx context.Context, db databaseExecutor, chatID int64, title string, tools, appendIDs []string) error {

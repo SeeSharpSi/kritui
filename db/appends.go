@@ -97,26 +97,6 @@ func GetPromptAppends(ctx context.Context, db rowQueryer) ([]PromptAppend, error
 	return normalized, nil
 }
 
-// SetPromptAppends replaces all configurable prompt presets. Replacement
-// happens atomically with pruning removed preset IDs from every chat's
-// selected appends, so stale references never survive a settings change.
-func SetPromptAppends(ctx context.Context, db *sql.DB, values []PromptAppend) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin set prompt appends: %w", err)
-	}
-	defer tx.Rollback()
-
-	if err := setPromptAppends(ctx, tx, values); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit set prompt appends: %w", err)
-	}
-	return nil
-}
-
 // setPromptAppends writes definitions and prunes removed chat selections.
 func setPromptAppends(ctx context.Context, db settingWriter, values []PromptAppend) error {
 	normalized, err := normalizePromptAppends(values)

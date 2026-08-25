@@ -127,7 +127,9 @@ type gitTreeArguments struct {
 	Limit     *int   `json:"limit"`
 }
 
-type gitReadArguments struct {
+// gitPathPageArguments is the shared wire shape of git_read and git_log:
+// an optional ref/revision, a repository-relative path, and paging bounds.
+type gitPathPageArguments struct {
 	URL      string `json:"url"`
 	Ref      string `json:"ref"`
 	Revision string `json:"revision"`
@@ -146,15 +148,6 @@ type gitSearchArguments struct {
 	CaseSensitive *bool  `json:"case_sensitive"`
 	Offset        *int   `json:"offset"`
 	Limit         *int   `json:"limit"`
-}
-
-type gitLogArguments struct {
-	URL      string `json:"url"`
-	Ref      string `json:"ref"`
-	Revision string `json:"revision"`
-	Path     string `json:"path"`
-	Offset   *int   `json:"offset"`
-	Limit    *int   `json:"limit"`
 }
 
 type gitDiffArguments struct {
@@ -248,7 +241,7 @@ func (t *gitTool) executeTree(ctx context.Context, arguments json.RawMessage) (s
 }
 
 func (t *gitTool) executeRead(ctx context.Context, arguments json.RawMessage) (string, error) {
-	var params gitReadArguments
+	var params gitPathPageArguments
 	if err := decodeGitArguments(arguments, &params); err != nil {
 		return "", err
 	}
@@ -313,7 +306,7 @@ func (t *gitTool) executeSearch(ctx context.Context, arguments json.RawMessage) 
 }
 
 func (t *gitTool) executeLog(ctx context.Context, arguments json.RawMessage) (string, error) {
-	var params gitLogArguments
+	var params gitPathPageArguments
 	if err := decodeGitArguments(arguments, &params); err != nil {
 		return "", err
 	}

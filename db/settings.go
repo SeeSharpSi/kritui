@@ -41,13 +41,27 @@ type NtfyPublishConfig struct {
 	APIKey   string
 }
 
-// NtfySettingsUpdate changes notification settings. A nil APIKey preserves
-// the existing key; ClearAPIKey removes it.
+// NtfyAPIKeyChange selects how SaveNtfySettings treats the stored API key.
+// The zero value preserves the existing secret.
+type NtfyAPIKeyChange uint8
+
+const (
+	// NtfyKeepAPIKey leaves the stored key untouched.
+	NtfyKeepAPIKey NtfyAPIKeyChange = iota
+	// NtfyReplaceAPIKey stores Update.APIKeyValue, or NULL when it trims empty.
+	NtfyReplaceAPIKey
+	// NtfyClearAPIKey removes the stored key.
+	NtfyClearAPIKey
+)
+
+// NtfySettingsUpdate changes notification settings. APIKeyChange and
+// APIKeyValue form an exhaustive tri-state decision about the stored secret,
+// so contradictory instructions are unrepresentable.
 type NtfySettingsUpdate struct {
-	Endpoint    string
-	Topic       string
-	APIKey      *string
-	ClearAPIKey bool
+	Endpoint     string
+	Topic        string
+	APIKeyChange NtfyAPIKeyChange
+	APIKeyValue  string
 }
 
 // SaveSettings stores all submitted settings in one transaction.
@@ -140,9 +154,6 @@ func SaveNtfySettings(ctx context.Context, db *sql.DB, update NtfySettingsUpdate
 	if (endpoint == "") != (topic == "") {
 		return fmt.Errorf("set ntfy settings: endpoint and topic must both be set or empty")
 	}
-	if update.ClearAPIKey && update.APIKey != nil {
-		return fmt.Errorf("set ntfy settings: API key cannot be replaced and cleared together")
-	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -167,13 +178,10 @@ func SaveNtfySettings(ctx context.Context, db *sql.DB, update NtfySettingsUpdate
 			return fmt.Errorf("set ntfy destination: %w", err)
 		}
 
-		switch {
-		case update.ClearAPIKey:
-			if _, err := tx.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = NULL WHERE id = 1`); err != nil {
-				return fmt.Errorf("clear ntfy API key: %w", err)
-			}
-		case update.APIKey != nil:
-			apiKey := strings.TrimSpace(*update.APIKey)
+		switch update.APIKeyChange {
+		case NtfyKeepAPIKey:
+		case NtfyReplaceAPIKey:
+			apiKey := strings.TrimSpace(update.APIKeyValue)
 			var value any
 			if apiKey != "" {
 				value = apiKey
@@ -181,6 +189,12 @@ func SaveNtfySettings(ctx context.Context, db *sql.DB, update NtfySettingsUpdate
 			if _, err := tx.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = ? WHERE id = 1`, value); err != nil {
 				return fmt.Errorf("set ntfy API key: %w", err)
 			}
+		case NtfyClearAPIKey:
+			if _, err := tx.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = NULL WHERE id = 1`); err != nil {
+				return fmt.Errorf("clear ntfy API key: %w", err)
+			}
+		default:
+			return fmt.Errorf("set ntfy settings: unknown API key change mode %d", update.APIKeyChange)
 		}
 	}
 
@@ -217,11 +231,6 @@ func EnsureDefaultModel(ctx context.Context, db *sql.DB, model string) error {
 	return nil
 }
 
-// SetDefaultModel replaces the model selected by default for new chats.
-func SetDefaultModel(ctx context.Context, db *sql.DB, model string) error {
-	return setDefaultModel(ctx, db, model)
-}
-
 func setDefaultModel(ctx context.Context, db settingWriter, model string) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -244,11 +253,6 @@ func GetMaxToolRounds(ctx context.Context, db *sql.DB, fallback int) (int, error
 		return fallback, nil
 	}
 	return int(rounds.Int64), nil
-}
-
-// SetMaxToolRounds stores the maximum consecutive tool-call rounds.
-func SetMaxToolRounds(ctx context.Context, db *sql.DB, rounds int) error {
-	return setMaxToolRounds(ctx, db, rounds)
 }
 
 func setMaxToolRounds(ctx context.Context, db settingWriter, rounds int) error {
@@ -296,22 +300,6 @@ func GetDefaultEnabledTools(ctx context.Context, db *sql.DB, fallback []string) 
 		return nil, fmt.Errorf("iterate default enabled tools: %w", err)
 	}
 	return names, nil
-}
-
-// SetDefaultEnabledTools replaces tools enabled by default for new chats.
-func SetDefaultEnabledTools(ctx context.Context, db *sql.DB, names []string) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin set default enabled tools: %w", err)
-	}
-	defer tx.Rollback()
-	if err := setDefaultEnabledTools(ctx, tx, names); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit set default enabled tools: %w", err)
-	}
-	return nil
 }
 
 func setDefaultEnabledTools(ctx context.Context, db settingWriter, names []string) error {
