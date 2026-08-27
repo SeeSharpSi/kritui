@@ -1,12 +1,29 @@
 package templates
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/markdown"
 )
+
+func userImageDataURL(image llm.UserImage) templ.SafeURL {
+	switch image.MediaType {
+	case "image/png", "image/jpeg", "image/webp":
+		return templ.SafeURL("data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data))
+	default:
+		return templ.SafeURL("")
+	}
+}
+
+func userImageLabel(image llm.UserImage) string {
+	if image.Filename == "" {
+		return "Attached image"
+	}
+	return image.Filename
+}
 
 func messageEditErrorID(messageID int64) string {
 	return "message-edit-error-" + strconv.FormatInt(messageID, 10)
@@ -102,57 +119,68 @@ templ Messages(chatID string, messages ...llm.Message) {
 
 templ UserMessage(chatID string, message llm.Message) {
 	<article class="message user" id={ "message-" + strconv.FormatInt(message.ID, 10) }>
-		<div class="message-content plain-text">{ message.Content }</div>
-		if message.ID > 0 && chatID != "" {
-			<form
-				class="message-edit-form"
-				hx-put={ "/chats/" + chatID + "/messages/" + strconv.FormatInt(message.ID, 10) }
-				hx-target={ "#" + messageEditErrorID(message.ID) }
-				hx-swap="outerHTML"
-				hx-sync="#messages:drop"
-				hx-disabled-elt="find input"
-				hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"
-			>
-				<label class="visually-hidden" for={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }>Edit message</label>
-				<input
-					id={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }
-					class="message-edit-input"
-					type="text"
-					name="message"
-					value={ message.Content }
-					required
-					autocomplete="off"
-				/>
-				@MessageEditError(message.ID, "")
-			</form>
-			<button
-				type="button"
-				class="message-copy-button"
-				aria-label="Copy message"
-				title="Copy message"
-			>
-				<span class="message-copy-default">@Icon("M8 8h12v12H8z", "M16 5V4H4v12h1")</span>
-				<span class="message-copy-confirmation">@Icon("m5 12 4 4L19 6")</span>
-			</button>
-			<button
-				type="button"
-				class="message-edit-toggle"
-				aria-controls={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }
-				aria-expanded="false"
-				aria-label="Edit message"
-				title="Edit message"
-			>
-				@Icon("M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z")
-			</button>
-			<button
-				type="button"
-				class="message-edit-cancel"
-				aria-label="Cancel message edit"
-				title="Cancel message edit"
-			>
-				@Icon("M18 6 6 18", "m6 6 12 12")
-			</button>
+		if len(message.Images) > 0 {
+			<div class="message-images" aria-label="Attached images">
+				for _, image := range message.Images {
+					if src := userImageDataURL(image); src != "" {
+						<img class="message-image" src={ src } alt={ userImageLabel(image) } title={ userImageLabel(image) } loading="lazy" decoding="async"/>
+					}
+				}
+			</div>
 		}
+		<div class="message-bubble">
+			<div class="message-content plain-text">{ message.Content }</div>
+			if message.ID > 0 && chatID != "" {
+				<form
+					class="message-edit-form"
+					hx-put={ "/chats/" + chatID + "/messages/" + strconv.FormatInt(message.ID, 10) }
+					hx-target={ "#" + messageEditErrorID(message.ID) }
+					hx-swap="outerHTML"
+					hx-sync="#messages:drop"
+					hx-disabled-elt="find input"
+					hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"
+				>
+					<label class="visually-hidden" for={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }>Edit message</label>
+					<input
+						id={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }
+						class="message-edit-input"
+						type="text"
+						name="message"
+						value={ message.Content }
+						required
+						autocomplete="off"
+					/>
+					@MessageEditError(message.ID, "")
+				</form>
+				<button
+					type="button"
+					class="message-copy-button"
+					aria-label="Copy message"
+					title="Copy message"
+				>
+					<span class="message-copy-default">@Icon("M8 8h12v12H8z", "M16 5V4H4v12h1")</span>
+					<span class="message-copy-confirmation">@Icon("m5 12 4 4L19 6")</span>
+				</button>
+				<button
+					type="button"
+					class="message-edit-toggle"
+					aria-controls={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }
+					aria-expanded="false"
+					aria-label="Edit message"
+					title="Edit message"
+				>
+					@Icon("M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z")
+				</button>
+				<button
+					type="button"
+					class="message-edit-cancel"
+					aria-label="Cancel message edit"
+					title="Cancel message edit"
+				>
+					@Icon("M18 6 6 18", "m6 6 12 12")
+				</button>
+			}
+		</div>
 	</article>
 }
 
