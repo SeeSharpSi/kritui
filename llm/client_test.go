@@ -1019,3 +1019,181 @@ func newCountingToolConversation(t *testing.T, endpoint string, executions *int)
 	}
 	return conversation
 }
+
+func TestImageMessageCloneCopiesData(t *testing.T) {
+	data := []byte{1, 2, 3}
+	got := cloneMessage(Message{Images: []UserImage{{Data: data}}})
+	got.Images[0].Data[0] = 9
+	if data[0] != 1 {
+		t.Fatal("clone changed source image data")
+	}
+}
+
+func TestModelInfosCapabilities(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"unknown"},{"id":"image","architecture":{"input_modalities":["text","image"]}},{"id":"text","architecture":{"input_modalities":["text"]}},{"id":"explicit-image","capabilities":{"image_input":{"supported":true}},"architecture":{"input_modalities":["text"]}},{"id":"explicit-text","capabilities":{"image_input":{"supported":false}},"architecture":{"input_modalities":["text","image"]}}]}`))
+	}))
+	defer server.Close()
+	client, err := New("key", "model", server.URL+"/v1/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.ModelInfos(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ModelInfo{{ID: "unknown", ImageSupport: ImageSupportUnknown}, {ID: "image", ImageSupport: ImageSupportSupported}, {ID: "text", ImageSupport: ImageSupportUnsupported}, {ID: "explicit-image", ImageSupport: ImageSupportSupported}, {ID: "explicit-text", ImageSupport: ImageSupportUnsupported}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
+	}
+}
+
+func TestAnthropicModelInfosPagination(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI()+" auth="+r.Header.Get("Authorization")+" key="+r.Header.Get("X-Api-Key")+" version="+r.Header.Get("Anthropic-Version"))
+		if r.URL.Query().Get("after_id") == "one" {
+			_, _ = w.Write([]byte(`{"data":[{"id":"two"},{"id":"one"}],"has_more":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"one","capabilities":{"image_input":{"supported":true}}},{"id":"one","capabilities":{"image_input":{"supported":false}}}],"has_more":true,"last_id":"one"}`))
+	}))
+	defer server.Close()
+	client, err := New("key", "model", server.URL+"/v1/chat/messages?api-version=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.ModelInfos(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(requests, []string{"GET /v1/models?api-version=1 auth=Bearer key key=key version=2023-06-01", "GET /v1/models?after_id=one&api-version=1 auth=Bearer key key=key version=2023-06-01"}) {
+		t.Fatalf("requests = %#v", requests)
+	}
+	if !slices.Equal(got, []ModelInfo{{ID: "one", ImageSupport: ImageSupportSupported}, {ID: "two", ImageSupport: ImageSupportUnknown}}) {
+		t.Fatalf("models = %#v", got)
+	}
+}
+
+func TestAnthropicModelInfosMalformedPagination(t *testing.T) {
+	for _, response := range []string{`{"data":[],"has_more":true}`, `{"data":[],"has_more":true,"last_id":"same"}`} {
+		t.Run(response, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(response)) }))
+			defer server.Close()
+			client, _ := New("key", "model", server.URL+"/v1/chat/messages")
+			_, err := client.ModelInfos(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "models response") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCompleteImageSerializers(t *testing.T) {
+	for _, test := range []struct{ name, suffix string }{{"responses", "/v1/responses"}, {"messages", "/v1/chat/messages"}, {"chat", "/v1/chat/completions"}} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				encoded, _ := json.Marshal(body)
+				wire := string(encoded)
+				if !strings.Contains(wire, "AQID") {
+					t.Errorf("image encoding missing: %s", wire)
+				}
+				if test.name != "messages" && !strings.Contains(wire, "data:image/png;base64,AQID") {
+					t.Errorf("canonical image URL missing: %s", wire)
+				}
+				if strings.Contains(wire, `"Images"`) {
+					t.Error("raw Images field present")
+				}
+				if test.name == "responses" && !strings.Contains(wire, `"type":"input_image"`) {
+					t.Error("missing Responses image part")
+				}
+				if test.name == "messages" && !strings.Contains(wire, `"type":"image"`) {
+					t.Error("missing Messages image block")
+				}
+				if test.name == "chat" && !strings.Contains(wire, `"type":"image_url"`) {
+					t.Error("missing Chat image part")
+				}
+				switch test.name {
+				case "responses":
+					_, _ = w.Write([]byte(`{"model":"m","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`))
+				case "messages":
+					_, _ = w.Write([]byte(`{"role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+				default:
+					_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+				}
+			}))
+			defer server.Close()
+			client, err := New("key", "model", server.URL+test.suffix)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.complete(context.Background(), []Message{{Role: "user", Content: "text", Images: []UserImage{{Data: []byte{1, 2, 3}, MediaType: "image/png"}}}}, nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestTextOnlyContentRemainsString(t *testing.T) {
+	for _, suffix := range []string{"/v1/responses", "/v1/chat/completions"} {
+		called := false
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			raw := string(mustJSON(body))
+			if strings.Contains(raw, `"content":[`) {
+				t.Errorf("array content: %s", raw)
+			}
+			if suffix[4] == 'r' {
+				_, _ = w.Write([]byte(`{"model":"m","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`))
+			} else {
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+			}
+		}))
+		client, _ := New("key", "model", server.URL+suffix)
+		_, err := client.complete(context.Background(), []Message{{Role: "user", Content: "x"}}, nil)
+		if err != nil || !called {
+			t.Fatalf("complete = %v, called=%v", err, called)
+		}
+		server.Close()
+	}
+}
+
+func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+
+func TestImageValidationMakesNoRequest(t *testing.T) {
+	for _, suffix := range []string{"/v1/responses", "/v1/chat/messages", "/v1/chat/completions"} {
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+		client, _ := New("key", "model", server.URL+suffix)
+		_, err := client.complete(context.Background(), []Message{{Role: "assistant", Images: []UserImage{{Data: []byte{1}, MediaType: "image/png"}}}}, nil)
+		server.Close()
+		if err == nil || calls != 0 {
+			t.Fatalf("%s error=%v calls=%d", suffix, err, calls)
+		}
+	}
+}
+
+func TestAnthropicImageOnlyHasNoEmptyTextBlock(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.Contains(string(mustJSON(body)), `"type":"text"`) {
+			t.Error("empty text block present")
+		}
+		_, _ = w.Write([]byte(`{"role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+	client, _ := New("key", "model", server.URL+"/v1/chat/messages")
+	if _, err := client.complete(context.Background(), []Message{{Role: "user", Images: []UserImage{{Data: []byte{1}, MediaType: "image/png"}}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+}

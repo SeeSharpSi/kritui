@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 
@@ -12,8 +13,41 @@ type completionTool struct {
 	Type     string           `json:"type"`
 	Function tools.Definition `json:"function"`
 }
+type chatImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail"`
+}
+type chatContentPart struct {
+	Type     string        `json:"type"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+	Text     string        `json:"text,omitempty"`
+}
 
 func (c *Client) completeChat(ctx context.Context, endpoint endpointCandidate, messages []Message, definitions []tools.Definition) (Message, error) {
+	requestMessages := make([]any, len(messages))
+	for i, message := range messages {
+		if len(message.Images) == 0 {
+			requestMessages[i] = message
+			continue
+		}
+		if message.Role != "user" {
+			return Message{}, errors.New("llm: images are only allowed on user messages")
+		}
+		parts := make([]chatContentPart, 0, len(message.Images)+1)
+		for _, image := range message.Images {
+			if len(image.Data) == 0 || image.MediaType == "" {
+				return Message{}, errors.New("llm: image data and media type are required")
+			}
+			parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: "data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data), Detail: "auto"}})
+		}
+		if message.Content != "" {
+			parts = append(parts, chatContentPart{Type: "text", Text: message.Content})
+		}
+		requestMessages[i] = struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		}{message.Role, parts}
+	}
 	requestTools := make([]completionTool, len(definitions))
 	for index, definition := range definitions {
 		requestTools[index] = completionTool{
@@ -24,11 +58,11 @@ func (c *Client) completeChat(ctx context.Context, endpoint endpointCandidate, m
 
 	payload := struct {
 		Model    string           `json:"model"`
-		Messages []Message        `json:"messages"`
+		Messages []any            `json:"messages"`
 		Tools    []completionTool `json:"tools,omitempty"`
 	}{
 		Model:    c.model,
-		Messages: messages,
+		Messages: requestMessages,
 		Tools:    requestTools,
 	}
 	var response struct {
