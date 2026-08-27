@@ -523,12 +523,19 @@ function handleImagePointer(event, expanded) {
         return;
     }
 
-    const images = event.target.closest?.('.message.user .message-images');
-    if (!images || (event.relatedTarget instanceof Node && images.contains(event.relatedTarget))) {
+    const image = event.target.closest?.('.message.user .message-image');
+    if (!image) {
         return;
     }
-    const message = images.closest('.message.user');
-    if (message) {
+    const message = image.closest('.message.user');
+    const relatedImage = event.relatedTarget instanceof Node
+        ? event.relatedTarget.closest?.('.message.user .message-image')
+        : null;
+    if (relatedImage && relatedImage.closest('.message.user') === message) {
+        return;
+    }
+    const images = image.closest('.message-images');
+    if (message && images) {
         anchorMessageViewport(message, images, expanded);
     }
 }
