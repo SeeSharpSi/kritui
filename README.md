@@ -43,8 +43,8 @@ The named volume persists the SQLite database. The image includes a private Sear
 Forgejo Actions builds and publishes the image after every push to `main`:
 
 ```text
-git.skrittle.net/the_rebel_alliance/kritui:<full-commit-sha>
-git.skrittle.net/the_rebel_alliance/kritui:main
+git.skrittle.net/rebel_alliance/kritui:<full-commit-sha>
+git.skrittle.net/rebel_alliance/kritui:main
 ```
 
 The immutable commit tag is pushed before the mutable `main` channel. The build generates templ sources and requires `go test ./...` and `go vet ./...` to pass before either tag is published. Registry credentials come from organization variable `REGISTRY_USERNAME` and secret `REGISTRY_TOKEN`; they must never be committed.

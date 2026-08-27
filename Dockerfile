@@ -36,7 +36,7 @@ ARG VCS_REF=unknown
 LABEL io.github.seesharpsi.kritui="true" \
     org.opencontainers.image.title="Kritui" \
     org.opencontainers.image.description="Server-rendered LLM chat UI bundled with SearXNG" \
-    org.opencontainers.image.source="https://git.skrittle.net/the_rebel_alliance/kritui" \
+    org.opencontainers.image.source="https://git.skrittle.net/rebel_alliance/kritui" \
     org.opencontainers.image.revision="$VCS_REF"
 
 USER root
