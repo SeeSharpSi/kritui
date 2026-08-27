@@ -933,7 +933,7 @@ main {
                     padding: 0 .75rem;
                     height: 2.083333rem;
                     margin-bottom: -1rem;
-                    transition: height 150ms ease;
+                    transition: height 150ms ease, margin-top 150ms ease;
                     overflow-x: auto;
                     overflow-y: clip;
                     scrollbar-width: none;
@@ -945,6 +945,7 @@ main {
 
                 &.image-expanded .message-images {
                     height: 4.25rem;
+                    margin-top: -2.166667rem;
                 }
 
                 .message-image {
@@ -1844,6 +1845,7 @@ main {
 
     main .chat .message.user.image-expanded .message-images {
         height: 3.5rem;
+        margin-top: -1.666667rem;
     }
 
 }
