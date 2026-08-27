@@ -55,6 +55,7 @@ function messageListState(messageList) {
         restoreAfterSwap: false,
         forcing: false,
         frame: 0,
+        viewportAnchor: null,
         observedBlocks: new WeakSet(),
     };
     state.resizeObserver = new ResizeObserver(() => pinMessageList(messageList));
@@ -71,7 +72,7 @@ function messageListState(messageList) {
         subtree: true,
     });
     messageList.addEventListener('scroll', () => {
-        if (state.forcing) {
+        if (state.forcing || state.viewportAnchor) {
             return;
         }
 
@@ -93,11 +94,17 @@ function destroyMessageListState(messageList) {
     if (state.frame) {
         cancelAnimationFrame(state.frame);
     }
+    if (state.viewportAnchor?.raf) {
+        cancelAnimationFrame(state.viewportAnchor.raf);
+    }
     messageListStates.delete(messageList);
 }
 
 function pinMessageList(messageList, force = false) {
     const state = messageListState(messageList);
+    if (state.viewportAnchor) {
+        return;
+    }
     if (!force && !state.pinned) {
         return;
     }
@@ -112,6 +119,10 @@ function pinMessageList(messageList, force = false) {
     let stableFrames = 0;
     const pin = () => {
         state.frame = 0;
+        if (state.viewportAnchor) {
+            state.forcing = false;
+            return;
+        }
         if (!state.pinned && !state.forcing) {
             return;
         }
@@ -131,6 +142,86 @@ function pinMessageList(messageList, force = false) {
         }
     };
     state.frame = requestAnimationFrame(pin);
+}
+
+function anchorMessageViewport(message, images, expanded) {
+    const messageList = messageListFor(message);
+    const bubble = message.querySelector('.message-bubble');
+    if (!messageList || !bubble) {
+        return;
+    }
+
+    const state = messageListState(messageList);
+    if (state.viewportAnchor?.raf) {
+        cancelAnimationFrame(state.viewportAnchor.raf);
+    }
+    state.viewportAnchor = null;
+    if (state.frame) {
+        cancelAnimationFrame(state.frame);
+        state.frame = 0;
+    }
+    state.forcing = false;
+
+    const anchor = state.viewportAnchor = {
+        bubble,
+        images,
+        expanded,
+        targetTop: bubble.getBoundingClientRect().top,
+        raf: 0,
+        priorHeight: getComputedStyle(images).height,
+        spaceSettled: false,
+        stableFrames: 0,
+        frameCount: 0,
+    };
+    if (expanded) {
+        messageList.style.setProperty('--message-viewport-anchor-space', `${messageList.clientHeight}px`);
+    }
+    message.classList.toggle('image-expanded', expanded);
+
+    const adjust = () => {
+        anchor.raf = 0;
+        if (state.viewportAnchor !== anchor || !bubble.isConnected || !images.isConnected) {
+            if (state.viewportAnchor === anchor) {
+                messageList.style.removeProperty('--message-viewport-anchor-space');
+                state.viewportAnchor = null;
+            }
+            return;
+        }
+
+        const currentTop = bubble.getBoundingClientRect().top;
+        messageList.scrollTop += currentTop - anchor.targetTop;
+        const height = getComputedStyle(images).height;
+        const correctedTop = bubble.getBoundingClientRect().top;
+        anchor.stableFrames = height === anchor.priorHeight && Math.abs(correctedTop - anchor.targetTop) < .5
+            ? anchor.stableFrames + 1
+            : 0;
+        anchor.priorHeight = height;
+        anchor.frameCount += 1;
+
+        if (anchor.stableFrames >= 2 || anchor.frameCount >= 60) {
+            if (!anchor.spaceSettled) {
+                anchor.spaceSettled = true;
+                if (anchor.expanded) {
+                    const currentSpace = parseFloat(getComputedStyle(messageList).getPropertyValue('--message-viewport-anchor-space')) || 0;
+                    const contentHeight = messageList.scrollHeight - currentSpace;
+                    const neededSpace = Math.max(0, messageList.scrollTop + messageList.clientHeight - contentHeight + 1);
+                    messageList.style.setProperty('--message-viewport-anchor-space', `${Math.min(currentSpace, neededSpace)}px`);
+                } else {
+                    messageList.style.removeProperty('--message-viewport-anchor-space');
+                }
+                anchor.stableFrames = 0;
+                anchor.frameCount = 0;
+                anchor.priorHeight = getComputedStyle(images).height;
+                anchor.raf = requestAnimationFrame(adjust);
+                return;
+            }
+            state.viewportAnchor = null;
+            state.pinned = isMessageListAtBottom(messageList);
+            return;
+        }
+        anchor.raf = requestAnimationFrame(adjust);
+    };
+    anchor.raf = requestAnimationFrame(adjust);
 }
 
 function rememberMessageScroll(root) {
@@ -426,6 +517,24 @@ document.addEventListener('DOMContentLoaded', () => {
         navigator.serviceWorker.register('/sw.js');
     }
 });
+
+function handleImagePointer(event, expanded) {
+    if (event.pointerType === 'touch') {
+        return;
+    }
+
+    const images = event.target.closest?.('.message.user .message-images');
+    if (!images || (event.relatedTarget instanceof Node && images.contains(event.relatedTarget))) {
+        return;
+    }
+    const message = images.closest('.message.user');
+    if (message) {
+        anchorMessageViewport(message, images, expanded);
+    }
+}
+
+document.addEventListener('pointerover', (event) => handleImagePointer(event, true));
+document.addEventListener('pointerout', (event) => handleImagePointer(event, false));
 
 document.addEventListener('input', (event) => {
     if (event.target.matches('#message')) {

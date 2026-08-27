@@ -75,6 +75,7 @@ main {
         }
 
         .message-list {
+            --message-viewport-anchor-space: 0px;
             min-height: 0;
             flex: 1;
             display: flex;
@@ -82,6 +83,11 @@ main {
             overflow-y: auto;
             padding: 1rem;
             box-sizing: border-box;
+
+            &::after {
+                content: "";
+                flex: 0 0 var(--message-viewport-anchor-space);
+            }
         }
 
         .panel-page {
@@ -918,18 +924,26 @@ main {
                     position: relative;
                     z-index: 0;
                     display: flex;
+                    flex-direction: row-reverse;
                     gap: .5rem;
                     width: 100%;
                     max-width: 100%;
                     box-sizing: border-box;
                     padding: 0 .75rem;
+                    height: 2.083333rem;
                     margin-bottom: -1rem;
+                    transition: height 150ms ease;
                     overflow-x: auto;
+                    overflow-y: clip;
                     scrollbar-width: none;
 
                     &::-webkit-scrollbar {
                         display: none;
                     }
+                }
+
+                &.image-expanded .message-images {
+                    height: 4.25rem;
                 }
 
                 .message-image {
@@ -1787,6 +1801,21 @@ main {
         flex-basis: 3.5rem;
         width: 3.5rem;
         height: 3.5rem;
+    }
+
+    main .chat .message.user .message-images {
+        height: 1.833333rem;
+    }
+
+    main .chat .message.user.image-expanded .message-images {
+        height: 3.5rem;
+    }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+    main .chat .message.user .message-images {
+        transition: none;
     }
 }
 
