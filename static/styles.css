@@ -969,10 +969,6 @@ main {
                     color: inherit;
                 }
 
-                &:has(.message-edit-toggle) {
-                    margin-bottom: 2.4rem;
-                }
-
                 .message-edit-form {
                     display: none;
                     width: min(32rem, calc(100vw - 6rem));
@@ -1007,12 +1003,25 @@ main {
                     }
                 }
 
+                .message-below {
+                    display: grid;
+                    grid-template-columns: minmax(0, 1fr) auto;
+                    align-items: start;
+                    gap: .5rem;
+                    width: 100%;
+                    contain: inline-size;
+                }
+
+                .message-actions {
+                    display: flex;
+                    align-items: start;
+                    justify-content: flex-end;
+                }
+
                 .message-copy-button,
                 .message-edit-toggle,
                 .message-edit-cancel {
-                    position: absolute;
-                    top: calc(100% + .15rem);
-                    right: 0;
+                    position: static;
                     display: grid;
                     width: 2rem;
                     height: 1.8rem;
@@ -1037,8 +1046,6 @@ main {
                 }
 
                 .message-copy-button {
-                    right: 2rem;
-
                     .message-copy-confirmation {
                         display: none;
                     }
@@ -1068,33 +1075,31 @@ main {
 
                 &.editing {
                     >.message-bubble {
-                        >.message-content,
-                        >.message-copy-button,
-                        >.message-edit-toggle {
+                        >.message-content {
                             display: none;
                         }
 
-                        >.message-edit-form,
-                        >.message-edit-cancel {
+                        >.message-edit-form {
                             display: grid;
                         }
+                    }
+
+                    >.message-below .message-copy-button,
+                    >.message-below .message-edit-toggle {
+                        display: none;
+                    }
+
+                    >.message-below .message-edit-cancel {
+                        display: grid;
                     }
                 }
 
                 @media (pointer: coarse) {
-                    &:has(.message-edit-toggle) {
-                        margin-bottom: 3rem;
-                    }
-
                     .message-copy-button,
                     .message-edit-toggle,
                     .message-edit-cancel {
                         width: 2.75rem;
                         height: 2.75rem;
-                    }
-
-                    .message-copy-button {
-                        right: 2.75rem;
                     }
                 }
             }
@@ -1255,10 +1260,10 @@ main {
         .message-appends {
             position: relative;
             z-index: 2;
-            align-self: flex-end;
+            align-self: start;
             width: fit-content;
             max-width: min(100%, 42rem);
-            margin: .75rem 0 -.5rem auto;
+            margin: .15rem auto .15rem 0;
             color: var(--color-border-strong);
             font-size: .8rem;
             line-height: 1.35;
@@ -1266,7 +1271,7 @@ main {
             >summary {
                 width: fit-content;
                 max-width: 100%;
-                margin-left: auto;
+                margin-left: 0;
                 cursor: pointer;
                 color: var(--color-border-strong);
                 font-weight: 600;

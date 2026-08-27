@@ -1071,8 +1071,8 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 	)
 	appendIndex := strings.Index(body, `<details class="message-appends">`)
 	messageIndex := strings.Index(body, `<article class="message user"`)
-	if appendIndex == -1 || messageIndex == -1 || appendIndex >= messageIndex {
-		t.Errorf("append details index = %d, user message index = %d; want details before message", appendIndex, messageIndex)
+	if appendIndex == -1 || messageIndex == -1 || appendIndex <= messageIndex {
+		t.Errorf("append details index = %d, user message index = %d; want details after message", appendIndex, messageIndex)
 	}
 }
 
