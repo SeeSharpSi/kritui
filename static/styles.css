@@ -914,6 +914,7 @@ main {
 
             &.user {
                 position: relative;
+                width: 100%;
                 margin-left: auto;
                 isolation: isolate;
                 padding: 0;
@@ -961,7 +962,9 @@ main {
                 .message-bubble {
                     position: relative;
                     z-index: 1;
-                    width: 100%;
+                    width: fit-content;
+                    max-width: 100%;
+                    margin-left: auto;
                     box-sizing: border-box;
                     padding: .7rem 1rem;
                     border-radius: .75rem;
@@ -1016,6 +1019,8 @@ main {
                     display: flex;
                     align-items: start;
                     justify-content: flex-end;
+                    grid-column: 2;
+                    grid-row: 1;
                 }
 
                 .message-copy-button,
@@ -1100,6 +1105,10 @@ main {
                     .message-edit-cancel {
                         width: 2.75rem;
                         height: 2.75rem;
+                    }
+
+                    .message-appends > summary {
+                        min-height: 2.75rem;
                     }
                 }
             }
@@ -1260,17 +1269,26 @@ main {
         .message-appends {
             position: relative;
             z-index: 2;
+            display: grid;
+            grid-column: 1 / -1;
+            grid-row: 1;
             align-self: start;
-            width: fit-content;
-            max-width: min(100%, 42rem);
+            width: 100%;
+            max-width: none;
             margin: .15rem auto .15rem 0;
             color: var(--color-border-strong);
             font-size: .8rem;
             line-height: 1.35;
 
+            &:not([open]) > .message-appends-content {
+                display: none;
+            }
+
             >summary {
+                min-height: 1.8rem;
                 width: fit-content;
                 max-width: 100%;
+                justify-self: start;
                 margin-left: 0;
                 cursor: pointer;
                 color: var(--color-border-strong);
@@ -1306,6 +1324,8 @@ main {
             }
 
             .message-appends-content {
+                grid-column: 1 / -1;
+                width: auto;
                 margin: .35rem 1.1em 0 0;
                 padding: .45rem .6rem;
                 border-right: 2px solid var(--color-border);
