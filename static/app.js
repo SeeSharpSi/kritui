@@ -159,6 +159,121 @@ function syncPanelSendButton() {
     sendButton.disabled = Boolean(panelOpen || requestActive);
 }
 
+const imageAttachmentStates = new WeakMap();
+const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const maxImageCount = 4;
+const maxImageBytes = 5 * 1024 * 1024;
+const maxImageTotalBytes = 16 * 1024 * 1024;
+
+function imageAttachmentState(input) {
+    let state = imageAttachmentStates.get(input);
+    if (!state) {
+        state = { files: [], urls: [] };
+        imageAttachmentStates.set(input, state);
+    }
+    return state;
+}
+
+function renderImagePreviews(input) {
+    const state = imageAttachmentState(input);
+    state.urls.forEach((url) => URL.revokeObjectURL(url));
+    state.urls = [];
+    const main = input.closest('main');
+    const previews = main?.querySelector('#image-previews');
+    if (!previews) {
+        return;
+    }
+
+    previews.replaceChildren();
+    previews.hidden = state.files.length === 0;
+    state.files.forEach((file, index) => {
+        const name = file.name || `Image ${index + 1}`;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'image-preview';
+        const image = document.createElement('img');
+        image.alt = '';
+        image.title = name;
+        const url = URL.createObjectURL(file);
+        state.urls.push(url);
+        image.src = url;
+        const remove = document.createElement('button');
+        remove.className = 'image-preview-remove';
+        remove.type = 'button';
+        remove.dataset.imageIndex = String(index);
+        remove.setAttribute('aria-label', `Remove ${name}`);
+        remove.title = 'Remove image';
+        remove.textContent = '\u00d7';
+        wrapper.append(image, remove);
+        previews.append(wrapper);
+    });
+    previews.scrollLeft = previews.scrollWidth;
+}
+
+function syncImageInput(input) {
+    const state = imageAttachmentState(input);
+    const transfer = new DataTransfer();
+    state.files.forEach((file) => transfer.items.add(file));
+    input.files = transfer.files;
+}
+
+function announceImageAttachments(input, message) {
+    const status = input.closest('form')?.querySelector('#image-paste-status');
+    if (status) {
+        status.textContent = message;
+    }
+}
+
+function clearImageAttachments(input) {
+    const state = imageAttachmentState(input);
+    state.files = [];
+    syncImageInput(input);
+    renderImagePreviews(input);
+    announceImageAttachments(input, '');
+}
+
+function addImageAttachments(input, files) {
+    const state = imageAttachmentState(input);
+    const accepted = [];
+    const rejected = [];
+    let totalBytes = state.files.reduce((total, file) => total + file.size, 0);
+    files.forEach((file) => {
+        const name = file.name || 'Image';
+        if (!imageTypes.has(file.type)) {
+            rejected.push(`${name}: unsupported type`);
+        } else if (file.size > maxImageBytes) {
+            rejected.push(`${name}: too large`);
+        } else if (state.files.length + accepted.length >= maxImageCount) {
+            rejected.push(`${name}: image limit reached`);
+        } else if (totalBytes + file.size > maxImageTotalBytes) {
+            rejected.push(`${name}: total size limit reached`);
+        } else {
+            accepted.push(file);
+            totalBytes += file.size;
+        }
+    });
+    state.files.push(...accepted);
+    syncImageInput(input);
+    renderImagePreviews(input);
+    const result = `${accepted.length} image${accepted.length === 1 ? '' : 's'} added.`
+        + (rejected.length ? ` ${rejected.join('; ')}.` : '');
+    announceImageAttachments(input, result);
+}
+
+function clearComposerImages(root) {
+    const input = root.matches?.('#image-input')
+        ? root
+        : root.querySelector?.('#image-input');
+    if (input) {
+        const state = imageAttachmentStates.get(input);
+        if (state) {
+            state.urls.forEach((url) => URL.revokeObjectURL(url));
+            state.urls = [];
+            state.files = [];
+        }
+        imageAttachmentStates.delete(input);
+    }
+}
+
 function commandAutocompleteFor(input) {
     const autocompleteID = input?.getAttribute('aria-controls');
     return autocompleteID ? document.getElementById(autocompleteID) : null;
@@ -315,6 +430,28 @@ document.addEventListener('DOMContentLoaded', () => {
 document.addEventListener('input', (event) => {
     if (event.target.matches('#message')) {
         updateCommandAutocomplete(event.target);
+    }
+});
+
+document.addEventListener('paste', (event) => {
+    const input = event.target;
+    if (!input.matches?.('#message')) {
+        return;
+    }
+    const items = Array.from(event.clipboardData?.items ?? [])
+        .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+    const files = items.length > 0
+        ? items
+        : Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith('image/'));
+    if (files.length === 0) {
+        return;
+    }
+    event.preventDefault();
+    const imageInput = input.form?.querySelector('#image-input');
+    if (imageInput) {
+        addImageAttachments(imageInput, files);
     }
 });
 
@@ -479,7 +616,15 @@ document.addEventListener('htmx:afterSwap', (event) => {
     syncPanelSendButton();
 });
 document.addEventListener('htmx:afterSettle', (event) => restoreMessageScroll(event.detail.elt));
-document.addEventListener('htmx:afterRequest', syncPanelSendButton);
+document.addEventListener('htmx:afterRequest', (event) => {
+    if (event.detail.successful && event.detail.elt?.matches?.('#message-form')) {
+        const input = event.detail.elt.querySelector('#image-input');
+        if (input) {
+            clearImageAttachments(input);
+        }
+    }
+    syncPanelSendButton();
+});
 document.addEventListener('kritui:command', (event) => {
     const messageInput = document.querySelector('#message');
     if (messageInput) {
@@ -505,6 +650,7 @@ document.addEventListener('kritui:message-edited', () => {
 });
 document.addEventListener('htmx:beforeCleanupElement', (event) => {
     const root = event.detail.elt;
+    clearComposerImages(root);
     if (root.matches?.('.message-list')) {
         destroyMessageListState(root);
     }
@@ -545,6 +691,20 @@ document.addEventListener('htmx:confirm', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+    const removeImage = event.target.closest('.image-preview-remove');
+    if (removeImage) {
+        const input = removeImage.closest('main')?.querySelector('#image-input');
+        const index = Number(removeImage.dataset.imageIndex);
+        const state = input && imageAttachmentStates.get(input);
+        if (input && state && Number.isInteger(index) && index >= 0 && index < state.files.length) {
+            state.files.splice(index, 1);
+            syncImageInput(input);
+            renderImagePreviews(input);
+            announceImageAttachments(input, `${state.files.length} image${state.files.length === 1 ? '' : 's'} remaining.`);
+            input.closest('form')?.querySelector('#message')?.focus();
+        }
+        return;
+    }
     const commandOption = event.target.closest('.command-option:not([hidden])');
     if (commandOption) {
         const messageInput = document.querySelector('#message');
