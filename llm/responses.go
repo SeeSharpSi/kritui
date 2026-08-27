@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 type responseInput struct {
 	Type      string `json:"type,omitempty"`
 	Role      string `json:"role,omitempty"`
-	Content   string `json:"content,omitempty"`
+	Content   any    `json:"content,omitempty"`
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
@@ -43,6 +44,23 @@ func (c *Client) completeResponse(ctx context.Context, endpoint endpointCandidat
 				Output: message.Content,
 			})
 		default:
+			if len(message.Images) > 0 {
+				if message.Role != "user" {
+					return Message{}, errors.New("llm: images are only allowed on user messages")
+				}
+				parts := make([]any, 0, len(message.Images)+1)
+				for _, image := range message.Images {
+					if len(image.Data) == 0 || image.MediaType == "" {
+						return Message{}, errors.New("llm: image data and media type are required")
+					}
+					parts = append(parts, map[string]any{"type": "input_image", "image_url": "data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data), "detail": "auto"})
+				}
+				if message.Content != "" {
+					parts = append(parts, map[string]any{"type": "input_text", "text": message.Content})
+				}
+				input = append(input, responseInput{Role: message.Role, Content: parts})
+				continue
+			}
 			if message.Content != "" || len(message.ToolCalls) == 0 {
 				input = append(input, responseInput{Role: message.Role, Content: message.Content})
 			}

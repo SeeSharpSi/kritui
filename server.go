@@ -366,6 +366,17 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 		) STRICT`)
 		return err
 	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS message_user_images (
+			message_id INTEGER NOT NULL, message_role TEXT NOT NULL DEFAULT 'user' CHECK (message_role = 'user'),
+			position INTEGER NOT NULL CHECK (position >= 0), filename TEXT NOT NULL,
+			media_type TEXT NOT NULL CHECK (media_type <> ''), width INTEGER NOT NULL CHECK (width >= 0),
+			height INTEGER NOT NULL CHECK (height >= 0), data BLOB NOT NULL CHECK (length(data) > 0),
+			PRIMARY KEY (message_id, position),
+			FOREIGN KEY (message_id, message_role) REFERENCES messages(id, role) ON DELETE CASCADE
+		) STRICT`)
+		return err
+	},
 }
 
 type legacyChatCollections struct {

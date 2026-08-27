@@ -49,6 +49,7 @@ type storedMessage struct {
 	toolCallPositions       []int
 	promptAppendPositions   []int
 	providerOutputPositions []int
+	imagePositions          []int
 }
 
 type rowScanner interface {
@@ -273,6 +274,9 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 	if err := loadMessagePromptAppends(ctx, db, chatID, storedMessages, indexes); err != nil {
 		return MessageSnapshot{}, err
 	}
+	if err := loadMessageUserImages(ctx, db, chatID, storedMessages, indexes); err != nil {
+		return MessageSnapshot{}, err
+	}
 	if err := loadMessageProviderOutputs(ctx, db, chatID, storedMessages, indexes); err != nil {
 		return MessageSnapshot{}, err
 	}
@@ -291,6 +295,39 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 	}
 	copy(snapshot.version.digest[:], digest.Sum(nil))
 	return snapshot, nil
+}
+
+func loadMessageUserImages(ctx context.Context, db messageQueryer, chatID int64, messages []storedMessage, indexes map[int64]int) error {
+	rows, err := db.QueryContext(ctx, `
+		SELECT images.message_id, images.position, images.filename, images.media_type, images.width, images.height, images.data
+		FROM message_user_images AS images JOIN messages ON messages.id = images.message_id
+		WHERE messages.chat_id = ? AND messages.undo_sequence IS NULL
+		ORDER BY messages.position, messages.id, images.position
+	`, chatID)
+	if err != nil {
+		return fmt.Errorf("get message images: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var position, width, height int
+		var image llm.UserImage
+		if err := rows.Scan(&id, &position, &image.Filename, &image.MediaType, &width, &height, &image.Data); err != nil {
+			return fmt.Errorf("scan message image: %w", err)
+		}
+		index, ok := indexes[id]
+		if !ok {
+			return fmt.Errorf("message image references unloaded message %d", id)
+		}
+		image.Width, image.Height = width, height
+		image.Data = append([]byte(nil), image.Data...)
+		messages[index].message.Images = append(messages[index].message.Images, image)
+		messages[index].imagePositions = append(messages[index].imagePositions, position)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate message images: %w", err)
+	}
+	return nil
 }
 
 func scanStoredMessage(row rowScanner) (storedMessage, error) {
@@ -449,6 +486,16 @@ func writeStoredMessage(digest hash.Hash, stored storedMessage) {
 	for index, text := range stored.message.PromptAppendTexts {
 		writeInt64(digest, int64(stored.promptAppendPositions[index]))
 		writeString(digest, text)
+	}
+	writeInt64(digest, int64(len(stored.message.Images)))
+	for index, image := range stored.message.Images {
+		writeInt64(digest, int64(stored.imagePositions[index]))
+		writeString(digest, image.Filename)
+		writeString(digest, image.MediaType)
+		writeInt64(digest, int64(image.Width))
+		writeInt64(digest, int64(image.Height))
+		writeInt64(digest, int64(len(image.Data)))
+		_, _ = digest.Write(image.Data)
 	}
 	outputs := stored.message.ProviderMetadata.ResponsesOutput()
 	writeInt64(digest, int64(len(outputs)))

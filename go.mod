@@ -7,6 +7,7 @@ require (
 	github.com/a-h/templ v0.3.1020
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/yuin/goldmark v1.8.2
+	golang.org/x/image v0.45.0
 	modernc.org/sqlite v1.54.0
 )
 

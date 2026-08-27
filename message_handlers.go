@@ -6,15 +6,21 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
 	"log"
 	"mime"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/a-h/templ"
+	_ "golang.org/x/image/webp"
 	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
@@ -36,8 +42,21 @@ type persistedUserMessage struct {
 	appends []kritui_db.PromptAppend
 }
 
+type imageUploadError struct {
+	status  int
+	message string
+}
+
+func (e *imageUploadError) Error() string { return e.message }
+
 const (
 	maxMessageBodyBytes    int64 = 1 << 20
+	maxMessagePostBytes    int64 = 20 << 20
+	maxImageBytes          int64 = 5 << 20
+	maxImagesRawBytes      int64 = 16 << 20
+	maxImages                    = 4
+	maxImageDimension            = 8000
+	maxImagePixels               = 40_000_000
 	maxCompletionBodyBytes int64 = 16 << 10
 	maxRetryBodyBytes      int64 = 16 << 10
 	// accommodates 32 prompt appends of 16 KiB each plus form overhead
@@ -56,12 +75,31 @@ var (
 
 func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry *commands.Registry, toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !parseMessageForm(w, r, maxMessageBodyBytes) {
+		if !parseMessageForm(w, r, maxMessagePostBytes) {
 			return
 		}
+		defer removeMultipartForm(r)
 		rawMessage := r.FormValue("message")
+		if int64(len([]byte(rawMessage))) > maxMessageBodyBytes {
+			renderMessageError(w, r, http.StatusRequestEntityTooLarge, "Message is too large.")
+			return
+		}
+		images, err := uploadedImages(r)
+		if err != nil {
+			status := http.StatusBadRequest
+			var uploadError *imageUploadError
+			if errors.As(err, &uploadError) {
+				status = uploadError.status
+			}
+			renderMessageError(w, r, status, err.Error())
+			return
+		}
 		parsedCommand, isCommand, err := commands.Parse(rawMessage)
 		if isCommand {
+			if len(images) > 0 {
+				renderMessageError(w, r, http.StatusBadRequest, "Slash commands cannot include images.")
+				return
+			}
 			if err != nil {
 				renderMessageError(w, r, http.StatusBadRequest, "Invalid slash command.")
 				return
@@ -81,13 +119,17 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 		}
 
 		message := strings.TrimSpace(rawMessage)
-		if message == "" {
+		if message == "" && len(images) == 0 {
 			renderMessageError(w, r, http.StatusBadRequest, "Message is required.")
 			return
 		}
 
 		request, ok := parseMessageRequest(w, r, database, registry)
 		if !ok {
+			return
+		}
+		if len(images) > 0 && modelKnownUnsupported(r.Context(), request.model) {
+			renderMessageError(w, r, http.StatusBadRequest, "Selected model does not support images.")
 			return
 		}
 		requestID, err := toolCalls.create(request.chatID, request.model, request.selected.Names())
@@ -100,7 +142,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 			renderMessageError(w, r, http.StatusInternalServerError, "Failed to prepare message.")
 			return
 		}
-		persisted, err := persistUserMessage(r.Context(), database, request.chatID, message, request.selected.Names(), r.Form["append"])
+		persisted, err := persistUserMessage(r.Context(), database, request.chatID, message, images, request.selected.Names(), r.Form["append"])
 		if err != nil {
 			toolCalls.delete(requestID)
 			switch {
@@ -117,7 +159,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 
 		appendTexts := promptAppendTexts(persisted.appends)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		userMessage := llm.Message{ID: persisted.id, Role: "user", Content: message, PromptAppendTexts: appendTexts}
+		userMessage := llm.Message{ID: persisted.id, Role: "user", Content: message, Images: images, PromptAppendTexts: appendTexts}
 		if err := templates.PendingSubmission(strconv.FormatInt(request.chatID, 10), requestID, userMessage, request.model, request.selected.Names()).Render(r.Context(), w); err != nil {
 			toolCalls.delete(requestID)
 			log.Printf("render pending message: %v", err)
@@ -133,6 +175,14 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			return
 		}
 		if !parseMessageEditForm(w, r, messageID) {
+			return
+		}
+		defer removeMultipartForm(r)
+		if images, err := uploadedImages(r); err != nil || len(images) > 0 {
+			if err == nil {
+				err = errors.New("Images cannot be added while editing a message.")
+			}
+			renderMessageEditError(w, r, http.StatusBadRequest, messageID, err.Error())
 			return
 		}
 
@@ -316,6 +366,10 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 	if err != nil {
 		log.Printf("configure llm: %v", err)
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure model.", request.model, selectedTools))
+		return
+	}
+	if hasImages(messages) && modelKnownUnsupportedWithClient(ctx, client, request.model) {
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Selected model does not support images.", request.model, selectedTools))
 		return
 	}
 
@@ -510,7 +564,7 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 // cannot slip between validation and persistence, so stale references are never
 // reintroduced into chat selections. It returns the stored message ID and the
 // resolved append definitions used for rendering.
-func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, tools []string, appendIDs []string) (persistedUserMessage, error) {
+func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, images []llm.UserImage, tools []string, appendIDs []string) (persistedUserMessage, error) {
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return persistedUserMessage{}, fmt.Errorf("begin user message transaction: %w", err)
@@ -540,6 +594,7 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	id, err := kritui_db.InsertMessage(ctx, tx, chatID, position, llm.Message{
 		Role:              "user",
 		Content:           message,
+		Images:            images,
 		PromptAppendTexts: promptAppendTexts(selectedAppends),
 	})
 	if err != nil {
@@ -637,13 +692,113 @@ func parseLimitedForm(w http.ResponseWriter, r *http.Request, limit int64) error
 			return err
 		}
 		if mediaType == "multipart/form-data" {
-			return r.ParseMultipartForm(limit)
+			if err := r.ParseMultipartForm(256 << 10); err != nil {
+				removeMultipartForm(r)
+				return err
+			}
+			return nil
 		}
 	}
 	return r.ParseForm()
 }
 
+func removeMultipartForm(r *http.Request) {
+	if r.MultipartForm != nil {
+		_ = r.MultipartForm.RemoveAll()
+	}
+}
+
+func uploadedImages(r *http.Request) ([]llm.UserImage, error) {
+	if r.MultipartForm == nil {
+		return nil, nil
+	}
+	for name := range r.MultipartForm.File {
+		if name != "image" {
+			return nil, fmt.Errorf("unsupported upload field %q", name)
+		}
+	}
+	files := r.MultipartForm.File["image"]
+	if len(files) > maxImages {
+		return nil, &imageUploadError{status: http.StatusRequestEntityTooLarge, message: "Too many images."}
+	}
+	var total int64
+	images := make([]llm.UserImage, 0, len(files))
+	for _, header := range files {
+		if header.Size > maxImageBytes {
+			return nil, &imageUploadError{status: http.StatusRequestEntityTooLarge, message: "Image is too large."}
+		}
+		file, err := header.Open()
+		if err != nil {
+			return nil, errors.New("invalid image upload")
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, maxImageBytes+1))
+		closeErr := file.Close()
+		if readErr != nil || closeErr != nil || int64(len(data)) > maxImageBytes {
+			return nil, &imageUploadError{status: http.StatusRequestEntityTooLarge, message: "Image is too large."}
+		}
+		total += int64(len(data))
+		if total > maxImagesRawBytes {
+			return nil, &imageUploadError{status: http.StatusRequestEntityTooLarge, message: "Images are too large."}
+		}
+		config, format, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			return nil, errors.New("invalid image data")
+		}
+		if config.Width <= 0 || config.Height <= 0 || config.Width > maxImageDimension || config.Height > maxImageDimension || int64(config.Width)*int64(config.Height) > maxImagePixels {
+			return nil, errors.New("image dimensions are too large")
+		}
+		media := map[string]string{"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp"}[format]
+		if media == "" {
+			return nil, errors.New("unsupported image format")
+		}
+		name := path.Base(strings.ReplaceAll(header.Filename, `\`, "/"))
+		runes := []rune(name)
+		if len(runes) > 255 {
+			name = string(runes[:255])
+		}
+		images = append(images, llm.UserImage{Filename: name, MediaType: media, Width: config.Width, Height: config.Height, Data: data})
+	}
+	return images, nil
+}
+
+func hasImages(messages []llm.Message) bool {
+	for _, message := range messages {
+		if len(message.Images) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func modelKnownUnsupported(ctx context.Context, model string) bool {
+	client, err := llm.New(os.Getenv("LLM_KEY"), model, os.Getenv("LLM_ENDPOINT"), llm.ClientOptions{})
+	if err != nil {
+		return false
+	}
+	return modelKnownUnsupportedWithClient(ctx, client, model)
+}
+
+func modelKnownUnsupportedWithClient(ctx context.Context, client *llm.Client, model string) bool {
+	infos, err := client.ModelInfos(ctx)
+	if err != nil {
+		return false
+	}
+	for _, info := range infos {
+		if info.ID == model {
+			return info.ImageSupport == llm.ImageSupportUnsupported
+		}
+	}
+	return false
+}
+
 func parseMessageForm(w http.ResponseWriter, r *http.Request, limit int64) bool {
+	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mediaType != "multipart/form-data" && limit > maxMessageBodyBytes {
+		limit = maxMessageBodyBytes
+	}
+	if r.ContentLength > limit {
+		renderMessageError(w, r, http.StatusRequestEntityTooLarge, "Request body is too large.")
+		return false
+	}
 	if err := parseLimitedForm(w, r, limit); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {

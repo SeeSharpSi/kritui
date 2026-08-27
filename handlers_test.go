@@ -4,14 +4,20 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -138,7 +144,7 @@ func TestOpenDatabaseSerializesConcurrentWrites(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			_, err := persistUserMessage(context.Background(), database, chatID, "message", []string{}, nil)
+			_, err := persistUserMessage(context.Background(), database, chatID, "message", nil, []string{}, nil)
 			errors <- err
 		}()
 	}
@@ -626,6 +632,128 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 	}
 }
 
+func TestMessageHandlerPersistsUploadedImages(t *testing.T) {
+	database := openTestDatabase(t)
+	toolCalls := newToolCallStore()
+	pngBytes := testImageBytes(t, "png", 2, 3)
+	jpegBytes := testImageBytes(t, "jpeg", 4, 5)
+	body, contentType := multipartImageRequest(t, "", []testUpload{{`..\\nested\\` + strings.Repeat("x", 260) + ".png", "text/plain", pngBytes}})
+	request := httptest.NewRequest(http.MethodPost, "/messages?chat=41", bytes.NewReader(body))
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+	messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls)(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d; body = %q", response.Code, response.Body.String())
+	}
+	messages, err := kritui_db.GetMessages(context.Background(), database, 41)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Content != "" || len(messages[0].Images) != 1 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	image := messages[0].Images[0]
+	if image.MediaType != "image/png" || image.Width != 2 || image.Height != 3 || !bytes.Equal(image.Data, pngBytes) {
+		t.Errorf("stored image = %#v", image)
+	}
+	if len([]rune(image.Filename)) != 255 {
+		t.Errorf("filename = %q", image.Filename)
+	}
+	if response.Body.Len() == 0 {
+		t.Error("pending response empty")
+	}
+
+	webpBytes := testWebPBytes(t)
+	body, contentType = multipartImageRequest(t, "ordered", []testUpload{{"first.jpg", "image/jpeg", jpegBytes}, {"second.png", "image/png", pngBytes}, {"third.webp", "image/webp", webpBytes}})
+	request = httptest.NewRequest(http.MethodPost, "/messages?chat=42", bytes.NewReader(body))
+	request.Header.Set("Content-Type", contentType)
+	response = httptest.NewRecorder()
+	messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("ordered status = %d", response.Code)
+	}
+	messages, err = kritui_db.GetMessages(context.Background(), database, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || len(messages[0].Images) != 3 || messages[0].Images[0].Filename != "first.jpg" || messages[0].Images[1].Filename != "second.png" || messages[0].Images[2].MediaType != "image/webp" || !bytes.Equal(messages[0].Images[2].Data, webpBytes) {
+		t.Fatalf("order = %#v", messages)
+	}
+}
+
+func TestMessageHandlerRejectsInvalidImageUploads(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		files   []testUpload
+		status  int
+	}{
+		{"corrupt", "", []testUpload{{"x.png", "image/png", []byte("bad")}}, 400},
+		{"gif", "", []testUpload{{"x.gif", "image/gif", []byte("GIF89a")}}, 400},
+		{"unknown field", "", []testUpload{{"x.png", "image/png", testImageBytes(t, "png", 1, 1)}}, 400},
+		{"command", "/new", []testUpload{{"x.png", "image/png", testImageBytes(t, "png", 1, 1)}}, 400},
+		{"dimensions", "", []testUpload{{"x.png", "image/png", testImageBytes(t, "png", 8001, 1)}}, 400},
+		{"too many", "", []testUpload{{"1.png", "", testImageBytes(t, "png", 1, 1)}, {"2.png", "", testImageBytes(t, "png", 1, 1)}, {"3.png", "", testImageBytes(t, "png", 1, 1)}, {"4.png", "", testImageBytes(t, "png", 1, 1)}, {"5.png", "", testImageBytes(t, "png", 1, 1)}}, 413},
+		{"too large", "", []testUpload{{"large.png", "", bytes.Repeat([]byte("x"), int(maxImageBytes)+1)}}, 413},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestDatabase(t)
+			body, ct := multipartImageRequest(t, tt.message, tt.files)
+			if tt.name == "unknown field" {
+				body, ct = multipartImageRequestField(t, "other", tt.files)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/messages?chat=51", bytes.NewReader(body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			messageHandler(db, newTestToolRegistry(t), newTestCommandRegistry(t, db), newToolCallStore())(rec, req)
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.status)
+			}
+			messages, _ := kritui_db.GetMessages(context.Background(), db, 51)
+			if len(messages) != 0 {
+				t.Fatalf("persisted messages = %d", len(messages))
+			}
+		})
+	}
+}
+
+func TestMessageHandlerModelImageCapability(t *testing.T) {
+	for _, unsupported := range []bool{true, false} {
+		t.Run(fmt.Sprint(unsupported), func(t *testing.T) {
+			db := openTestDatabase(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if unsupported {
+					_, _ = io.WriteString(w, `{"data":[{"id":"vision-model","capabilities":{"image_input":{"supported":false}},"architecture":{"input_modalities":["text"]}}]}`)
+				} else {
+					_, _ = io.WriteString(w, `{"data":[]}`)
+				}
+			}))
+			defer server.Close()
+			t.Setenv("LLM_KEY", "test-key")
+			t.Setenv("LLM_ENDPOINT", server.URL+"/responses")
+			body, ct := multipartImageRequest(t, "", []testUpload{{"x.png", "", testImageBytes(t, "png", 1, 1)}})
+			req := httptest.NewRequest(http.MethodPost, "/messages?chat=61", bytes.NewReader(body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			messageHandler(db, newTestToolRegistry(t), newTestCommandRegistry(t, db), newToolCallStore())(rec, req)
+			want := http.StatusOK
+			if unsupported {
+				want = http.StatusBadRequest
+			}
+			if rec.Code != want {
+				t.Fatalf("status = %d, want %d", rec.Code, want)
+			}
+			messages, _ := kritui_db.GetMessages(context.Background(), db, 61)
+			if (len(messages) != 0) == !unsupported {
+				return
+			}
+			t.Fatalf("persistence mismatch: %d", len(messages))
+		})
+	}
+}
+
 func TestMessageHandlerExecutesNavigationCommandsWithoutPersistence(t *testing.T) {
 	database := openTestDatabase(t)
 	chatID := seedChat(t, database, "Existing", nil, nil)
@@ -943,8 +1071,8 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 	)
 	appendIndex := strings.Index(body, `<details class="message-appends">`)
 	messageIndex := strings.Index(body, `<article class="message user"`)
-	if appendIndex == -1 || messageIndex == -1 || appendIndex >= messageIndex {
-		t.Errorf("append details index = %d, user message index = %d; want details before message", appendIndex, messageIndex)
+	if appendIndex == -1 || messageIndex == -1 || appendIndex <= messageIndex {
+		t.Errorf("append details index = %d, user message index = %d; want details after message", appendIndex, messageIndex)
 	}
 }
 
@@ -981,7 +1109,7 @@ func TestMessageRejectsAppendRemovedBeforePersistence(t *testing.T) {
 	// submitted. Resolution happens inside the message transaction, so the
 	// removed ID must be rejected against the current definitions.
 	seedPromptAppends(t, database, values[:1])
-	_, err := persistUserMessage(ctx, database, 1, "Use gone", []string{}, []string{"gone", "keep"})
+	_, err := persistUserMessage(ctx, database, 1, "Use gone", nil, []string{}, []string{"gone", "keep"})
 	if !errors.Is(err, errInvalidAppendSelection) {
 		t.Fatalf("persistUserMessage() error = %v, want errInvalidAppendSelection", err)
 	}
@@ -1010,7 +1138,7 @@ func TestMessageSelectionThenSettingsPruneNeverLeavesStaleAppends(t *testing.T) 
 	seedPromptAppends(t, database, []kritui_db.PromptAppend{keep, gone})
 	// The message transaction resolves both appends and persists the selection
 	// before the settings save that follows.
-	selected, err := persistUserMessage(ctx, database, 90, "Use both", []string{}, []string{"keep", "gone"})
+	selected, err := persistUserMessage(ctx, database, 90, "Use both", nil, []string{}, []string{"keep", "gone"})
 	if err != nil {
 		t.Fatalf("persistUserMessage(): %v", err)
 	}
@@ -1210,7 +1338,7 @@ func TestMessageHandlerLimitsMultipartBody(t *testing.T) {
 	database := openTestDatabase(t)
 	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
 
-	body, contentType := multipartBodyOfSize(t, maxMessageBodyBytes)
+	body, contentType := multipartBodyOfSize(t, maxMessagePostBytes)
 	request := httptest.NewRequest(http.MethodPost, "/messages?chat=invalid", bytes.NewReader(body))
 	request.Header.Set("Content-Type", contentType)
 	response := httptest.NewRecorder()
@@ -1219,7 +1347,7 @@ func TestMessageHandlerLimitsMultipartBody(t *testing.T) {
 		t.Fatalf("multipart body at limit returned 413: %s", response.Body.String())
 	}
 
-	body, contentType = multipartBodyOfSize(t, maxMessageBodyBytes+1)
+	body, contentType = multipartBodyOfSize(t, maxMessagePostBytes+1)
 	request = httptest.NewRequest(http.MethodPost, "/messages?chat=invalid", bytes.NewReader(body))
 	request.Header.Set("Content-Type", contentType)
 	response = httptest.NewRecorder()
@@ -1376,12 +1504,12 @@ func TestHistoryHandlerRefreshesCurrentTitlesAndOrdering(t *testing.T) {
 	}
 
 	requireContains(t, loadHistory(), "No saved chats yet.")
-	if _, err := persistUserMessage(context.Background(), database, 1, "First title", []string{}, nil); err != nil {
+	if _, err := persistUserMessage(context.Background(), database, 1, "First title", nil, []string{}, nil); err != nil {
 		t.Fatalf("store first chat: %v", err)
 	}
 	requireContains(t, loadHistory(), "First title")
 
-	if _, err := persistUserMessage(context.Background(), database, 2, "Newest title", []string{}, nil); err != nil {
+	if _, err := persistUserMessage(context.Background(), database, 2, "Newest title", nil, []string{}, nil); err != nil {
 		t.Fatalf("store newest chat: %v", err)
 	}
 	refreshed := loadHistory()
@@ -3991,7 +4119,7 @@ func TestResponsesProviderMetadataPersistsAcrossDatabaseReload(t *testing.T) {
 	if len(storedOutput) != 2 {
 		t.Fatalf("stored provider output count = %d, want 2", len(storedOutput))
 	}
-	if _, err := persistUserMessage(context.Background(), database, 1, "Second question", []string{"lookup"}, nil); err != nil {
+	if _, err := persistUserMessage(context.Background(), database, 1, "Second question", nil, []string{"lookup"}, nil); err != nil {
 		t.Fatalf("store second user message: %v", err)
 	}
 
@@ -4472,6 +4600,81 @@ func multipartBodyOfSize(t *testing.T, size int64) ([]byte, string) {
 		t.Fatalf("multipart body size = %d, want %d", len(body), size)
 	}
 	return body, contentType
+}
+
+type testUpload struct {
+	name, contentType string
+	data              []byte
+}
+
+func testImageBytes(t *testing.T, format string, width, height int) []byte {
+	t.Helper()
+	image := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			image.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 7, A: 255})
+		}
+	}
+	var body bytes.Buffer
+	var err error
+	if format == "jpeg" {
+		err = jpeg.Encode(&body, image, &jpeg.Options{Quality: 90})
+	} else {
+		err = png.Encode(&body, image)
+	}
+	if err != nil {
+		t.Fatalf("encode %s: %v", format, err)
+	}
+	return body.Bytes()
+}
+
+func testWebPBytes(t *testing.T) []byte {
+	t.Helper()
+	const encoded = "UklGRrIBAABXRUJQVlA4TKUBAAAvSsAYAA8w//M///MfeJAkbXvaSG7m8Q3GfYSBJekwQztm/IcZlgwnmWImn2BK7aFmBtnVir6q//8VOkFE/xm4baTIu8c48ArEo6+B3zFKYln3pqClSCKX0begFTAXFOLXHSyF8cCNcZEG4OywuA4KVVfJCiArU7GAgJI8+lJP/OKMT/fBAjevg1cYB7YVkFuWga2lyPi5I0HFy5YTpWIHg0RZpkniRVW9odHAKOwosWuOGdxIyn2OvaCDvhg/we6TwadPBPbqBV58MsLmMJ8yZnOWk8SRz4N+QoyPL+MnamzMvcE1rHNEr91F9GKZPVUcS9w7PhhH36suB9qPeYb/oLk6cuTiJ0wOK3m5h1cKjW6EVZCYMK7dxcKCBdgP9HkKr9gkAO2P8GKZGWVdIAatQa+1IDpt6qyorVwdy01xdW8Jkfk6xjEXmVQQ+HQdFr6OKhIN34dXWq0+0qr6EJSCeeVLH9+gvGTLyqM65PQ44ihzlTXxQKjKbAvshXgir7Lil9w4L2bvMycmjQcqXaMCO6BlY28i+FOLzbfI1vEqxAhotocAAA=="
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode WebP fixture: %v", err)
+	}
+	return data
+}
+
+func multipartImageRequest(t *testing.T, message string, files []testUpload) ([]byte, string) {
+	return multipartImageRequestField(t, "image", filesWithMessage(message, files))
+}
+
+func filesWithMessage(message string, files []testUpload) []testUpload {
+	return append([]testUpload{{name: "__message__", data: []byte(message)}}, files...)
+}
+
+func multipartImageRequestField(t *testing.T, field string, files []testUpload) ([]byte, string) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for _, file := range files {
+		if file.name == "__message__" {
+			if err := writer.WriteField("message", string(file.data)); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, field, file.name))
+		header.Set("Content-Type", file.contentType)
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(file.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.WriteField("model", "vision-model"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes(), writer.FormDataContentType()
 }
 
 func requireContains(t *testing.T, content string, values ...string) {

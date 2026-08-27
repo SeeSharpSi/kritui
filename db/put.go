@@ -143,6 +143,14 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 	if !message.ProviderMetadata.IsZero() && message.Role != "assistant" {
 		return 0, fmt.Errorf("store provider metadata: only assistant messages may contain provider metadata")
 	}
+	if len(message.Images) > 0 && message.Role != "user" {
+		return 0, fmt.Errorf("store images: only user messages may contain images")
+	}
+	for imagePosition, image := range message.Images {
+		if image.MediaType == "" || len(image.Data) == 0 || image.Width < 0 || image.Height < 0 {
+			return 0, fmt.Errorf("store image %d: invalid media type, data, or dimensions", imagePosition)
+		}
+	}
 
 	var toolCallID any
 	if message.ToolCallID != "" {
@@ -190,6 +198,15 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 			return 0, fmt.Errorf("store prompt append %d for message %d: %w", appendPosition, id, err)
 		}
 	}
+	for imagePosition, image := range message.Images {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO message_user_images
+				(message_id, message_role, position, filename, media_type, width, height, data)
+			VALUES (?, 'user', ?, ?, ?, ?, ?, ?)
+		`, id, imagePosition, image.Filename, image.MediaType, image.Width, image.Height, image.Data); err != nil {
+			return 0, fmt.Errorf("store image %d for message %d: %w", imagePosition, id, err)
+		}
+	}
 	for outputPosition, output := range message.ProviderMetadata.ResponsesOutput() {
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO message_provider_outputs (message_id, message_role, position, payload)
@@ -209,6 +226,9 @@ func ReplaceUserMessage(ctx context.Context, db databaseExecutor, chatID, messag
 	}
 	if message.Model != "" || message.TotalTokens != nil || message.Cost != nil || len(message.ToolCalls) > 0 || message.ToolCallID != "" || !message.ProviderMetadata.IsZero() {
 		return fmt.Errorf("replace user message: invalid user message metadata")
+	}
+	if len(message.Images) > 0 {
+		return fmt.Errorf("replace user message: image replacement is unsupported")
 	}
 
 	return executeAtomically(ctx, db, func(executor databaseExecutor) error {

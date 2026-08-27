@@ -53,18 +53,61 @@ var endpointDefinitions = []struct {
 // Message is one message in a chat completion conversation.
 type Message struct {
 	// ID is local storage identity and is never sent to providers.
-	ID          int64    `json:"-"`
-	Role        string   `json:"role"`
-	Content     string   `json:"content"`
-	Model       string   `json:"-"`
-	TotalTokens *int     `json:"-"`
-	Cost        *float64 `json:"-"`
+	ID          int64       `json:"-"`
+	Role        string      `json:"role"`
+	Content     string      `json:"content"`
+	Images      []UserImage `json:"-"`
+	Model       string      `json:"-"`
+	TotalTokens *int        `json:"-"`
+	Cost        *float64    `json:"-"`
 	// PromptAppendTexts contains snapshotted append text expanded before
 	// provider requests.
 	PromptAppendTexts []string         `json:"-"`
 	ToolCalls         []ToolCall       `json:"tool_calls,omitempty"`
 	ToolCallID        string           `json:"tool_call_id,omitempty"`
 	ProviderMetadata  ProviderMetadata `json:"-"`
+}
+
+// UserImage is validated image content attached to a user message.
+type UserImage struct {
+	Filename  string
+	MediaType string
+	Width     int
+	Height    int
+	Data      []byte
+}
+// ImageSupport reports provider knowledge about model image input.
+type ImageSupport uint8
+
+const (
+	// ImageSupportUnknown means provider model metadata did not declare support.
+	ImageSupportUnknown ImageSupport = iota
+	// ImageSupportUnsupported means provider metadata explicitly excludes images.
+	ImageSupportUnsupported
+	// ImageSupportSupported means provider metadata explicitly includes images.
+	ImageSupportSupported
+)
+
+// ModelInfo contains model identity and discovered input capabilities.
+type ModelInfo struct {
+	ID           string
+	ImageSupport ImageSupport
+}
+
+type modelListResponse struct {
+	Data []struct {
+		ID           string `json:"id"`
+		Architecture struct {
+			InputModalities []string `json:"input_modalities"`
+		} `json:"architecture"`
+		Capabilities struct {
+			ImageInput struct {
+				Supported *bool `json:"supported"`
+			} `json:"image_input"`
+		} `json:"capabilities"`
+	} `json:"data"`
+	HasMore bool   `json:"has_more"`
+	LastID  string `json:"last_id"`
 }
 
 // ProviderMetadata retains provider-specific state needed for later requests.
@@ -322,42 +365,104 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 }
 
 func (c *Client) Models(ctx context.Context) ([]string, error) {
+	infos, err := c.ModelInfos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(infos))
+	for i := range infos {
+		ids[i] = infos[i].ID
+	}
+	return ids, nil
+}
+
+// ModelInfos lists provider models and image-input metadata when available.
+func (c *Client) ModelInfos(ctx context.Context) ([]ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.modelsTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.modelsEndpoint, nil)
+	modelsURL, err := url.Parse(c.modelsEndpoint)
 	if err != nil {
-		return nil, fmt.Errorf("llm: create models request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("llm: send models request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, endpointError(resp)
+		return nil, fmt.Errorf("llm: parse models endpoint: %w", err)
 	}
 
-	var response struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := decodeJSONBody(resp.Body, c.maxResponseBodySize, &response); err != nil {
-		return nil, fmt.Errorf("llm: decode models response: %w", err)
-	}
-
-	models := make([]string, 0, len(response.Data))
-	for _, model := range response.Data {
-		if model.ID != "" {
-			models = append(models, model.ID)
+	var models []ModelInfo
+	seenModels := make(map[string]struct{})
+	seenCursors := make(map[string]struct{})
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("llm: create models request: %w", err)
 		}
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Accept", "application/json")
+		if c.configuredEndpoint == EndpointMessages {
+			req.Header.Set("X-Api-Key", c.apiKey)
+			req.Header.Set("Anthropic-Version", "2023-06-01")
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("llm: send models request: %w", err)
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			err := endpointError(resp)
+			resp.Body.Close()
+			return nil, err
+		}
+
+		var response modelListResponse
+		decodeErr := decodeJSONBody(resp.Body, c.maxResponseBodySize, &response)
+		closeErr := resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("llm: decode models response: %w", decodeErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("llm: close models response: %w", closeErr)
+		}
+
+		for _, model := range response.Data {
+			if model.ID == "" {
+				continue
+			}
+			if _, exists := seenModels[model.ID]; exists {
+				continue
+			}
+			seenModels[model.ID] = struct{}{}
+			support := ImageSupportUnknown
+			if model.Capabilities.ImageInput.Supported != nil {
+				if *model.Capabilities.ImageInput.Supported {
+					support = ImageSupportSupported
+				} else {
+					support = ImageSupportUnsupported
+				}
+			} else if model.Architecture.InputModalities != nil {
+				support = ImageSupportUnsupported
+				for _, modality := range model.Architecture.InputModalities {
+					if modality == "image" {
+						support = ImageSupportSupported
+						break
+					}
+				}
+			}
+			models = append(models, ModelInfo{ID: model.ID, ImageSupport: support})
+		}
+
+		if c.configuredEndpoint != EndpointMessages || !response.HasMore {
+			return models, nil
+		}
+		cursor := strings.TrimSpace(response.LastID)
+		if cursor == "" {
+			return nil, errors.New("llm: models response has more pages but no last_id")
+		}
+		if _, exists := seenCursors[cursor]; exists {
+			return nil, fmt.Errorf("llm: models response repeated cursor %q", cursor)
+		}
+		seenCursors[cursor] = struct{}{}
+		query := modelsURL.Query()
+		query.Set("after_id", cursor)
+		modelsURL.RawQuery = query.Encode()
 	}
-	return models, nil
 }
 
 func (c *Client) postJSON(ctx context.Context, endpoint endpointCandidate, payload any, target any) error {

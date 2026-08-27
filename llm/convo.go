@@ -239,6 +239,10 @@ func cloneMessages(messages []Message) []Message {
 }
 
 func cloneMessage(message Message) Message {
+	message.Images = append([]UserImage(nil), message.Images...)
+	for i := range message.Images {
+		message.Images[i].Data = append([]byte(nil), message.Images[i].Data...)
+	}
 	message.ToolCalls = append([]ToolCall(nil), message.ToolCalls...)
 	message.PromptAppendTexts = append([]string(nil), message.PromptAppendTexts...)
 	message.ProviderMetadata = message.ProviderMetadata.clone()

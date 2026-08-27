@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,13 +15,19 @@ import (
 const messagesMaxTokens = 8192
 
 type messagesContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	Type      string               `json:"type"`
+	Text      string               `json:"text,omitempty"`
+	ID        string               `json:"id,omitempty"`
+	Name      string               `json:"name,omitempty"`
+	Input     json.RawMessage      `json:"input,omitempty"`
+	ToolUseID string               `json:"tool_use_id,omitempty"`
+	Content   string               `json:"content,omitempty"`
+	Source    *messagesImageSource `json:"source,omitempty"`
+}
+type messagesImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type messagesMessage struct {
@@ -115,6 +122,9 @@ func makeMessagesInput(messages []Message) (string, []messagesMessage, error) {
 	var systemParts []string
 	requestMessages := make([]messagesMessage, 0, len(messages))
 	for _, message := range messages {
+		if len(message.Images) > 0 && message.Role != "user" {
+			return "", nil, fmt.Errorf("llm: images are only allowed on user messages")
+		}
 		var role string
 		var content []messagesContentBlock
 		switch message.Role {
@@ -125,7 +135,15 @@ func makeMessagesInput(messages []Message) (string, []messagesMessage, error) {
 			continue
 		case "user":
 			role = "user"
-			content = append(content, messagesContentBlock{Type: "text", Text: message.Content})
+			for _, image := range message.Images {
+				if len(image.Data) == 0 || image.MediaType == "" {
+					return "", nil, errors.New("llm: image data and media type are required")
+				}
+				content = append(content, messagesContentBlock{Type: "image", Source: &messagesImageSource{Type: "base64", MediaType: image.MediaType, Data: base64.StdEncoding.EncodeToString(image.Data)}})
+			}
+			if message.Content != "" {
+				content = append(content, messagesContentBlock{Type: "text", Text: message.Content})
+			}
 		case "assistant":
 			role = "assistant"
 			if message.Content != "" {

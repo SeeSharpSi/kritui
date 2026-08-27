@@ -108,10 +108,13 @@ templ Home(data HomeData) {
 					</summary>
 				</details>
 				@HistoryButton()
+				<div id="image-previews" class="image-previews" aria-label="Attached images" hidden></div>
 			</section>
 			<form
 				id="message-form"
+				enctype="multipart/form-data"
 				hx-post={ "/messages?chat=" + data.ChatID }
+				hx-encoding="multipart/form-data"
 				hx-target="#messages"
 				hx-swap="beforeend"
 				hx-trigger="submit queue:none"
@@ -121,6 +124,8 @@ templ Home(data HomeData) {
 					hx-replace-url={ data.ChatURL }
 				}
 			>
+				<input id="image-input" type="file" name="image" accept="image/png,image/jpeg,image/webp" multiple hidden/>
+				<div id="image-paste-status" class="visually-hidden" role="status" aria-live="polite"></div>
 				<label for="message" class="visually-hidden">Message</label>
 				<div id="command-autocomplete" class="command-autocomplete" role="listbox" aria-label="Slash commands" hidden>
 					for _, definition := range data.CommandDefinitions {

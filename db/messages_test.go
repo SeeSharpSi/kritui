@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -63,6 +64,58 @@ func TestAppendCompletionUsesStoredLastPosition(t *testing.T) {
 	want := []int{0, 2, 3, 4}
 	if !slices.Equal(positions, want) {
 		t.Errorf("positions = %v, want %v", positions, want)
+	}
+}
+
+func TestMessageImagesRoundTripAndSnapshotConflict(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	_, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []llm.UserImage{{Filename: "b.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{1, 2}}, {Filename: "a.jpg", MediaType: "image/jpeg", Data: []byte{3}}}
+	if _, err := InsertMessage(context.Background(), database, 1, 0, llm.Message{Role: "user", Images: want}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(snapshot.Messages[0].Images[0].Data, want[0].Data) || snapshot.Messages[0].Images[1].Filename != "a.jpg" {
+		t.Fatalf("images round trip: %#v", snapshot.Messages[0].Images)
+	}
+	var typ string
+	if err := database.QueryRow(`SELECT typeof(data) FROM message_user_images WHERE position = 0`).Scan(&typ); err != nil || typ != "blob" {
+		t.Fatalf("typeof image data = %q, %v", typ, err)
+	}
+	if _, err := database.Exec(`UPDATE message_user_images SET data = ? WHERE position = 0`, []byte{9}); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendCompletion(context.Background(), database, 1, snapshot, []llm.Message{{Role: "assistant", Content: "x"}}); !errors.Is(err, ErrConversationConflict) {
+		t.Fatalf("image mutation error = %v", err)
+	}
+}
+
+func TestInsertMessageRejectsInvalidImagesAtomically(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	tests := []llm.Message{
+		{Role: "assistant", Images: []llm.UserImage{{MediaType: "x", Data: []byte{1}}}},
+		{Role: "user", Images: []llm.UserImage{{MediaType: "", Data: []byte{1}}}},
+		{Role: "user", Images: []llm.UserImage{{MediaType: "x"}}},
+		{Role: "user", Images: []llm.UserImage{{MediaType: "x", Width: -1, Data: []byte{1}}}},
+		{Role: "user", Images: []llm.UserImage{{MediaType: "x", Height: -1, Data: []byte{1}}}},
+	}
+	for _, message := range tests {
+		if _, err := InsertMessage(context.Background(), database, 1, 0, message); err == nil {
+			t.Fatalf("invalid image accepted: %#v", message)
+		}
+		var count int
+		if err := database.QueryRow(`SELECT count(*) FROM messages`).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("atomic rollback count=%d err=%v", count, err)
+		}
 	}
 }
 
@@ -316,6 +369,7 @@ func TestReplaceUserMessageKeepsTargetAndTruncatesLaterMessages(t *testing.T) {
 		Role:              "user",
 		Content:           "original",
 		PromptAppendTexts: []string{"old append"},
+		Images:            []llm.UserImage{{Filename: "target.png", MediaType: "image/png", Width: 4, Height: 5, Data: []byte{1, 2, 3}}},
 	})
 	if err != nil {
 		t.Fatalf("insert edit target: %v", err)
@@ -336,6 +390,7 @@ func TestReplaceUserMessageKeepsTargetAndTruncatesLaterMessages(t *testing.T) {
 		Role:              "user",
 		Content:           "discarded follow-up",
 		PromptAppendTexts: []string{"discarded append"},
+		Images:            []llm.UserImage{{Filename: "later.png", MediaType: "image/png", Data: []byte{4, 5}}},
 	}); err != nil {
 		t.Fatalf("insert discarded user: %v", err)
 	}
@@ -358,7 +413,7 @@ func TestReplaceUserMessageKeepsTargetAndTruncatesLaterMessages(t *testing.T) {
 	if messages[0].Content != "earlier" || messages[1].Content != "earlier answer" {
 		t.Errorf("earlier messages changed: %#v", messages[:2])
 	}
-	if messages[2].ID != targetID || messages[2].Content != "edited" || !slices.Equal(messages[2].PromptAppendTexts, []string{"new append"}) {
+	if messages[2].ID != targetID || messages[2].Content != "edited" || !slices.Equal(messages[2].PromptAppendTexts, []string{"new append"}) || !reflect.DeepEqual(messages[2].Images, []llm.UserImage{{Filename: "target.png", MediaType: "image/png", Width: 4, Height: 5, Data: []byte{1, 2, 3}}}) {
 		t.Errorf("edited message = %#v, want stable ID %d, edited content, and new append", messages[2], targetID)
 	}
 	var position, toolCalls, promptAppends int
@@ -372,6 +427,24 @@ func TestReplaceUserMessageKeepsTargetAndTruncatesLaterMessages(t *testing.T) {
 	}
 	if position != 2 || toolCalls != 0 || promptAppends != 1 {
 		t.Errorf("edited rows = position %d, tool calls %d, appends %d; want 2, 0, 1", position, toolCalls, promptAppends)
+	}
+	var imageRows int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM message_user_images`).Scan(&imageRows); err != nil || imageRows != 1 {
+		t.Fatalf("image rows after replacement = %d, err=%v; want target image only", imageRows, err)
+	}
+	before, err := GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceUserMessage(context.Background(), database, 1, targetID, llm.Message{Role: "user", Content: "must reject", Images: []llm.UserImage{{MediaType: "image/png", Data: []byte{9}}}}); err == nil {
+		t.Fatal("replacement images accepted")
+	}
+	after, err := GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("history changed after rejected image replacement")
 	}
 }
 
@@ -435,6 +508,7 @@ func TestUndoRedoLatestTurnPreservesStoredMessages(t *testing.T) {
 		Role:              "user",
 		Content:           "latest",
 		PromptAppendTexts: []string{"Research carefully."},
+		Images:            []llm.UserImage{{Filename: "latest.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{7, 8}}},
 	})
 	if err != nil {
 		t.Fatalf("insert latest user: %v", err)
@@ -469,6 +543,9 @@ func TestUndoRedoLatestTurnPreservesStoredMessages(t *testing.T) {
 	if len(result.Messages) != 2 || result.Messages[1].Content != "earlier answer" {
 		t.Fatalf("active messages after undo = %#v", result.Messages)
 	}
+	if slices.ContainsFunc(result.Messages, func(message llm.Message) bool { return len(message.Images) > 0 }) {
+		t.Fatal("undone image visible in active messages")
+	}
 	var hidden, toolCalls, appends, outputs int
 	if err := database.QueryRow(`
 		SELECT
@@ -493,7 +570,7 @@ func TestUndoRedoLatestTurnPreservesStoredMessages(t *testing.T) {
 	if len(messages) != 6 {
 		t.Fatalf("message count after redo = %d, want 6: %#v", len(messages), messages)
 	}
-	if messages[2].ID != latestID || !slices.Equal(messages[2].PromptAppendTexts, []string{"Research carefully."}) {
+	if messages[2].ID != latestID || !slices.Equal(messages[2].PromptAppendTexts, []string{"Research carefully."}) || !reflect.DeepEqual(messages[2].Images, []llm.UserImage{{Filename: "latest.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{7, 8}}}) {
 		t.Errorf("restored user message = %#v", messages[2])
 	}
 	if len(messages[3].ToolCalls) != 1 || messages[3].ToolCalls[0].ID != "call-1" || len(messages[3].ProviderMetadata.ResponsesOutput()) != 1 {
@@ -501,6 +578,16 @@ func TestUndoRedoLatestTurnPreservesStoredMessages(t *testing.T) {
 	}
 	if messages[4].ToolCallID != "call-1" || messages[5].Content != "latest answer" {
 		t.Errorf("restored completion tail = %#v", messages[4:])
+	}
+	if _, err := UndoLatestTurn(context.Background(), database, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := DiscardUndoneMessages(context.Background(), database, 1); err != nil {
+		t.Fatal(err)
+	}
+	var imageRows int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM message_user_images`).Scan(&imageRows); err != nil || imageRows != 0 {
+		t.Fatalf("image rows after discard = %d, err=%v; want 0", imageRows, err)
 	}
 }
 

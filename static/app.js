@@ -55,6 +55,7 @@ function messageListState(messageList) {
         restoreAfterSwap: false,
         forcing: false,
         frame: 0,
+        viewportAnchor: null,
         observedBlocks: new WeakSet(),
     };
     state.resizeObserver = new ResizeObserver(() => pinMessageList(messageList));
@@ -71,7 +72,7 @@ function messageListState(messageList) {
         subtree: true,
     });
     messageList.addEventListener('scroll', () => {
-        if (state.forcing) {
+        if (state.forcing || state.viewportAnchor) {
             return;
         }
 
@@ -93,11 +94,17 @@ function destroyMessageListState(messageList) {
     if (state.frame) {
         cancelAnimationFrame(state.frame);
     }
+    if (state.viewportAnchor?.raf) {
+        cancelAnimationFrame(state.viewportAnchor.raf);
+    }
     messageListStates.delete(messageList);
 }
 
 function pinMessageList(messageList, force = false) {
     const state = messageListState(messageList);
+    if (state.viewportAnchor) {
+        return;
+    }
     if (!force && !state.pinned) {
         return;
     }
@@ -112,6 +119,10 @@ function pinMessageList(messageList, force = false) {
     let stableFrames = 0;
     const pin = () => {
         state.frame = 0;
+        if (state.viewportAnchor) {
+            state.forcing = false;
+            return;
+        }
         if (!state.pinned && !state.forcing) {
             return;
         }
@@ -131,6 +142,86 @@ function pinMessageList(messageList, force = false) {
         }
     };
     state.frame = requestAnimationFrame(pin);
+}
+
+function anchorMessageViewport(message, images, expanded) {
+    const messageList = messageListFor(message);
+    const bubble = message.querySelector('.message-bubble');
+    if (!messageList || !bubble) {
+        return;
+    }
+
+    const state = messageListState(messageList);
+    if (state.viewportAnchor?.raf) {
+        cancelAnimationFrame(state.viewportAnchor.raf);
+    }
+    state.viewportAnchor = null;
+    if (state.frame) {
+        cancelAnimationFrame(state.frame);
+        state.frame = 0;
+    }
+    state.forcing = false;
+
+    const anchor = state.viewportAnchor = {
+        bubble,
+        images,
+        expanded,
+        targetTop: bubble.getBoundingClientRect().top,
+        raf: 0,
+        priorHeight: getComputedStyle(images).height,
+        spaceSettled: false,
+        stableFrames: 0,
+        frameCount: 0,
+    };
+    if (expanded) {
+        messageList.style.setProperty('--message-viewport-anchor-space', `${messageList.clientHeight}px`);
+    }
+    message.classList.toggle('image-expanded', expanded);
+
+    const adjust = () => {
+        anchor.raf = 0;
+        if (state.viewportAnchor !== anchor || !bubble.isConnected || !images.isConnected) {
+            if (state.viewportAnchor === anchor) {
+                messageList.style.removeProperty('--message-viewport-anchor-space');
+                state.viewportAnchor = null;
+            }
+            return;
+        }
+
+        const currentTop = bubble.getBoundingClientRect().top;
+        messageList.scrollTop += currentTop - anchor.targetTop;
+        const height = getComputedStyle(images).height;
+        const correctedTop = bubble.getBoundingClientRect().top;
+        anchor.stableFrames = height === anchor.priorHeight && Math.abs(correctedTop - anchor.targetTop) < .5
+            ? anchor.stableFrames + 1
+            : 0;
+        anchor.priorHeight = height;
+        anchor.frameCount += 1;
+
+        if (anchor.stableFrames >= 2 || anchor.frameCount >= 60) {
+            if (!anchor.spaceSettled) {
+                anchor.spaceSettled = true;
+                if (anchor.expanded) {
+                    const currentSpace = parseFloat(getComputedStyle(messageList).getPropertyValue('--message-viewport-anchor-space')) || 0;
+                    const contentHeight = messageList.scrollHeight - currentSpace;
+                    const neededSpace = Math.max(0, messageList.scrollTop + messageList.clientHeight - contentHeight + 1);
+                    messageList.style.setProperty('--message-viewport-anchor-space', `${Math.min(currentSpace, neededSpace)}px`);
+                } else {
+                    messageList.style.removeProperty('--message-viewport-anchor-space');
+                }
+                anchor.stableFrames = 0;
+                anchor.frameCount = 0;
+                anchor.priorHeight = getComputedStyle(images).height;
+                anchor.raf = requestAnimationFrame(adjust);
+                return;
+            }
+            state.viewportAnchor = null;
+            state.pinned = isMessageListAtBottom(messageList);
+            return;
+        }
+        anchor.raf = requestAnimationFrame(adjust);
+    };
+    anchor.raf = requestAnimationFrame(adjust);
 }
 
 function rememberMessageScroll(root) {
@@ -157,6 +248,121 @@ function syncPanelSendButton() {
     const panelOpen = document.querySelector('#page-panel > .panel-page:not([hidden])');
     const requestActive = document.querySelector('#message-form.htmx-request, .loading-message.completion-active:not(.completion-failed)');
     sendButton.disabled = Boolean(panelOpen || requestActive);
+}
+
+const imageAttachmentStates = new WeakMap();
+const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const maxImageCount = 4;
+const maxImageBytes = 5 * 1024 * 1024;
+const maxImageTotalBytes = 16 * 1024 * 1024;
+
+function imageAttachmentState(input) {
+    let state = imageAttachmentStates.get(input);
+    if (!state) {
+        state = { files: [], urls: [] };
+        imageAttachmentStates.set(input, state);
+    }
+    return state;
+}
+
+function renderImagePreviews(input) {
+    const state = imageAttachmentState(input);
+    state.urls.forEach((url) => URL.revokeObjectURL(url));
+    state.urls = [];
+    const main = input.closest('main');
+    const previews = main?.querySelector('#image-previews');
+    if (!previews) {
+        return;
+    }
+
+    previews.replaceChildren();
+    previews.hidden = state.files.length === 0;
+    state.files.forEach((file, index) => {
+        const name = file.name || `Image ${index + 1}`;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'image-preview';
+        const image = document.createElement('img');
+        image.alt = '';
+        image.title = name;
+        const url = URL.createObjectURL(file);
+        state.urls.push(url);
+        image.src = url;
+        const remove = document.createElement('button');
+        remove.className = 'image-preview-remove';
+        remove.type = 'button';
+        remove.dataset.imageIndex = String(index);
+        remove.setAttribute('aria-label', `Remove ${name}`);
+        remove.title = 'Remove image';
+        remove.textContent = '\u00d7';
+        wrapper.append(image, remove);
+        previews.append(wrapper);
+    });
+    previews.scrollLeft = previews.scrollWidth;
+}
+
+function syncImageInput(input) {
+    const state = imageAttachmentState(input);
+    const transfer = new DataTransfer();
+    state.files.forEach((file) => transfer.items.add(file));
+    input.files = transfer.files;
+}
+
+function announceImageAttachments(input, message) {
+    const status = input.closest('form')?.querySelector('#image-paste-status');
+    if (status) {
+        status.textContent = message;
+    }
+}
+
+function clearImageAttachments(input) {
+    const state = imageAttachmentState(input);
+    state.files = [];
+    syncImageInput(input);
+    renderImagePreviews(input);
+    announceImageAttachments(input, '');
+}
+
+function addImageAttachments(input, files) {
+    const state = imageAttachmentState(input);
+    const accepted = [];
+    const rejected = [];
+    let totalBytes = state.files.reduce((total, file) => total + file.size, 0);
+    files.forEach((file) => {
+        const name = file.name || 'Image';
+        if (!imageTypes.has(file.type)) {
+            rejected.push(`${name}: unsupported type`);
+        } else if (file.size > maxImageBytes) {
+            rejected.push(`${name}: too large`);
+        } else if (state.files.length + accepted.length >= maxImageCount) {
+            rejected.push(`${name}: image limit reached`);
+        } else if (totalBytes + file.size > maxImageTotalBytes) {
+            rejected.push(`${name}: total size limit reached`);
+        } else {
+            accepted.push(file);
+            totalBytes += file.size;
+        }
+    });
+    state.files.push(...accepted);
+    syncImageInput(input);
+    renderImagePreviews(input);
+    const result = `${accepted.length} image${accepted.length === 1 ? '' : 's'} added.`
+        + (rejected.length ? ` ${rejected.join('; ')}.` : '');
+    announceImageAttachments(input, result);
+}
+
+function clearComposerImages(root) {
+    const input = root.matches?.('#image-input')
+        ? root
+        : root.querySelector?.('#image-input');
+    if (input) {
+        const state = imageAttachmentStates.get(input);
+        if (state) {
+            state.urls.forEach((url) => URL.revokeObjectURL(url));
+            state.urls = [];
+            state.files = [];
+        }
+        imageAttachmentStates.delete(input);
+    }
 }
 
 function commandAutocompleteFor(input) {
@@ -312,9 +518,56 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+function handleImagePointer(event, expanded) {
+    if (event.pointerType === 'touch') {
+        return;
+    }
+
+    const image = event.target.closest?.('.message.user .message-image');
+    if (!image) {
+        return;
+    }
+    const message = image.closest('.message.user');
+    const relatedImage = event.relatedTarget instanceof Node
+        ? event.relatedTarget.closest?.('.message.user .message-image')
+        : null;
+    if (relatedImage && relatedImage.closest('.message.user') === message) {
+        return;
+    }
+    const images = image.closest('.message-images');
+    if (message && images) {
+        anchorMessageViewport(message, images, expanded);
+    }
+}
+
+document.addEventListener('pointerover', (event) => handleImagePointer(event, true));
+document.addEventListener('pointerout', (event) => handleImagePointer(event, false));
+
 document.addEventListener('input', (event) => {
     if (event.target.matches('#message')) {
         updateCommandAutocomplete(event.target);
+    }
+});
+
+document.addEventListener('paste', (event) => {
+    const input = event.target;
+    if (!input.matches?.('#message')) {
+        return;
+    }
+    const items = Array.from(event.clipboardData?.items ?? [])
+        .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+    const files = items.length > 0
+        ? items
+        : Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith('image/'));
+    if (files.length === 0) {
+        return;
+    }
+    event.preventDefault();
+    const imageInput = input.form?.querySelector('#image-input');
+    if (imageInput) {
+        addImageAttachments(imageInput, files);
     }
 });
 
@@ -479,7 +732,15 @@ document.addEventListener('htmx:afterSwap', (event) => {
     syncPanelSendButton();
 });
 document.addEventListener('htmx:afterSettle', (event) => restoreMessageScroll(event.detail.elt));
-document.addEventListener('htmx:afterRequest', syncPanelSendButton);
+document.addEventListener('htmx:afterRequest', (event) => {
+    if (event.detail.successful && event.detail.elt?.matches?.('#message-form')) {
+        const input = event.detail.elt.querySelector('#image-input');
+        if (input) {
+            clearImageAttachments(input);
+        }
+    }
+    syncPanelSendButton();
+});
 document.addEventListener('kritui:command', (event) => {
     const messageInput = document.querySelector('#message');
     if (messageInput) {
@@ -505,6 +766,7 @@ document.addEventListener('kritui:message-edited', () => {
 });
 document.addEventListener('htmx:beforeCleanupElement', (event) => {
     const root = event.detail.elt;
+    clearComposerImages(root);
     if (root.matches?.('.message-list')) {
         destroyMessageListState(root);
     }
@@ -545,6 +807,20 @@ document.addEventListener('htmx:confirm', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+    const removeImage = event.target.closest('.image-preview-remove');
+    if (removeImage) {
+        const input = removeImage.closest('main')?.querySelector('#image-input');
+        const index = Number(removeImage.dataset.imageIndex);
+        const state = input && imageAttachmentStates.get(input);
+        if (input && state && Number.isInteger(index) && index >= 0 && index < state.files.length) {
+            state.files.splice(index, 1);
+            syncImageInput(input);
+            renderImagePreviews(input);
+            announceImageAttachments(input, `${state.files.length} image${state.files.length === 1 ? '' : 's'} remaining.`);
+            input.closest('form')?.querySelector('#message')?.focus();
+        }
+        return;
+    }
     const commandOption = event.target.closest('.command-option:not([hidden])');
     if (commandOption) {
         const messageInput = document.querySelector('#message');
