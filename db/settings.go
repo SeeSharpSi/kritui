@@ -16,13 +16,13 @@ type settingWriter interface {
 }
 
 // SettingsUpdate describes the desired settings for one atomic save.
-// PromptAppends is used only when non-nil; a nil value leaves configured
-// prompt appends untouched.
+// Nil PromptAppends or Ntfy values leave those settings untouched.
 type SettingsUpdate struct {
 	Model         string
 	MaxToolRounds int
 	DefaultTools  []string
 	PromptAppends []PromptAppend
+	Ntfy          *NtfySettingsUpdate
 }
 
 // NtfySettings contains values safe to render in the settings page.
@@ -83,6 +83,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 	}
 	if update.PromptAppends != nil {
 		if err := setPromptAppends(ctx, tx, update.PromptAppends); err != nil {
+			return err
+		}
+	}
+	if update.Ntfy != nil {
+		if err := setNtfySettings(ctx, tx, *update.Ntfy); err != nil {
 			return err
 		}
 	}
@@ -149,20 +154,30 @@ func nullSettingString(value sql.NullString) string {
 
 // SaveNtfySettings atomically updates notification destination and secret.
 func SaveNtfySettings(ctx context.Context, db *sql.DB, update NtfySettingsUpdate) error {
-	endpoint := strings.TrimSpace(update.Endpoint)
-	topic := strings.TrimSpace(update.Topic)
-	if (endpoint == "") != (topic == "") {
-		return fmt.Errorf("set ntfy settings: endpoint and topic must both be set or empty")
-	}
-
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin set ntfy settings: %w", err)
 	}
 	defer tx.Rollback()
 
+	if err := setNtfySettings(ctx, tx, update); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set ntfy settings: %w", err)
+	}
+	return nil
+}
+
+func setNtfySettings(ctx context.Context, db settingWriter, update NtfySettingsUpdate) error {
+	endpoint := strings.TrimSpace(update.Endpoint)
+	topic := strings.TrimSpace(update.Topic)
+	if (endpoint == "") != (topic == "") {
+		return fmt.Errorf("set ntfy settings: endpoint and topic must both be set or empty")
+	}
+
 	if endpoint == "" {
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := db.ExecContext(ctx, `
 			UPDATE settings
 			SET ntfy_endpoint = NULL, ntfy_topic = NULL, ntfy_api_key = NULL
 			WHERE id = 1
@@ -170,7 +185,7 @@ func SaveNtfySettings(ctx context.Context, db *sql.DB, update NtfySettingsUpdate
 			return fmt.Errorf("clear ntfy settings: %w", err)
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := db.ExecContext(ctx, `
 			UPDATE settings
 			SET ntfy_endpoint = ?, ntfy_topic = ?
 			WHERE id = 1
@@ -186,20 +201,16 @@ func SaveNtfySettings(ctx context.Context, db *sql.DB, update NtfySettingsUpdate
 			if apiKey != "" {
 				value = apiKey
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = ? WHERE id = 1`, value); err != nil {
+			if _, err := db.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = ? WHERE id = 1`, value); err != nil {
 				return fmt.Errorf("set ntfy API key: %w", err)
 			}
 		case NtfyClearAPIKey:
-			if _, err := tx.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = NULL WHERE id = 1`); err != nil {
+			if _, err := db.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = NULL WHERE id = 1`); err != nil {
 				return fmt.Errorf("clear ntfy API key: %w", err)
 			}
 		default:
 			return fmt.Errorf("set ntfy settings: unknown API key change mode %d", update.APIKeyChange)
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit set ntfy settings: %w", err)
 	}
 	return nil
 }

@@ -24,9 +24,8 @@ import (
 )
 
 const (
-	defaultHistoryPageSize         = 10
-	maxHistoryPageSize             = 50
-	maxNtfySettingsBodyBytes int64 = 16 << 10
+	defaultHistoryPageSize = 10
+	maxHistoryPageSize     = 50
 )
 
 func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *commands.Registry, toolCalls *toolCallStore) http.HandlerFunc {
@@ -297,6 +296,16 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			submittedModel := strings.TrimSpace(r.FormValue("model"))
 			submittedRounds, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("max_tool_rounds")))
 			submittedTools, submittedToolsErr := selectedDefaultTools(registry, r.Form["default_tool"])
+			ntfySubmitted := r.FormValue("ntfy_form") == "1"
+			ntfyAPIKey := ""
+			clearNtfyAPIKey := false
+			if ntfySubmitted {
+				page.NtfySettings.Endpoint = strings.TrimSpace(r.FormValue("ntfy_endpoint"))
+				page.NtfySettings.Topic = strings.TrimSpace(r.FormValue("ntfy_topic"))
+				ntfyAPIKey = strings.TrimSpace(r.FormValue("ntfy_api_key"))
+				clearNtfyAPIKey = r.FormValue("clear_ntfy_api_key") == "1"
+				page.ClearNtfyAPIKey = clearNtfyAPIKey
+			}
 			submittedAppends := page.PromptAppends
 			if r.FormValue("append_form") == "1" {
 				submittedAppends, err = promptAppendsFromForm(r)
@@ -382,10 +391,47 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			}
 			page.MaxToolRounds = submittedRounds
 			page.PromptAppends = submittedAppends
+			var ntfyUpdate *kritui_db.NtfySettingsUpdate
+			if ntfySubmitted {
+				endpoint := page.NtfySettings.Endpoint
+				topic := page.NtfySettings.Topic
+				if (endpoint == "") != (topic == "") {
+					render(http.StatusBadRequest, "Endpoint and topic must both be set or empty.")
+					return
+				}
+				if endpoint == "" && ntfyAPIKey != "" {
+					render(http.StatusBadRequest, "Endpoint and topic are required when setting an API key.")
+					return
+				}
+				if clearNtfyAPIKey && ntfyAPIKey != "" {
+					render(http.StatusBadRequest, "Choose replacing or clearing API key, not both.")
+					return
+				}
+				if endpoint != "" {
+					if err := (ntfy.Config{Endpoint: endpoint, Topic: topic}).Validate(); err != nil {
+						render(http.StatusBadRequest, fmt.Sprintf("Notification settings are invalid: %v.", err))
+						return
+					}
+				}
+				update := kritui_db.NtfySettingsUpdate{Endpoint: endpoint, Topic: topic}
+				switch {
+				case clearNtfyAPIKey:
+					update.APIKeyChange = kritui_db.NtfyClearAPIKey
+					page.NtfySettings.APIKeyConfigured = false
+				case ntfyAPIKey != "":
+					update.APIKeyChange = kritui_db.NtfyReplaceAPIKey
+					update.APIKeyValue = ntfyAPIKey
+					page.NtfySettings.APIKeyConfigured = true
+				case endpoint == "":
+					page.NtfySettings.APIKeyConfigured = false
+				}
+				ntfyUpdate = &update
+			}
 			update := kritui_db.SettingsUpdate{
 				Model:         page.SelectedModel,
 				MaxToolRounds: page.MaxToolRounds,
 				DefaultTools:  page.DefaultTools,
+				Ntfy:          ntfyUpdate,
 			}
 			if r.FormValue("append_form") == "1" {
 				update.PromptAppends = submittedAppends
@@ -411,84 +457,6 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			}
 		}
 		render(http.StatusOK, "")
-	}
-}
-
-func ntfySettingsHandler(database *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		chat := r.URL.Query().Get("chat")
-		if _, ok := positiveID(chat); !ok {
-			renderNtfySettings(w, r, http.StatusBadRequest, chat, kritui_db.NtfySettings{}, false, "A valid chat is required.")
-			return
-		}
-
-		current, err := kritui_db.GetNtfySettings(r.Context(), database)
-		if err != nil {
-			log.Printf("get ntfy settings: %v", err)
-			renderNtfySettings(w, r, http.StatusInternalServerError, chat, current, false, "Failed to load notification settings.")
-			return
-		}
-		if err := parseLimitedForm(w, r, maxNtfySettingsBodyBytes); err != nil {
-			var tooLarge *http.MaxBytesError
-			if errors.As(err, &tooLarge) {
-				renderNtfySettings(w, r, http.StatusRequestEntityTooLarge, chat, current, false, "Request body is too large.")
-				return
-			}
-			renderNtfySettings(w, r, http.StatusBadRequest, chat, current, false, "Invalid notification settings form.")
-			return
-		}
-
-		endpoint := strings.TrimSpace(r.FormValue("ntfy_endpoint"))
-		topic := strings.TrimSpace(r.FormValue("ntfy_topic"))
-		apiKeyValue := strings.TrimSpace(r.FormValue("ntfy_api_key"))
-		clearAPIKey := r.FormValue("clear_ntfy_api_key") == "1"
-		submitted := current
-		submitted.Endpoint = endpoint
-		submitted.Topic = topic
-
-		if (endpoint == "") != (topic == "") {
-			renderNtfySettings(w, r, http.StatusBadRequest, chat, submitted, false, "Endpoint and topic must both be set or empty.")
-			return
-		}
-		if endpoint == "" && apiKeyValue != "" {
-			renderNtfySettings(w, r, http.StatusBadRequest, chat, submitted, false, "Endpoint and topic are required when setting an API key.")
-			return
-		}
-		if clearAPIKey && apiKeyValue != "" {
-			renderNtfySettings(w, r, http.StatusBadRequest, chat, submitted, false, "Choose replacing or clearing API key, not both.")
-			return
-		}
-		if endpoint != "" {
-			if err := (ntfy.Config{Endpoint: endpoint, Topic: topic}).Validate(); err != nil {
-				renderNtfySettings(w, r, http.StatusBadRequest, chat, submitted, false, fmt.Sprintf("Notification settings are invalid: %v.", err))
-				return
-			}
-		}
-
-		update := kritui_db.NtfySettingsUpdate{
-			Endpoint: endpoint,
-			Topic:    topic,
-		}
-		switch {
-		case clearAPIKey:
-			update.APIKeyChange = kritui_db.NtfyClearAPIKey
-		case apiKeyValue != "":
-			update.APIKeyChange = kritui_db.NtfyReplaceAPIKey
-			update.APIKeyValue = apiKeyValue
-		}
-		if err := kritui_db.SaveNtfySettings(r.Context(), database, update); err != nil {
-			log.Printf("save ntfy settings: %v", err)
-			renderNtfySettings(w, r, http.StatusInternalServerError, chat, submitted, false, "Failed to save notification settings.")
-			return
-		}
-
-		saved, err := kritui_db.GetNtfySettings(r.Context(), database)
-		if err != nil {
-			log.Printf("reload ntfy settings: %v", err)
-			renderNtfySettings(w, r, http.StatusInternalServerError, chat, submitted, false, "Notification settings saved, but could not be reloaded.")
-			return
-		}
-		renderNtfySettings(w, r, http.StatusOK, chat, saved, true, "")
 	}
 }
 
@@ -707,17 +675,6 @@ func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data
 			log.Printf("render prompt appends: %v", err)
 			return
 		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = w.Write(page.Bytes())
-}
-
-func renderNtfySettings(w http.ResponseWriter, r *http.Request, status int, chat string, settings kritui_db.NtfySettings, saved bool, errorMessage string) {
-	var page bytes.Buffer
-	if err := templates.NtfySettings(chat, settings, saved, errorMessage).Render(r.Context(), &page); err != nil {
-		log.Printf("render ntfy settings: %v", err)
-		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)

@@ -1537,10 +1537,21 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 		`tabindex="-1"`,
 		`data-panel-initial-focus`,
 		`>Settings</h1>`,
+		`action="/settings?chat=8"`,
+		`method="post"`,
+		`name="ntfy_form" value="1"`,
+		`01 / Chat`,
+		`02 / Prompts`,
+		`03 / Delivery`,
+		`Save settings`,
 		`hx-target="#settings-page"`,
 		`hx-swap="outerHTML"`,
 	)
-	requireNotContains(t, response.Body.String(), `id="send-button"`, `id="settings-button"`, ` hidden`)
+	if count := strings.Count(response.Body.String(), ">Save settings</button>"); count != 1 {
+		t.Errorf("Save settings button count = %d, want 1", count)
+	}
+	requireNotContains(t, response.Body.String(), "Save notifications")
+	requireNotContains(t, response.Body.String(), `id="send-button"`, `id="settings-button"`)
 }
 
 func TestSettingsHandlerStoresDefaultModelAndMaxToolRounds(t *testing.T) {
@@ -1910,6 +1921,50 @@ func TestSettingsHandlerAppendActionsIgnoreInvalidUnrelatedSettings(t *testing.T
 	}
 }
 
+func TestSettingsHandlerAppendActionPreservesPendingAPIKeyClear(t *testing.T) {
+	database := openTestDatabase(t)
+	if err := kritui_db.SaveNtfySettings(context.Background(), database, kritui_db.NtfySettingsUpdate{
+		Endpoint:     "https://ntfy.example",
+		Topic:        "kritui",
+		APIKeyChange: kritui_db.NtfyReplaceAPIKey,
+		APIKeyValue:  "secret-token",
+	}); err != nil {
+		t.Fatalf("seed ntfy settings: %v", err)
+	}
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":              {""},
+		"max_tool_rounds":    {"invalid"},
+		"append_form":        {"1"},
+		"append_action":      {"add"},
+		"ntfy_form":          {"1"},
+		"ntfy_endpoint":      {"https://ntfy.example"},
+		"ntfy_topic":         {"kritui"},
+		"clear_ntfy_api_key": {"1"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(),
+		`id="clear-ntfy-api-key" type="checkbox" name="clear_ntfy_api_key" value="1" hidden checked`,
+		`id="ntfy-api-key" type="password" name="ntfy_api_key" autocomplete="new-password" hx-preserve="true" disabled`,
+		`data-settings-clear-open hidden`,
+		`data-settings-clear-pending role="status"`,
+		"API key will be removed when settings are saved.",
+	)
+	requireNotContains(t, response.Body.String(), `data-settings-clear-pending role="status" hidden`)
+
+	config, err := kritui_db.GetNtfyPublishConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get ntfy config: %v", err)
+	}
+	if config.APIKey != "secret-token" {
+		t.Errorf("API key after append action = %q, want unchanged secret-token", config.APIKey)
+	}
+}
+
 func TestSettingsHandlerReportsPromptAppendValidationError(t *testing.T) {
 	database := openTestDatabase(t)
 	t.Setenv("LLM_MODEL", "env-model")
@@ -2040,26 +2095,48 @@ func TestSettingsHandlerRendersNtfyDestinationWithoutSecret(t *testing.T) {
 		`id="ntfy-settings"`,
 		`name="ntfy_endpoint" value="https://ntfy.example"`,
 		`name="ntfy_topic" value="kritui"`,
-		"Clear stored API key",
+		"Clear stored key",
+		`data-settings-clear-open`,
+		`data-settings-clear-dialog`,
+		`data-settings-clear-cancel`,
+		`data-settings-clear-confirm`,
+		`name="clear_ntfy_api_key" value="1" hidden`,
 	)
 	requireNotContains(t, response.Body.String(), apiKey, `name="ntfy_api_key" value=`)
 }
 
-func TestNtfySettingsHandlerStoresAndPreservesSecret(t *testing.T) {
+func TestSettingsHandlerStoresAndPreservesNtfySecret(t *testing.T) {
 	database := openTestDatabase(t)
-	handler := ntfySettingsHandler(database)
+	handler := settingsHandler(database, newTestToolRegistry(t))
 	apiKey := "secret-token"
 
-	response := postForm(t, handler, "/settings/ntfy?chat=8", url.Values{
-		"ntfy_endpoint": {"https://ntfy.example"},
-		"ntfy_topic":    {"kritui"},
-		"ntfy_api_key":  {apiKey},
+	response := postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"32"},
+		"ntfy_form":       {"1"},
+		"ntfy_endpoint":   {"https://ntfy.example"},
+		"ntfy_topic":      {"kritui"},
+		"ntfy_api_key":    {apiKey},
 	})
 	if response.Code != http.StatusOK {
 		t.Fatalf("save status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	requireContains(t, response.Body.String(), "Notification settings saved.", "Clear stored API key")
+	requireContains(t, response.Body.String(), "Settings saved.", "Clear stored key")
 	requireNotContains(t, response.Body.String(), apiKey, `name="ntfy_api_key" value=`)
+	model, err := kritui_db.GetDefaultModel(context.Background(), database, "fallback")
+	if err != nil {
+		t.Fatalf("get model: %v", err)
+	}
+	if model != "saved-model" {
+		t.Errorf("default model = %q, want saved-model", model)
+	}
+	rounds, err := kritui_db.GetMaxToolRounds(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("get rounds: %v", err)
+	}
+	if rounds != 32 {
+		t.Errorf("max tool rounds = %d, want 32", rounds)
+	}
 
 	config, err := kritui_db.GetNtfyPublishConfig(context.Background(), database)
 	if err != nil {
@@ -2069,9 +2146,12 @@ func TestNtfySettingsHandlerStoresAndPreservesSecret(t *testing.T) {
 		t.Errorf("stored API key = %q, want submitted key", config.APIKey)
 	}
 
-	response = postForm(t, handler, "/settings/ntfy?chat=8", url.Values{
-		"ntfy_endpoint": {"https://ntfy.example/new"},
-		"ntfy_topic":    {"new-topic"},
+	response = postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"32"},
+		"ntfy_form":       {"1"},
+		"ntfy_endpoint":   {"https://ntfy.example/new"},
+		"ntfy_topic":      {"new-topic"},
 	})
 	if response.Code != http.StatusOK {
 		t.Fatalf("preserve status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
@@ -2085,7 +2165,10 @@ func TestNtfySettingsHandlerStoresAndPreservesSecret(t *testing.T) {
 		t.Errorf("config after preserve = %#v, want destination update and preserved key", config)
 	}
 
-	response = postForm(t, handler, "/settings/ntfy?chat=8", url.Values{
+	response = postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":              {"saved-model"},
+		"max_tool_rounds":    {"32"},
+		"ntfy_form":          {"1"},
 		"ntfy_endpoint":      {config.Endpoint},
 		"ntfy_topic":         {config.Topic},
 		"clear_ntfy_api_key": {"1"},
@@ -2093,7 +2176,7 @@ func TestNtfySettingsHandlerStoresAndPreservesSecret(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("clear status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	if strings.Contains(response.Body.String(), "Clear stored API key") {
+	if strings.Contains(response.Body.String(), "Clear stored key") {
 		t.Error("clear response reports configured API key")
 	}
 	config, err = kritui_db.GetNtfyPublishConfig(context.Background(), database)
@@ -2105,12 +2188,15 @@ func TestNtfySettingsHandlerStoresAndPreservesSecret(t *testing.T) {
 	}
 }
 
-func TestNtfySettingsHandlerRejectsInvalidValuesWithoutSecret(t *testing.T) {
+func TestSettingsHandlerRejectsInvalidNtfyValuesWithoutSecret(t *testing.T) {
 	database := openTestDatabase(t)
 	secret := "secret-token"
-	response := postForm(t, ntfySettingsHandler(database), "/settings/ntfy?chat=8", url.Values{
-		"ntfy_endpoint": {"https://ntfy.example"},
-		"ntfy_api_key":  {secret},
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"32"},
+		"ntfy_form":       {"1"},
+		"ntfy_endpoint":   {"https://ntfy.example"},
+		"ntfy_api_key":    {secret},
 	})
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
@@ -2606,7 +2692,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 		response := httptest.NewRecorder()
 		settingsHandler(database, newTestToolRegistry(t))(response, request)
 
-		requireHTMLErrorResponse(t, response, http.StatusBadRequest, `id="settings-page"`, `class="settings-form"`, "Invalid settings form.")
+		requireHTMLErrorResponse(t, response, http.StatusBadRequest, `id="settings-page"`, `class="settings-main-form"`, "Invalid settings form.")
 	})
 
 	t.Run("settings storage", func(t *testing.T) {
@@ -2617,7 +2703,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 		response := httptest.NewRecorder()
 		settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=1", nil))
 
-		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `id="settings-page"`, `class="settings-form"`, "Failed to load settings.")
+		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `id="settings-page"`, `class="settings-main-form"`, "Failed to load settings.")
 	})
 
 	t.Run("history load", func(t *testing.T) {

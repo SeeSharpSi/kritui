@@ -250,6 +250,25 @@ function syncPanelSendButton() {
     sendButton.disabled = Boolean(panelOpen || requestActive);
 }
 
+function settingsClearState(button, pending) {
+    const form = button.closest('.settings-main-form');
+    const apiKey = form?.querySelector('#ntfy-api-key');
+    const clearKey = form?.querySelector('#clear-ntfy-api-key');
+    const openButton = form?.querySelector('[data-settings-clear-open]');
+    const pendingMessage = form?.querySelector('[data-settings-clear-pending]');
+    if (!form || !apiKey || !clearKey || !openButton || !pendingMessage) {
+        return;
+    }
+
+    clearKey.checked = pending;
+    apiKey.disabled = pending;
+    if (pending) {
+        apiKey.value = '';
+    }
+    openButton.hidden = pending;
+    pendingMessage.hidden = !pending;
+}
+
 const imageAttachmentStates = new WeakMap();
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const maxImageCount = 4;
@@ -731,7 +750,16 @@ document.addEventListener('htmx:afterSwap', (event) => {
     restoreMessageScroll(event.detail.elt);
     syncPanelSendButton();
 });
-document.addEventListener('htmx:afterSettle', (event) => restoreMessageScroll(event.detail.elt));
+document.addEventListener('htmx:afterSettle', (event) => {
+    restoreMessageScroll(event.detail.elt);
+    if (event.detail.elt?.matches?.('#settings-page') && event.detail.elt.querySelector('[data-settings-saved]')) {
+        const apiKey = event.detail.elt.querySelector('#ntfy-api-key');
+        if (apiKey) {
+            apiKey.value = '';
+            apiKey.disabled = false;
+        }
+    }
+});
 document.addEventListener('htmx:afterRequest', (event) => {
     if (event.detail.successful && event.detail.elt?.matches?.('#message-form')) {
         const input = event.detail.elt.querySelector('#image-input');
@@ -807,6 +835,31 @@ document.addEventListener('htmx:confirm', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+    const clearOpen = event.target.closest('[data-settings-clear-open]');
+    if (clearOpen) {
+        clearOpen.closest('.settings-section')?.querySelector('[data-settings-clear-dialog]')?.showModal();
+        return;
+    }
+
+    const clearCancel = event.target.closest('[data-settings-clear-cancel]');
+    if (clearCancel) {
+        clearCancel.closest('[data-settings-clear-dialog]')?.close();
+        return;
+    }
+
+    const clearConfirm = event.target.closest('[data-settings-clear-confirm]');
+    if (clearConfirm) {
+        settingsClearState(clearConfirm, true);
+        clearConfirm.closest('[data-settings-clear-dialog]')?.close();
+        return;
+    }
+
+    const clearUndo = event.target.closest('[data-settings-clear-undo]');
+    if (clearUndo) {
+        settingsClearState(clearUndo, false);
+        return;
+    }
+
     const removeImage = event.target.closest('.image-preview-remove');
     if (removeImage) {
         const input = removeImage.closest('main')?.querySelector('#image-input');

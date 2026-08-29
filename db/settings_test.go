@@ -215,6 +215,102 @@ func TestSaveSettingsPreservesPromptAppendsWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestSaveSettingsRollsBackAllSettingsWhenNtfyWriteFails(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	oldAppends := []PromptAppend{{ID: "old", Name: "Old", Text: "Old instruction."}}
+	oldNtfy := NtfySettingsUpdate{
+		Endpoint:     "https://ntfy.example/old",
+		Topic:        "old-topic",
+		APIKeyChange: NtfyReplaceAPIKey,
+		APIKeyValue:  "old-secret",
+	}
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "old-model",
+		MaxToolRounds: 3,
+		DefaultTools:  []string{"git"},
+		PromptAppends: oldAppends,
+		Ntfy:          &oldNtfy,
+	}); err != nil {
+		t.Fatalf("seed SaveSettings() error: %v", err)
+	}
+
+	if _, err := database.Exec(`
+		CREATE TRIGGER fail_new_ntfy_endpoint
+		BEFORE UPDATE OF ntfy_endpoint ON settings
+		WHEN NEW.ntfy_endpoint = 'https://ntfy.example/new'
+		BEGIN
+			SELECT RAISE(ABORT, 'injected ntfy failure');
+		END;
+	`); err != nil {
+		t.Fatalf("inject failure trigger: %v", err)
+	}
+	newNtfy := NtfySettingsUpdate{
+		Endpoint:     "https://ntfy.example/new",
+		Topic:        "new-topic",
+		APIKeyChange: NtfyReplaceAPIKey,
+		APIKeyValue:  "new-secret",
+	}
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "new-model",
+		MaxToolRounds: 9,
+		DefaultTools:  []string{"webfetch"},
+		PromptAppends: []PromptAppend{{ID: "new", Name: "New", Text: "New instruction."}},
+		Ntfy:          &newNtfy,
+	}); err == nil {
+		t.Fatal("SaveSettings() error = nil, want injected ntfy failure")
+	}
+
+	if got, err := GetDefaultModel(ctx, database, "fallback"); err != nil {
+		t.Fatalf("get model after rollback: %v", err)
+	} else if got != "old-model" {
+		t.Errorf("model after rollback = %q, want old-model", got)
+	}
+	if got, err := GetMaxToolRounds(ctx, database, 1); err != nil {
+		t.Fatalf("get rounds after rollback: %v", err)
+	} else if got != 3 {
+		t.Errorf("rounds after rollback = %d, want 3", got)
+	}
+	if got, err := GetDefaultEnabledTools(ctx, database, nil); err != nil {
+		t.Fatalf("get tools after rollback: %v", err)
+	} else if !slices.Equal(got, []string{"git"}) {
+		t.Errorf("tools after rollback = %v, want [git]", got)
+	}
+	if got, err := GetPromptAppends(ctx, database); err != nil {
+		t.Fatalf("get appends after rollback: %v", err)
+	} else if !slices.Equal(got, oldAppends) {
+		t.Errorf("appends after rollback = %#v, want %#v", got, oldAppends)
+	}
+	if got, err := GetNtfyPublishConfig(ctx, database); err != nil {
+		t.Fatalf("get ntfy after rollback: %v", err)
+	} else if got.Endpoint != oldNtfy.Endpoint || got.Topic != oldNtfy.Topic || got.APIKey != oldNtfy.APIKeyValue {
+		t.Errorf("ntfy after rollback = %#v, want old config", got)
+	}
+}
+
+func TestSaveSettingsWithNilNtfyPreservesExistingSettings(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	if err := SaveNtfySettings(ctx, database, NtfySettingsUpdate{
+		Endpoint:     "https://ntfy.example",
+		Topic:        "topic",
+		APIKeyChange: NtfyReplaceAPIKey,
+		APIKeyValue:  "secret",
+	}); err != nil {
+		t.Fatalf("seed ntfy settings: %v", err)
+	}
+	if err := SaveSettings(ctx, database, SettingsUpdate{Model: "model", MaxToolRounds: 4}); err != nil {
+		t.Fatalf("SaveSettings() error: %v", err)
+	}
+	got, err := GetNtfyPublishConfig(ctx, database)
+	if err != nil {
+		t.Fatalf("get ntfy settings: %v", err)
+	}
+	if got.Endpoint != "https://ntfy.example" || got.Topic != "topic" || got.APIKey != "secret" {
+		t.Errorf("ntfy settings = %#v, want existing config", got)
+	}
+}
+
 func TestNtfySettingsKeepSecretOutOfPublicValues(t *testing.T) {
 	ctx := context.Background()
 	database := openMessagesTestDatabase(t, "")

@@ -92,7 +92,6 @@ func main() {
 	mux.HandleFunc("GET /history", historyHandler(database))
 	mux.HandleFunc("GET /settings", settingsHandler(database, toolRegistry))
 	mux.HandleFunc("POST /settings", settingsHandler(database, toolRegistry))
-	mux.HandleFunc("POST /settings/ntfy", ntfySettingsHandler(database))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, commandRegistry, toolCalls))

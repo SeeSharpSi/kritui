@@ -124,16 +124,11 @@ main {
                 }
             }
 
-            .settings-form {
+            .settings-main-form {
                 display: grid;
-                gap: 1rem;
-                width: min(100%, 48rem);
+                gap: 1.1rem;
+                width: min(100%, 56rem);
                 margin: 0 auto 1rem;
-
-                .settings-main-form {
-                    display: grid;
-                    gap: 1rem;
-                }
 
                 .settings-section {
                     min-width: 0;
@@ -145,9 +140,19 @@ main {
                 }
 
                 .settings-section-heading {
-                    padding: 1.1rem 1.25rem;
+                    padding: 1.15rem 1.35rem 1rem;
                     border-bottom: 1px solid var(--color-border);
                     background: color-mix(in srgb, var(--color-surface-muted) 38%, transparent);
+
+                    .settings-section-label {
+                        display: block;
+                        margin-bottom: .45rem;
+                        color: var(--color-accent);
+                        font-size: .68rem;
+                        font-weight: 750;
+                        letter-spacing: .12em;
+                        text-transform: uppercase;
+                    }
 
                     h2 {
                         margin: 0;
@@ -290,13 +295,13 @@ main {
 
                 input[type="checkbox"] {
                     position: relative;
-                    width: 2rem;
-                    height: 1.15rem;
-                    min-width: 2rem;
-                    flex: 0 0 2rem;
+                    width: 2.5rem;
+                    height: 1.5rem;
+                    min-width: 2.5rem;
+                    flex: 0 0 2.5rem;
                     margin: 0;
                     border: 1px solid var(--color-border-strong);
-                    border-radius: 999px;
+                    border-radius: .2rem;
                     appearance: none;
                     background: var(--color-background);
                     cursor: pointer;
@@ -308,9 +313,9 @@ main {
                         position: absolute;
                         top: 50%;
                         left: .15rem;
-                        width: .75rem;
-                        height: .75rem;
-                        border-radius: 50%;
+                        width: 1rem;
+                        height: 1rem;
+                        border-radius: .08rem;
                         background: var(--color-border-strong);
                         transform: translateY(-50%);
                         transition: background-color 150ms ease, transform 150ms ease;
@@ -318,11 +323,11 @@ main {
 
                     &:checked {
                         border-color: var(--color-accent);
-                        background: var(--color-accent);
+                        background: color-mix(in srgb, var(--color-accent) 22%, var(--color-background));
 
                         &::before {
                             background: var(--color-on-accent);
-                            transform: translate(.83rem, -50%);
+                            transform: translate(1.08rem, -50%);
                         }
                     }
 
@@ -383,10 +388,6 @@ main {
                         text-overflow: ellipsis;
                         white-space: nowrap;
                     }
-                }
-
-                .settings-tool-save {
-                    justify-self: end;
                 }
 
                 .settings-append-list {
@@ -474,45 +475,96 @@ main {
                     }
                 }
 
-                .settings-actions {
-                    display: flex;
-                    justify-content: flex-end;
-                    gap: .65rem;
-                    padding: 0 1rem 1rem;
-                }
-
-                .settings-notification-form {
-                    display: grid;
-                    gap: .9rem;
-                    padding: 1rem 1.25rem;
-
-                    .settings-fields {
-                        margin: 0 -1.25rem;
-                    }
-
-                    .settings-actions {
-                        padding: 0;
-                    }
-                }
-
                 .settings-control-column {
                     display: grid;
                     gap: .6rem;
                     align-items: start;
                 }
 
-                .settings-notification-clear {
+                .settings-clear-key {
+                    justify-self: start;
+                    min-height: 2.25rem;
+                    border-color: color-mix(in srgb, var(--color-error) 38%, var(--color-border));
+                    background: transparent;
+                    color: var(--color-error);
+                    font-size: .78rem;
+                }
+
+                .settings-clear-pending {
+                    margin: 0;
+                    color: var(--color-gold);
+                    font-size: .78rem;
+                    line-height: 1.45;
+
+                    button {
+                        min-height: auto;
+                        padding: 0;
+                        border: 0;
+                        background: transparent;
+                        color: inherit;
+                        text-decoration: underline;
+                    }
+                }
+
+                .settings-save-bar {
+                    position: sticky;
+                    bottom: 0;
+                    z-index: 1;
                     display: flex;
                     align-items: center;
-                    gap: .65rem;
-                    width: fit-content;
-                    cursor: pointer;
-                    user-select: none;
+                    justify-content: space-between;
+                    gap: 1rem;
+                    padding: .85rem 1rem;
+                    border: 1px solid var(--color-border);
+                    border-radius: .7rem;
+                    background: color-mix(in srgb, var(--color-surface-muted) 65%, var(--color-surface));
                     color: var(--color-border-strong);
                     font-size: .8rem;
 
-                    &:hover {
-                        color: var(--color-text);
+                    .settings-save {
+                        border-color: var(--color-accent);
+                        background: var(--color-accent);
+                        color: var(--color-on-accent);
+                    }
+                }
+
+                .settings-dialog {
+                    width: min(calc(100vw - 2rem), 28rem);
+                    box-sizing: border-box;
+                    padding: 1.35rem;
+                    border: 1px solid var(--color-border-strong);
+                    border-radius: .75rem;
+                    background: var(--color-surface);
+                    color: var(--color-text);
+                    box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 42%);
+
+                    &::backdrop {
+                        background: rgb(8 5 12 / 72%);
+                    }
+
+                    h2 {
+                        margin: 0;
+                        color: var(--color-gold);
+                        font-size: 1.05rem;
+                    }
+
+                    p {
+                        margin: .65rem 0 1.25rem;
+                        color: var(--color-border-strong);
+                        font-size: .85rem;
+                        line-height: 1.5;
+                    }
+
+                    .settings-dialog-actions {
+                        display: flex;
+                        justify-content: flex-end;
+                        gap: .6rem;
+                    }
+
+                    .settings-dialog-danger {
+                        border-color: color-mix(in srgb, var(--color-error) 55%, var(--color-border));
+                        background: color-mix(in srgb, var(--color-error) 15%, var(--color-surface));
+                        color: var(--color-error);
                     }
                 }
 
@@ -532,10 +584,6 @@ main {
                         }
                     }
 
-                    .settings-tool-save {
-                        width: 100%;
-                    }
-
                     .settings-append-actions {
                         flex-wrap: wrap;
 
@@ -545,6 +593,19 @@ main {
 
                         .settings-add {
                             min-width: 100%;
+                        }
+                    }
+
+                    .settings-save-bar {
+                        align-items: stretch;
+                        flex-direction: column;
+
+                        >span {
+                            display: none;
+                        }
+
+                        .settings-save {
+                            width: 100%;
                         }
                     }
                 }
