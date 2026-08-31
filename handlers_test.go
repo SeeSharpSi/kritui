@@ -64,6 +64,31 @@ func TestServiceWorkerHandlerServesRootScopeScript(t *testing.T) {
 	}
 }
 
+func TestLogoHandlerOffersPNGDownload(t *testing.T) {
+	response := httptest.NewRecorder()
+	logoHandler(staticFiles)(response, httptest.NewRequest(http.MethodGet, "/logo.png", nil))
+
+	if status := response.Code; status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", contentType)
+	}
+	if contentDisposition := response.Header().Get("Content-Disposition"); contentDisposition != `attachment; filename="kritui-logo.png"` {
+		t.Errorf("Content-Disposition = %q, want download filename", contentDisposition)
+	}
+	body := response.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	if len(body) < 8 {
+		t.Fatalf("body is shorter than PNG signature: %d bytes", len(body))
+	}
+	if !bytes.Equal(body[:8], []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}) {
+		t.Errorf("body does not begin with PNG signature: %x", body[:min(len(body), 8)])
+	}
+}
+
 func TestHealthHandlerChecksOnlyDatabase(t *testing.T) {
 	database := openTestDatabase(t)
 	providerCalls := 0

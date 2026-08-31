@@ -100,6 +100,7 @@ func main() {
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
 	mux.HandleFunc("GET /messages/tools", messageToolStreamHandler(toolCalls))
 	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
+	mux.HandleFunc("GET /logo.png", logoHandler(staticFiles))
 	mux.HandleFunc("GET /favicon.ico", faviconHandler(staticFiles))
 	mux.HandleFunc("GET /sw.js", serviceWorkerHandler(staticFiles))
 
@@ -216,6 +217,19 @@ func faviconHandler(files embed.FS) http.HandlerFunc {
 		w.Header().Set("Content-Type", "image/x-icon")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		_, _ = w.Write(icon)
+	}
+}
+
+func logoHandler(files embed.FS) http.HandlerFunc {
+	logo, err := files.ReadFile("static/logo.png")
+	if err != nil {
+		panic("embedded logo missing")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Disposition", `attachment; filename="kritui-logo.png"`)
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(logo)
 	}
 }
 
