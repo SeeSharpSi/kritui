@@ -1,6 +1,6 @@
 package templates
 
-const staticAssetVersion = "3"
+const staticAssetVersion = "4"
 
 func staticAsset(path string) string {
 	return path + "?v=" + staticAssetVersion
@@ -25,7 +25,10 @@ templ Layout(title string) {
 			<script src={ templ.URL(staticAsset("/static/app.js")) } defer></script>
 			<link rel="stylesheet" href={ templ.URL(staticAsset("/static/styles.css")) }/>
 		</head>
-		<body>
+		<body hx-indicator:inherited="global #request-overlay">
+			<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">
+				<span class="braille-spinner" aria-hidden="true"></span>
+			</div>
 			{ children... }
 		</body>
 	</html>

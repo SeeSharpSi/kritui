@@ -91,7 +91,7 @@ func TestLogoHandlerOffersPNGDownload(t *testing.T) {
 
 func TestStaticHandlerServesVersionedAssetsWithImmutableCache(t *testing.T) {
 	response := httptest.NewRecorder()
-	staticHandler(staticFiles).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/static/htmx.min.js?v=3", nil))
+	staticHandler(staticFiles).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/static/htmx.min.js?v=4", nil))
 
 	if status := response.Code; status != http.StatusOK {
 		t.Fatalf("status = %d, want %d", status, http.StatusOK)
@@ -102,6 +102,36 @@ func TestStaticHandlerServesVersionedAssetsWithImmutableCache(t *testing.T) {
 	if body := response.Body.String(); !strings.Contains(body, "registerExtension") {
 		t.Errorf("body does not contain registerExtension")
 	}
+}
+
+func TestStaticStylesDefineGlobalRequestOverlay(t *testing.T) {
+	styles, err := staticFiles.ReadFile("static/styles.css")
+	if err != nil {
+		t.Fatalf("read embedded styles: %v", err)
+	}
+	start := strings.Index(string(styles), ".request-overlay {")
+	visible := strings.Index(string(styles), ".request-overlay.htmx-request {")
+	if start == -1 || visible == -1 || visible < start {
+		t.Fatalf("request-overlay styles missing or out of order: start = %d, visible = %d", start, visible)
+	}
+	requireContains(t, string(styles)[start:visible],
+		"position: fixed;",
+		"inset: 0;",
+		"z-index: 10000;",
+		"background: #000;",
+		"opacity: 0;",
+		"visibility: hidden;",
+		"pointer-events: none;",
+		".braille-spinner::before {",
+		"font-size: 2rem;",
+	)
+	requireContains(t, string(styles)[visible:],
+		"opacity: 1;",
+		"visibility: visible;",
+		"pointer-events: auto;",
+		"transition: none;",
+	)
+	requireNotContains(t, string(styles)[start:visible], "transition:")
 }
 
 func TestHealthHandlerChecksOnlyDatabase(t *testing.T) {
@@ -378,10 +408,13 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=3`,
-		`/static/hx-sse.js?v=3`,
-		`/static/app.js?v=3`,
-		`/static/styles.css?v=3`,
+		`/static/htmx.min.js?v=4`,
+		`/static/hx-sse.js?v=4`,
+		`/static/app.js?v=4`,
+		`/static/styles.css?v=4`,
+		`<body hx-indicator:inherited="global #request-overlay">`,
+		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
+		`<span class="braille-spinner" aria-hidden="true"></span>`,
 		`defaultTimeout&#34;:0`,
 		`defaultSettleDelay&#34;:20`,
 		`extensions&#34;:&#34;sse`,

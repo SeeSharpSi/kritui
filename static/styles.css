@@ -1968,6 +1968,31 @@ main {
     animation: braille-spinner 820ms steps(1, end) infinite;
 }
 
+.request-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: grid;
+    place-items: center;
+    background: #000;
+    color: var(--color-text);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+
+    .braille-spinner::before {
+        font-size: 2rem;
+        width: 1.1em;
+    }
+}
+
+.request-overlay.htmx-request {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transition: none;
+}
+
 .visually-hidden {
     position: absolute;
     width: 1px;
