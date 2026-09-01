@@ -110,7 +110,7 @@ func TestStaticStylesDefineGlobalRequestOverlay(t *testing.T) {
 		t.Fatalf("read embedded styles: %v", err)
 	}
 	start := strings.Index(string(styles), ".request-overlay {")
-	visible := strings.Index(string(styles), ".request-overlay.htmx-request {")
+	visible := strings.Index(string(styles), ".request-overlay.htmx-indicator.htmx-request {")
 	if start == -1 || visible == -1 || visible < start {
 		t.Fatalf("request-overlay styles missing or out of order: start = %d, visible = %d", start, visible)
 	}

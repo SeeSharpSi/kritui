@@ -1986,7 +1986,7 @@ main {
     }
 }
 
-.request-overlay.htmx-request {
+.request-overlay.htmx-indicator.htmx-request {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
