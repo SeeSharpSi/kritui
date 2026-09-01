@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"seesharpsi/kritui/themes"
 )
 
 const MaxConfigurableToolRounds = 100
@@ -16,13 +18,15 @@ type settingWriter interface {
 }
 
 // SettingsUpdate describes the desired settings for one atomic save.
-// Nil PromptAppends or Ntfy values leave those settings untouched.
+// Nil PromptAppends or Ntfy values, and an empty Theme, leave those settings
+// untouched.
 type SettingsUpdate struct {
 	Model         string
 	MaxToolRounds int
 	DefaultTools  []string
 	PromptAppends []PromptAppend
 	Ntfy          *NtfySettingsUpdate
+	Theme         string
 }
 
 // NtfySettings contains values safe to render in the settings page.
@@ -91,8 +95,39 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 			return err
 		}
 	}
+	if strings.TrimSpace(update.Theme) != "" {
+		if err := setTheme(ctx, tx, update.Theme); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit set settings: %w", err)
+	}
+	return nil
+}
+
+// GetTheme returns the stored theme slug or an empty string when unconfigured.
+func GetTheme(ctx context.Context, db *sql.DB) (string, error) {
+	var theme sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT theme FROM settings WHERE id = 1`).Scan(&theme); err != nil {
+		return "", fmt.Errorf("get theme: %w", err)
+	}
+	if !theme.Valid {
+		return "", nil
+	}
+	return strings.TrimSpace(theme.String), nil
+}
+
+func setTheme(ctx context.Context, db settingWriter, theme string) error {
+	theme = strings.TrimSpace(theme)
+	if theme == "" {
+		return fmt.Errorf("set theme: theme is required")
+	}
+	if _, err := themes.ByID(theme); err != nil {
+		return fmt.Errorf("set theme: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET theme = ? WHERE id = 1`, theme); err != nil {
+		return fmt.Errorf("set theme: %w", err)
 	}
 	return nil
 }

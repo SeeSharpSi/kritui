@@ -400,6 +400,120 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 		) STRICT`)
 		return err
 	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		var tableCount int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM sqlite_master
+			WHERE type = 'table' AND name = 'settings'
+		`).Scan(&tableCount); err != nil {
+			return fmt.Errorf("inspect settings table: %w", err)
+		}
+		if tableCount == 0 {
+			return nil
+		}
+		return addColumnIfMissing(ctx, tx, "settings", "theme", `TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'nord', 'tokyo-night'))`)
+	},
+	migrateSettingsThemeRosePineDark,
+	migrateSettingsThemeOG,
+}
+
+// rebuildSettingsThemeConstraint rebuilds the settings table so its theme
+// CHECK accepts allowedThemes, which SQLite cannot change in place. Existing
+// settings values are preserved, the copied column list adapts to the columns
+// present in the old table, and the rebuild is safe to run when no settings
+// table exists yet. The transaction rolls back any partial rebuild on error.
+func rebuildSettingsThemeConstraint(ctx context.Context, tx *sql.Tx, tableName string, allowedThemes []string) error {
+	var tableCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'settings'
+	`).Scan(&tableCount); err != nil {
+		return fmt.Errorf("inspect settings table: %w", err)
+	}
+	if tableCount == 0 {
+		return nil
+	}
+
+	columns := map[string]bool{}
+	rows, err := tx.QueryContext(ctx, `SELECT name FROM pragma_table_info('settings')`)
+	if err != nil {
+		return fmt.Errorf("inspect settings columns: %w", err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan settings column: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close settings columns: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate settings columns: %w", err)
+	}
+
+	knownColumns := []string{
+		"id", "default_model", "max_tool_rounds", "default_tools_configured",
+		"prompt_appends_configured", "ntfy_endpoint", "ntfy_topic", "ntfy_api_key", "theme",
+	}
+	copiedColumns := make([]string, 0, len(knownColumns))
+	for _, name := range knownColumns {
+		if columns[name] {
+			copiedColumns = append(copiedColumns, name)
+		}
+	}
+	if len(copiedColumns) == 0 {
+		return fmt.Errorf("settings table has no known columns")
+	}
+
+	quotedThemes := make([]string, len(allowedThemes))
+	for index, slug := range allowedThemes {
+		quotedThemes[index] = "'" + slug + "'"
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE `+tableName+` (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		default_model TEXT,
+		max_tool_rounds INTEGER CHECK (max_tool_rounds IS NULL OR max_tool_rounds BETWEEN 1 AND 100),
+		default_tools_configured INTEGER NOT NULL DEFAULT 0 CHECK (default_tools_configured IN (0, 1)),
+		prompt_appends_configured INTEGER NOT NULL DEFAULT 0 CHECK (prompt_appends_configured IN (0, 1)),
+		ntfy_endpoint TEXT,
+		ntfy_topic TEXT,
+		ntfy_api_key TEXT,
+		theme TEXT CHECK (theme IS NULL OR theme IN (`+strings.Join(quotedThemes, ", ")+`))
+	) STRICT`); err != nil {
+		return fmt.Errorf("create rebuilt settings table: %w", err)
+	}
+	statements := []string{
+		`INSERT INTO ` + tableName + ` (` + strings.Join(copiedColumns, ", ") + `)
+			SELECT ` + strings.Join(copiedColumns, ", ") + `
+			FROM settings`,
+		`DROP TABLE settings`,
+		`ALTER TABLE ` + tableName + ` RENAME TO settings`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild settings table: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateSettingsThemeRosePineDark upgrades the settings theme CHECK from the
+// three original slugs to the four-theme set including rose-pine-dark.
+func migrateSettingsThemeRosePineDark(ctx context.Context, tx *sql.Tx) error {
+	return rebuildSettingsThemeConstraint(ctx, tx, "settings_theme_14",
+		[]string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night"})
+}
+
+// migrateSettingsThemeOG upgrades the settings theme CHECK from the four-theme
+// set to the five-theme set including og.
+func migrateSettingsThemeOG(ctx context.Context, tx *sql.Tx) error {
+	return rebuildSettingsThemeConstraint(ctx, tx, "settings_theme_15",
+		[]string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og"})
 }
 
 type legacyChatCollections struct {

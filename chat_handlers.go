@@ -20,6 +20,7 @@ import (
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/ntfy"
 	"seesharpsi/kritui/templ"
+	"seesharpsi/kritui/themes"
 	"seesharpsi/kritui/tools"
 )
 
@@ -145,6 +146,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			CompletionRequestID: completion.requestID,
 			CompletionStarted:   completion.started,
 			CommandDefinitions:  commandRegistry.Definitions(),
+			Theme:               renderSettings.theme,
 		}
 		if err := templates.Home(home).Render(r.Context(), &page); err != nil {
 			log.Printf("render page: %v", err)
@@ -164,6 +166,7 @@ type homeRenderSettings struct {
 	maxToolRounds int
 	defaultTools  []string
 	ntfySettings  kritui_db.NtfySettings
+	theme         themes.Theme
 }
 
 // loadHomeRenderSettings fetches every not-yet-loaded settings value in the
@@ -200,7 +203,25 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 		log.Printf("get ntfy settings: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load ntfy settings: %w", err)
 	}
+	if settings.theme, err = loadStoredTheme(ctx, database); err != nil {
+		log.Printf("load theme: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load theme: %w", err)
+	}
 	return settings, nil
+}
+
+// loadStoredTheme resolves the persisted theme slug to a built-in theme,
+// falling back to the default when unset or unrecognized.
+func loadStoredTheme(ctx context.Context, database *sql.DB) (themes.Theme, error) {
+	stored, err := kritui_db.GetTheme(ctx, database)
+	if err != nil {
+		return themes.Theme{}, fmt.Errorf("get stored theme: %w", err)
+	}
+	theme, err := themes.ByID(stored)
+	if err != nil {
+		theme = themes.Default()
+	}
+	return theme, nil
 }
 
 func historyHandler(database *sql.DB) http.HandlerFunc {
@@ -238,6 +259,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			MaxToolRounds: llm.DefaultMaxToolCallRounds,
 			ToolNames:     registry.Names(),
 			PromptAppends: kritui_db.DefaultPromptAppends(),
+			Themes:        themes.Options(),
 		}
 		render := func(status int, message string) {
 			page.ErrorMessage = message
@@ -283,6 +305,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.NtfySettings = ntfySettings
+		theme, err := loadStoredTheme(r.Context(), database)
+		if err != nil {
+			log.Printf("load theme: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.SelectedTheme = theme
 		if r.Method == http.MethodPost {
 			if err := parseLimitedForm(w, r, maxSettingsBodyBytes); err != nil {
 				var tooLarge *http.MaxBytesError
@@ -296,6 +325,16 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			submittedModel := strings.TrimSpace(r.FormValue("model"))
 			submittedRounds, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("max_tool_rounds")))
 			submittedTools, submittedToolsErr := selectedDefaultTools(registry, r.Form["default_tool"])
+			submittedTheme := strings.TrimSpace(r.FormValue("theme"))
+			actionTheme := page.SelectedTheme
+			themeUnknown := false
+			if submittedTheme != "" {
+				if theme, themeErr := themes.ByID(submittedTheme); themeErr == nil {
+					actionTheme = theme
+				} else {
+					themeUnknown = true
+				}
+			}
 			ntfySubmitted := r.FormValue("ntfy_form") == "1"
 			ntfyAPIKey := ""
 			clearNtfyAPIKey := false
@@ -335,6 +374,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					actionPage.SelectedModel = actionModel
 					actionPage.MaxToolRounds = actionRounds
 					actionPage.DefaultTools = actionTools
+					actionPage.SelectedTheme = actionTheme
 					actionPage.PromptAppends = submittedAppends
 					renderSettingsPage(w, r, http.StatusInternalServerError, actionPage)
 					return
@@ -344,6 +384,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				actionPage.SelectedModel = actionModel
 				actionPage.MaxToolRounds = actionRounds
 				actionPage.DefaultTools = actionTools
+				actionPage.SelectedTheme = actionTheme
 				actionPage.PromptAppends = submittedAppends
 				renderSettingsPage(w, r, http.StatusOK, actionPage)
 				return
@@ -363,17 +404,23 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				actionPage.SelectedModel = actionModel
 				actionPage.MaxToolRounds = actionRounds
 				actionPage.DefaultTools = actionTools
+				actionPage.SelectedTheme = actionTheme
 				actionPage.PromptAppends = filtered
 				renderSettingsPage(w, r, http.StatusOK, actionPage)
 				return
 			}
 			page.SelectedModel = submittedModel
+			page.SelectedTheme = actionTheme
 			if page.SelectedModel == "" {
 				render(http.StatusBadRequest, "A model is required.")
 				return
 			}
 			if submittedRounds < 1 || submittedRounds > kritui_db.MaxConfigurableToolRounds {
 				render(http.StatusBadRequest, fmt.Sprintf("Max tool-call rounds must be between 1 and %d.", kritui_db.MaxConfigurableToolRounds))
+				return
+			}
+			if themeUnknown {
+				render(http.StatusBadRequest, "Theme selection is invalid.")
 				return
 			}
 			if submittedToolsErr != nil {
@@ -432,6 +479,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				MaxToolRounds: page.MaxToolRounds,
 				DefaultTools:  page.DefaultTools,
 				Ntfy:          ntfyUpdate,
+				Theme:         submittedTheme,
 			}
 			if r.FormValue("append_form") == "1" {
 				update.PromptAppends = submittedAppends

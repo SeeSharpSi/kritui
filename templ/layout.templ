@@ -1,25 +1,33 @@
 package templates
 
-const staticAssetVersion = "4"
+import (
+	"seesharpsi/kritui/themes"
+)
+
+const staticAssetVersion = "6"
 
 func staticAsset(path string) string {
 	return path + "?v=" + staticAssetVersion
 }
 
-templ Layout(title string) {
+templ Layout(title string, theme themes.Theme) {
 	<!DOCTYPE html>
-	<html lang="en">
+	<html
+		lang="en"
+		data-theme={ theme.ID }
+		style={ templ.SafeCSS(theme.Style) }
+	>
 		<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<meta name="htmx-config" content={ `{"defaultTimeout":0,"defaultSettleDelay":20,"extensions":"sse"}` }/>
 			<title>{ title }</title>
+			<meta name="theme-color" content={ theme.Colors["background"] }/>
 			<link rel="icon" href={ templ.URL(staticAsset("/static/logo.png")) } type="image/png"/>
 			<link rel="icon" href={ templ.URL(staticAsset("/static/favicon.ico")) } sizes="any"/>
 			<link rel="icon" href={ templ.URL(staticAsset("/static/icon-192.png")) } type="image/png"/>
 			<link rel="apple-touch-icon" href={ templ.URL(staticAsset("/static/icon-192.png")) }/>
 			<link rel="manifest" href={ templ.URL(staticAsset("/static/manifest.json")) }/>
-			<meta name="theme-color" content="#17151b"/>
 			<script src={ templ.URL(staticAsset("/static/htmx.min.js")) }></script>
 			<script src={ templ.URL(staticAsset("/static/hx-sse.js")) }></script>
 			<script src={ templ.URL(staticAsset("/static/app.js")) } defer></script>

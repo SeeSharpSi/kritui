@@ -750,8 +750,29 @@ document.addEventListener('htmx:after:swap', (event) => {
     restoreMessageScroll(event.detail?.ctx?.target);
     syncPanelSendButton();
 });
+function applySettingsTheme(root) {
+    const settingsPage = root?.matches?.('#settings-page')
+        ? root
+        : root?.querySelector?.('#settings-page');
+    const style = settingsPage?.dataset.themeStyle;
+    if (!style) {
+        return;
+    }
+
+    const rootElement = document.documentElement;
+    if (settingsPage.dataset.themeId) {
+        rootElement.dataset.theme = settingsPage.dataset.themeId;
+    }
+    rootElement.setAttribute('style', style);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta && settingsPage.dataset.themeColor) {
+        meta.setAttribute('content', settingsPage.dataset.themeColor);
+    }
+}
+
 document.addEventListener('htmx:after:settle', (event) => {
     restoreMessageScroll(event.detail?.task?.target);
+    applySettingsTheme(event.detail?.task?.target);
     const settingsPage = document.querySelector('#settings-page');
     if (event.detail?.task?.target?.matches?.('#settings-page') && settingsPage?.querySelector('[data-settings-saved]')) {
         const apiKey = settingsPage.querySelector('#ntfy-api-key');

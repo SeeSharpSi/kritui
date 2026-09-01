@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS settings (
     prompt_appends_configured INTEGER NOT NULL DEFAULT 0 CHECK (prompt_appends_configured IN (0, 1)),
     ntfy_endpoint TEXT,
     ntfy_topic TEXT,
-    ntfy_api_key TEXT
+    ntfy_api_key TEXT,
+    theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og'))
 ) STRICT;
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -148,4 +149,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 12;
+PRAGMA user_version = 15;

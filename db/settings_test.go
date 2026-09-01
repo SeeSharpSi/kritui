@@ -406,3 +406,94 @@ func TestSaveNtfySettingsRejectsPartialDestination(t *testing.T) {
 		t.Fatal("SaveNtfySettings() error = nil, want partial destination error")
 	}
 }
+
+func TestGetThemeFallsBackWhenUnset(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	theme, err := GetTheme(context.Background(), database)
+	if err != nil {
+		t.Fatalf("GetTheme() error: %v", err)
+	}
+	if theme != "" {
+		t.Errorf("GetTheme() = %q, want empty when unconfigured", theme)
+	}
+}
+
+func TestSaveSettingsStoresThemeAndLeavesEmptyThemeUnchanged(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "model",
+		MaxToolRounds: 3,
+		DefaultTools:  []string{"git"},
+		Theme:         "nord",
+	}); err != nil {
+		t.Fatalf("SaveSettings() error: %v", err)
+	}
+	theme, err := GetTheme(ctx, database)
+	if err != nil {
+		t.Fatalf("GetTheme() error: %v", err)
+	}
+	if theme != "nord" {
+		t.Errorf("theme = %q, want nord", theme)
+	}
+
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "model",
+		MaxToolRounds: 4,
+		DefaultTools:  []string{"git"},
+	}); err != nil {
+		t.Fatalf("SaveSettings() without theme error: %v", err)
+	}
+	theme, err = GetTheme(ctx, database)
+	if err != nil {
+		t.Fatalf("GetTheme() after unchanged save: %v", err)
+	}
+	if theme != "nord" {
+		t.Errorf("theme after unchanged save = %q, want nord", theme)
+	}
+}
+
+func TestSaveSettingsRejectsUnknownTheme(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "model",
+		MaxToolRounds: 3,
+		DefaultTools:  []string{"git"},
+		Theme:         "dracula",
+	}); err == nil {
+		t.Fatal("SaveSettings() error = nil, want unknown theme error")
+	}
+	theme, err := GetTheme(ctx, database)
+	if err != nil {
+		t.Fatalf("GetTheme() error: %v", err)
+	}
+	if theme != "" {
+		t.Errorf("theme after rejected save = %q, want empty", theme)
+	}
+}
+
+func TestThemeColumnRejectsInvalidValues(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	for _, theme := range []string{"dracula", "rose-pine/colors.toml", ""} {
+		if _, err := database.Exec(`UPDATE settings SET theme = ? WHERE id = 1`, theme); err == nil {
+			t.Errorf("store invalid theme %q error = nil", theme)
+		}
+	}
+	if _, err := database.Exec(`UPDATE settings SET theme = 'tokyo-night' WHERE id = 1`); err != nil {
+		t.Errorf("store valid theme error: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE settings SET theme = 'rose-pine-dark' WHERE id = 1`); err != nil {
+		t.Errorf("store rose-pine-dark theme error: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE settings SET theme = 'og' WHERE id = 1`); err != nil {
+		t.Errorf("store og theme error: %v", err)
+	}
+	stored, err := GetTheme(context.Background(), database)
+	if err != nil {
+		t.Fatalf("GetTheme() error: %v", err)
+	}
+	if stored != "og" {
+		t.Errorf("stored theme = %q, want og", stored)
+	}
+}

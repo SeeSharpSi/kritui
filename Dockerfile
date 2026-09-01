@@ -20,6 +20,7 @@ COPY markdown/ ./markdown/
 COPY ntfy/ ./ntfy/
 COPY static/ ./static/
 COPY templ/ ./templ/
+COPY themes/ ./themes/
 COPY tools/ ./tools/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
