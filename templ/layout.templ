@@ -1,5 +1,11 @@
 package templates
 
+const staticAssetVersion = "3"
+
+func staticAsset(path string) string {
+	return path + "?v=" + staticAssetVersion
+}
+
 templ Layout(title string) {
 	<!DOCTYPE html>
 	<html lang="en">
@@ -8,16 +14,16 @@ templ Layout(title string) {
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<meta name="htmx-config" content={ `{"defaultTimeout":0,"defaultSettleDelay":20,"extensions":"sse"}` }/>
 			<title>{ title }</title>
-			<link rel="icon" href="/static/logo.png?v=2" type="image/png"/>
-			<link rel="icon" href="/static/favicon.ico?v=2" sizes="any"/>
-			<link rel="icon" href="/static/icon-192.png?v=2" type="image/png"/>
-			<link rel="apple-touch-icon" href="/static/icon-192.png?v=2"/>
-			<link rel="manifest" href="/static/manifest.json?v=2"/>
+			<link rel="icon" href={ templ.URL(staticAsset("/static/logo.png")) } type="image/png"/>
+			<link rel="icon" href={ templ.URL(staticAsset("/static/favicon.ico")) } sizes="any"/>
+			<link rel="icon" href={ templ.URL(staticAsset("/static/icon-192.png")) } type="image/png"/>
+			<link rel="apple-touch-icon" href={ templ.URL(staticAsset("/static/icon-192.png")) }/>
+			<link rel="manifest" href={ templ.URL(staticAsset("/static/manifest.json")) }/>
 			<meta name="theme-color" content="#17151b"/>
-			<script src="/static/htmx.min.js"></script>
-			<script src="/static/hx-sse.js"></script>
-			<script src="/static/app.js" defer></script>
-			<link rel="stylesheet" href="/static/styles.css"/>
+			<script src={ templ.URL(staticAsset("/static/htmx.min.js")) }></script>
+			<script src={ templ.URL(staticAsset("/static/hx-sse.js")) }></script>
+			<script src={ templ.URL(staticAsset("/static/app.js")) } defer></script>
+			<link rel="stylesheet" href={ templ.URL(staticAsset("/static/styles.css")) }/>
 		</head>
 		<body>
 			{ children... }

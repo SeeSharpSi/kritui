@@ -37,6 +37,8 @@ const (
 	serverReadHeaderTimeout = 5 * time.Second
 	serverIdleTimeout       = 2 * time.Minute
 	databaseBusyTimeout     = 5 * time.Second
+
+	staticAssetCacheControl = "public, max-age=31536000, immutable"
 )
 
 func main() {
@@ -99,7 +101,7 @@ func main() {
 	mux.HandleFunc("POST /messages/retry", messageRetryHandler(database, toolRegistry, toolCalls))
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
 	mux.HandleFunc("GET /messages/tools", messageToolStreamHandler(toolCalls))
-	mux.Handle("GET /static/", http.FileServer(http.FS(staticFiles)))
+	mux.Handle("GET /static/", staticHandler(staticFiles))
 	mux.HandleFunc("GET /logo.png", logoHandler(staticFiles))
 	mux.HandleFunc("GET /favicon.ico", faviconHandler(staticFiles))
 	mux.HandleFunc("GET /sw.js", serviceWorkerHandler(staticFiles))
@@ -206,6 +208,14 @@ func newHTTPServer(handler http.Handler) *http.Server {
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		IdleTimeout:       serverIdleTimeout,
 	}
+}
+
+func staticHandler(files embed.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(files))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", staticAssetCacheControl)
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 func faviconHandler(files embed.FS) http.HandlerFunc {

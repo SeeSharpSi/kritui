@@ -89,6 +89,21 @@ func TestLogoHandlerOffersPNGDownload(t *testing.T) {
 	}
 }
 
+func TestStaticHandlerServesVersionedAssetsWithImmutableCache(t *testing.T) {
+	response := httptest.NewRecorder()
+	staticHandler(staticFiles).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/static/htmx.min.js?v=3", nil))
+
+	if status := response.Code; status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if cacheControl := response.Header().Get("Cache-Control"); cacheControl != staticAssetCacheControl {
+		t.Errorf("Cache-Control = %q, want %q", cacheControl, staticAssetCacheControl)
+	}
+	if body := response.Body.String(); !strings.Contains(body, "registerExtension") {
+		t.Errorf("body does not contain registerExtension")
+	}
+}
+
 func TestHealthHandlerChecksOnlyDatabase(t *testing.T) {
 	database := openTestDatabase(t)
 	providerCalls := 0
@@ -363,8 +378,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/hx-sse.js`,
-		`/static/app.js`,
+		`/static/htmx.min.js?v=3`,
+		`/static/hx-sse.js?v=3`,
+		`/static/app.js?v=3`,
+		`/static/styles.css?v=3`,
 		`defaultTimeout&#34;:0`,
 		`defaultSettleDelay&#34;:20`,
 		`extensions&#34;:&#34;sse`,
