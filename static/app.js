@@ -100,6 +100,13 @@ function destroyMessageListState(messageList) {
     messageListStates.delete(messageList);
 }
 
+function destroyMessageListStates(root) {
+    if (root?.matches?.('.message-list')) {
+        destroyMessageListState(root);
+    }
+    root?.querySelectorAll?.('.message-list').forEach(destroyMessageListState);
+}
+
 function pinMessageList(messageList, force = false) {
     const state = messageListState(messageList);
     if (state.viewportAnchor) {
@@ -506,7 +513,8 @@ function togglePanel(panelID, panelButton) {
 }
 
 function showCompletionNetworkError(event, message) {
-    const pending = event.detail.elt;
+    const source = event.detail?.ctx?.sourceElement ?? event.target;
+    const pending = source?.closest?.('.loading-message') ?? source;
     if (!pending?.matches?.('.loading-message') || pending.classList.contains('completion-failed')) {
         return;
     }
@@ -717,57 +725,56 @@ async function copyMessage(button) {
     }, 1600));
 }
 
-let appendPickerSelection = null;
-
-document.addEventListener('htmx:oobBeforeSwap', (event) => {
-    if (event.target.id !== 'append-picker') {
+document.addEventListener('htmx:after:process', (event) => scrollMessages(event.target));
+document.addEventListener('htmx:before:swap', (event) => {
+    const ctx = event.detail?.ctx;
+    if (!ctx) {
         return;
     }
-    appendPickerSelection = Array.from(event.target.querySelectorAll('input[name="append"]:checked'))
-        .map((input) => input.value);
-});
-
-document.addEventListener('htmx:oobAfterSwap', (event) => {
-    if (event.target.id !== 'append-picker' || appendPickerSelection === null) {
-        return;
-    }
-    const selection = appendPickerSelection;
-    appendPickerSelection = null;
-    event.target.querySelectorAll('input[name="append"]').forEach((input) => {
-        input.checked = selection.includes(input.value);
-    });
-});
-
-document.addEventListener('htmx:load', (event) => scrollMessages(event.detail.elt));
-document.addEventListener('htmx:beforeSwap', (event) => {
-    rememberMessageScroll(event.detail.target);
-    if (event.detail.elt?.matches?.('.loading-message') && event.detail.xhr?.status >= 500) {
-        event.detail.shouldSwap = false;
+    rememberMessageScroll(ctx.target);
+    if (ctx.sourceElement?.matches?.('.loading-message') && ctx.response?.status >= 500) {
+        event.preventDefault();
         showCompletionNetworkError(event, 'Failed to complete message. Check your connection and retry.');
+        return;
+    }
+    if (Array.isArray(event.detail.tasks)) {
+        event.detail.tasks.forEach((task) => {
+            const style = task?.swapSpec?.style;
+            if (style === 'outerHTML' || style === 'delete') {
+                destroyMessageListStates(task.target);
+            }
+        });
     }
 });
-document.addEventListener('htmx:afterSwap', (event) => {
-    restoreMessageScroll(event.detail.elt);
+document.addEventListener('htmx:after:swap', (event) => {
+    restoreMessageScroll(event.detail?.ctx?.target);
     syncPanelSendButton();
 });
-document.addEventListener('htmx:afterSettle', (event) => {
-    restoreMessageScroll(event.detail.elt);
-    if (event.detail.elt?.matches?.('#settings-page') && event.detail.elt.querySelector('[data-settings-saved]')) {
-        const apiKey = event.detail.elt.querySelector('#ntfy-api-key');
+document.addEventListener('htmx:after:settle', (event) => {
+    restoreMessageScroll(event.detail?.task?.target);
+    const settingsPage = document.querySelector('#settings-page');
+    if (event.detail?.task?.target?.matches?.('#settings-page') && settingsPage?.querySelector('[data-settings-saved]')) {
+        const apiKey = settingsPage.querySelector('#ntfy-api-key');
         if (apiKey) {
             apiKey.value = '';
             apiKey.disabled = false;
         }
     }
 });
-document.addEventListener('htmx:afterRequest', (event) => {
-    if (event.detail.successful && event.detail.elt?.matches?.('#message-form')) {
-        const input = event.detail.elt.querySelector('#image-input');
+document.addEventListener('htmx:after:request', (event) => {
+    const ctx = event.detail?.ctx;
+    const source = ctx?.sourceElement;
+    const status = ctx?.response?.status;
+    if (status >= 200 && status <= 399 && source?.matches?.('#message-form')) {
+        const input = source.querySelector('#image-input');
         if (input) {
             clearImageAttachments(input);
         }
     }
     syncPanelSendButton();
+});
+document.addEventListener('htmx:finally:request', () => {
+    queueMicrotask(syncPanelSendButton);
 });
 document.addEventListener('kritui:command', (event) => {
     const messageInput = document.querySelector('#message');
@@ -792,45 +799,29 @@ document.addEventListener('kritui:command', (event) => {
 document.addEventListener('kritui:message-edited', () => {
     document.querySelector('#message')?.focus();
 });
-document.addEventListener('htmx:beforeCleanupElement', (event) => {
-    const root = event.detail.elt;
+document.addEventListener('htmx:before:cleanup', (event) => {
+    const root = event.target;
     clearComposerImages(root);
-    if (root.matches?.('.message-list')) {
-        destroyMessageListState(root);
-    }
-    root.querySelectorAll?.('.message-list').forEach(destroyMessageListState);
+    destroyMessageListStates(root);
 });
-document.addEventListener('htmx:sseBeforeMessage', (event) => rememberMessageScroll(event.target));
-document.addEventListener('htmx:sseMessage', (event) => {
+document.addEventListener('htmx:sse:before:message', (event) => rememberMessageScroll(event.target));
+document.addEventListener('htmx:sse:after:message', (event) => {
     restoreMessageScroll(event.target);
     syncPanelSendButton();
 });
-document.addEventListener('htmx:sseClose', (event) => {
-    if (event.detail.type === 'message') {
+document.addEventListener('htmx:sse:close', (event) => {
+    if (event.detail?.reason === 'message') {
         showCompletionNetworkError(event, 'Completion status expired. Retry the completion.');
     }
 });
-document.addEventListener('htmx:sendError', (event) => {
+document.addEventListener('htmx:error', (event) => {
     showCompletionNetworkError(event, 'Failed to complete message. Check your connection and retry.');
-});
-document.addEventListener('htmx:timeout', (event) => {
-    showCompletionNetworkError(event, 'Completion request timed out. Retry the completion.');
-});
-
-document.addEventListener('htmx:configRequest', (event) => {
-    if (event.detail.elt.matches('.loading-message')) {
-        event.detail.parameters.client_timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    }
-    if (event.detail.elt.matches('.history-loader')) {
-        const panelHeight = event.detail.elt.closest('.history-page')?.clientHeight ?? 0;
-        event.detail.parameters.limit = Math.min(50, Math.max(1, Math.ceil(panelHeight / 80)));
-    }
 });
 
 document.addEventListener('htmx:confirm', (event) => {
-    if (event.target.matches('.history-delete') && event.detail.triggeringEvent?.shiftKey) {
+    if (event.target.matches('.history-delete') && event.detail.ctx?.sourceEvent?.shiftKey) {
         event.preventDefault();
-        event.detail.issueRequest(true);
+        event.detail.issueRequest();
     }
 });
 

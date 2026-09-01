@@ -363,12 +363,11 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx-ext-sse.min.js`,
+		`/static/hx-sse.js`,
 		`/static/app.js`,
-		`reportValidityOfForms`,
-		`responseHandling`,
-		`&#34;[45]..&#34;,&#34;swap&#34;:true,&#34;error&#34;:true`,
-		`hx-history="false"`,
+		`defaultTimeout&#34;:0`,
+		`defaultSettleDelay&#34;:20`,
+		`extensions&#34;:&#34;sse`,
 		`hx-sync="#messages:drop"`,
 		"<strong>stored-model</strong>",
 		`class="tool-call-toggle"`,
@@ -381,6 +380,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		t.Errorf("message copy button count = %d, want 1", count)
 	}
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>", `role="button"`, `hx-replace-url`)
+	requireNotContains(t, response.Body.String(), `hx-history="false"`)
 }
 
 func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
@@ -474,6 +474,8 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 		`class="panel-page settings-page"`,
 		`hx-post="/settings?chat=8"`,
 		`hx-target="#settings-page"`,
+		`hx-include="#append-picker input[name='append']:checked"`,
+		`name="append_selection" value="1"`,
 		`id="history-page"`,
 		`class="panel-page history-page"`,
 		`id="history-error"`,
@@ -507,7 +509,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, string(script), `option.dataset.commandRequiresArguments === 'true'`)
 	requireContains(t, string(script), `input.form?.requestSubmit()`)
 	requireContains(t, string(script), `if (!event.detail?.preserveInput)`)
-	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger")
+	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger", "htmx:oobBeforeSwap", "htmx:oobAfterSwap", "htmx:configRequest")
 }
 
 func TestHomeHandlerRendersEndpointModels(t *testing.T) {
@@ -880,8 +882,8 @@ func TestMessageHandlerUndoesAndRedoesLatestTurn(t *testing.T) {
 	if got := undo.Header().Get("HX-Reswap"); got != "outerHTML" {
 		t.Errorf("undo HX-Reswap = %q", got)
 	}
-	if got := undo.Header().Get("HX-Trigger-After-Settle"); got != `{"kritui:command":{"preserveInput":true}}` {
-		t.Errorf("undo HX-Trigger-After-Settle = %q", got)
+	if got := undo.Header().Get("HX-Trigger"); got != `{"kritui:command":{"preserveInput":true}}` {
+		t.Errorf("undo HX-Trigger = %q", got)
 	}
 	requireContains(t, undo.Body.String(),
 		`id="message-list"`,
@@ -1502,7 +1504,7 @@ func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 	body := response.Body.String()
-	requireContains(t, body, "Newest", "Middle", `before_id=2`, `class="history-loader"`, `hx-target="this"`)
+	requireContains(t, body, "Newest", "Middle", `before_id=2`, `class="history-loader"`, `hx-target="this"`, `hx-vals="js:{limit: Math.min(50, Math.max(1, Math.ceil((this.closest(&#39;.history-page&#39;)?.clientHeight ?? 0) / 80)))}`)
 	requireNotContains(t, body, "Oldest")
 
 	request = httptest.NewRequest(http.MethodGet, "/history?chat=8&limit=2&before=2026-01-02T00:00:00.000Z&before_id=2", nil)
@@ -1840,6 +1842,8 @@ func TestSettingsHandlerRefreshesAppendPickerAfterHTMXSave(t *testing.T) {
 	form := url.Values{
 		"model":              {"saved-model"},
 		"max_tool_rounds":    {"16"},
+		"append_selection":   {"1"},
+		"append":             {"custom"},
 		"append_form":        {"1"},
 		"append_id":          {"custom"},
 		"append_name_custom": {"Custom"},
@@ -1854,7 +1858,7 @@ func TestSettingsHandlerRefreshesAppendPickerAfterHTMXSave(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	requireContains(t, response.Body.String(), `id="append-picker"`, `hx-swap-oob="outerHTML"`, `value="custom"`, "Custom")
+	requireContains(t, response.Body.String(), `id="append-picker"`, `hx-swap-oob="outerHTML"`, `value="custom" form="message-form" checked`, "Custom")
 }
 
 func TestSettingsHandlerReportsChatAppendsLoadFailureAfterHTMXSave(t *testing.T) {
@@ -2516,11 +2520,13 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`hx-post="/messages/complete?chat=1"`,
 		`hx-trigger="load"`,
 		`hx-sync="#messages:queue last"`,
-		`hx-disabled-elt="#message-form button[type='submit']"`,
-		`hx-ext="sse"`,
-		`sse-connect="/messages/tools?request=`,
-		`sse-close="close"`,
-		`sse-swap="tools"`,
+		`hx-disable="#message-form button[type='submit']"`,
+		`hx-sse:connect="/messages/tools?request=`,
+		`hx-sse:close="close"`,
+		`hx-config="sse.pauseOnBackground:false"`,
+		`hx-vals="js:{client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone}"`,
+		`id="completion-tools-`,
+		`id="completion-`,
 		`hx-swap-oob="outerHTML"`,
 		`name="request" value="`,
 		`name="tool" value="webfetch"`,
@@ -2529,7 +2535,7 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`hx-post="/messages/retry?chat=1"`,
 		`data-completion-error-message`,
 	)
-	requireNotContains(t, response.Body.String(), "every 200ms", `type="hidden" name="message"`)
+	requireNotContains(t, response.Body.String(), "every 200ms", `type="hidden" name="message"`, `hx-ext="sse"`, `sse-connect=`, `sse-close=`, `sse-swap=`, `hx-disabled-elt=`)
 	if count := strings.Count(response.Body.String(), `name="model" value="selected-model"`); count != 1 {
 		t.Errorf("model input count = %d, want 1", count)
 	}
@@ -2571,8 +2577,8 @@ func TestMessageEditHandlerTruncatesAndRestartsCompletion(t *testing.T) {
 	if swap := response.Header().Get("HX-Reswap"); swap != "innerHTML" {
 		t.Errorf("HX-Reswap = %q, want innerHTML", swap)
 	}
-	if trigger := response.Header().Get("HX-Trigger-After-Settle"); trigger != "kritui:message-edited" {
-		t.Errorf("HX-Trigger-After-Settle = %q, want kritui:message-edited", trigger)
+	if trigger := response.Header().Get("HX-Trigger"); trigger != "kritui:message-edited" {
+		t.Errorf("HX-Trigger = %q, want kritui:message-edited", trigger)
 	}
 	requireContains(t, response.Body.String(),
 		"Earlier question",
@@ -2705,7 +2711,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 		response := httptest.NewRecorder()
 		homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, httptest.NewRequest(http.MethodGet, "/?chat=invalid", nil))
 
-		requireHTMLErrorResponse(t, response, http.StatusBadRequest, `<main hx-history="false">`, `id="messages"`, "A valid chat is required.")
+		requireHTMLErrorResponse(t, response, http.StatusBadRequest, `<main>`, `id="messages"`, "A valid chat is required.")
 	})
 
 	t.Run("settings validation", func(t *testing.T) {
@@ -3052,14 +3058,25 @@ func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want %q", cacheControl, "no-cache")
 	}
 
-	events := strings.Split(response.Body.String(), "event: tools\n")
-	if len(events) != 3 {
-		t.Fatalf("tool update event count = %d, want 2; body = %q", len(events)-1, response.Body.String())
+	body := response.Body.String()
+	marker := `data: <hx-partial hx-target="#completion-tools-` + requestID + `" hx-swap="innerHTML">`
+	if count := strings.Count(body, marker); count != 2 {
+		t.Fatalf("tool update partial count = %d, want 2; body = %q", count, body)
 	}
-	runningEvent := events[1]
-	completedEvent, closeEvent, ok := strings.Cut(events[2], "event: close\n")
+	if strings.Contains(body, "event: tools\n") || strings.Contains(body, "event: completion\n") {
+		t.Fatalf("named tool/completion event in body: %q", body)
+	}
+	_, rest, ok := strings.Cut(body, marker)
 	if !ok {
-		t.Fatalf("response does not contain close event: %s", response.Body.String())
+		t.Fatalf("response does not contain tool partial: %s", body)
+	}
+	runningEvent, rest, ok := strings.Cut(rest, marker)
+	if !ok {
+		t.Fatalf("response does not contain second tool partial: %s", body)
+	}
+	completedEvent, closeEvent, ok := strings.Cut(rest, "event: close\n")
+	if !ok {
+		t.Fatalf("response does not contain close event: %s", body)
 	}
 
 	requireContains(t, runningEvent, "websearch", "braille spinner", `class="braille-spinner"`, "Running tool:")
@@ -3108,7 +3125,7 @@ func TestMessageToolStreamHandlerReplaysCompletedResult(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	requireContains(t, response.Body.String(), "event: completion\n", `<article class="message">Finished.</article>`)
+	requireContains(t, response.Body.String(), `data: <hx-partial hx-target="#completion-`+requestID+`" hx-swap="outerHTML">`, `<article class="message">Finished.</article>`)
 	requireNotContains(t, response.Body.String(), "event: close\n")
 	if _, ok := toolCalls.get(requestID); !ok {
 		t.Error("finished tracker was not retained for reconnect")
@@ -3198,7 +3215,7 @@ func TestHomeHandlerRestoresCompletionState(t *testing.T) {
 		response := httptest.NewRecorder()
 		homeHandler(database, registry, commands, toolCalls)(response, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
 
-		requireContains(t, response.Body.String(), `class="message loading-message completion-active"`, `sse-connect="/messages/tools?request=`+requestID+`"`, "active-model")
+		requireContains(t, response.Body.String(), `class="message loading-message completion-active"`, `id="completion-`+requestID+`"`, `hx-sse:connect="/messages/tools?request=`+requestID+`"`, "active-model")
 		requireNotContains(t, response.Body.String(), `hx-post="/messages/complete?chat=1"`)
 	})
 
@@ -3211,7 +3228,7 @@ func TestHomeHandlerRestoresCompletionState(t *testing.T) {
 		response := httptest.NewRecorder()
 		homeHandler(database, registry, commands, toolCalls)(response, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
 
-		requireContains(t, response.Body.String(), `hx-post="/messages/complete?chat=1"`, `sse-connect="/messages/tools?request=`+requestID+`"`, "queued-model", `name="tool" value="websearch"`)
+		requireContains(t, response.Body.String(), `hx-post="/messages/complete?chat=1"`, `hx-sse:connect="/messages/tools?request=`+requestID+`"`, "queued-model", `name="tool" value="websearch"`)
 	})
 
 	t.Run("interrupted", func(t *testing.T) {
@@ -3727,7 +3744,7 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 	if retryResponse.Code != http.StatusOK {
 		t.Fatalf("retry status = %d, want %d; body = %q", retryResponse.Code, http.StatusOK, retryResponse.Body.String())
 	}
-	requireContains(t, retryResponse.Body.String(), `hx-post="/messages/complete?chat=1"`, `sse-connect="/messages/tools?request=`, `hx-trigger="load"`)
+	requireContains(t, retryResponse.Body.String(), `hx-post="/messages/complete?chat=1"`, `hx-sse:connect="/messages/tools?request=`, `hx-trigger="load"`)
 
 	var messages int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 1`).Scan(&messages); err != nil {

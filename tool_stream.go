@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -20,8 +21,6 @@ const (
 	toolCallUnclaimedTrackerTTL = 30 * time.Second
 	toolCallFinishedTrackerTTL  = 5 * time.Minute
 	toolCallHeartbeatInterval   = 30 * time.Second
-	toolCallUpdateEvent         = "tools"
-	completionEvent             = "completion"
 	toolCallCloseEvent          = "close"
 )
 
@@ -276,7 +275,8 @@ func messageToolStreamHandlerWithHeartbeat(toolCalls *toolCallStore, heartbeatIn
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
-		tracker, ok := toolCalls.get(r.URL.Query().Get("request"))
+		requestID := r.URL.Query().Get("request")
+		tracker, ok := toolCalls.get(requestID)
 		if !ok {
 			if err := writeServerSentEvent(w, toolCallCloseEvent, ""); err == nil {
 				flusher.Flush()
@@ -299,7 +299,7 @@ func messageToolStreamHandlerWithHeartbeat(toolCalls *toolCallStore, heartbeatIn
 
 			calls, running, toolErrors, terminal, finished, updates := tracker.streamSnapshot()
 			if finished {
-				if err := writeServerSentEvent(w, completionEvent, terminal); err == nil {
+				if err := writeServerSentPartial(w, "#completion-"+requestID, "outerHTML", terminal); err == nil {
 					flusher.Flush()
 				}
 				return
@@ -309,7 +309,7 @@ func messageToolStreamHandlerWithHeartbeat(toolCalls *toolCallStore, heartbeatIn
 				log.Printf("render tool-call stream: %v", err)
 				return
 			}
-			if err := writeServerSentEvent(w, toolCallUpdateEvent, content.String()); err != nil {
+			if err := writeServerSentPartial(w, "#completion-tools-"+requestID, "innerHTML", content.String()); err != nil {
 				return
 			}
 			flusher.Flush()
@@ -334,8 +334,10 @@ func messageToolStreamHandlerWithHeartbeat(toolCalls *toolCallStore, heartbeatIn
 }
 
 func writeServerSentEvent(w io.Writer, event string, data string) error {
-	if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
-		return err
+	if event != "" {
+		if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
+			return err
+		}
 	}
 	data = strings.ReplaceAll(data, "\r\n", "\n")
 	data = strings.ReplaceAll(data, "\r", "\n")
@@ -346,4 +348,9 @@ func writeServerSentEvent(w io.Writer, event string, data string) error {
 	}
 	_, err := io.WriteString(w, "\n")
 	return err
+}
+
+func writeServerSentPartial(w io.Writer, target, swap, content string) error {
+	partial := fmt.Sprintf(`<hx-partial hx-target="%s" hx-swap="%s">%s</hx-partial>`, html.EscapeString(target), html.EscapeString(swap), content)
+	return writeServerSentEvent(w, "", partial)
 }

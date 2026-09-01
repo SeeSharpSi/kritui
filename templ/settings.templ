@@ -45,7 +45,9 @@ templ SettingsPage(data SettingsPanelData) {
 			hx-post={ "/settings?chat=" + data.ChatID }
 			hx-target="#settings-page"
 			hx-swap="outerHTML"
+			hx-include="#append-picker input[name='append']:checked"
 		>
+			<input type="hidden" name="append_selection" value="1"/>
 			<input type="hidden" name="append_form" value="1"/>
 			<input type="hidden" name="ntfy_form" value="1"/>
 			if data.Saved {

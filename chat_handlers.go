@@ -445,15 +445,33 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		}
 
 		if page.Saved && r.Header.Get("HX-Request") == "true" {
-			chatID, _ := positiveID(page.ChatID)
-			page.EnabledAppendIDs, err = kritui_db.GetChatPromptAppendIDs(r.Context(), database, chatID)
-			if err != nil {
-				log.Printf("get chat prompt append IDs after settings save: %v", err)
-				failurePage := page
-				failurePage.Saved = false
-				failurePage.ErrorMessage = "Failed to load chat appends."
-				renderSettingsPage(w, r, http.StatusInternalServerError, failurePage)
-				return
+			if r.FormValue("append_selection") == "1" {
+				available := make(map[string]struct{}, len(page.PromptAppends))
+				for _, value := range page.PromptAppends {
+					available[value.ID] = struct{}{}
+				}
+				seen := make(map[string]struct{}, len(r.Form["append"]))
+				for _, id := range r.Form["append"] {
+					if _, ok := available[id]; !ok {
+						continue
+					}
+					if _, ok := seen[id]; ok {
+						continue
+					}
+					seen[id] = struct{}{}
+					page.EnabledAppendIDs = append(page.EnabledAppendIDs, id)
+				}
+			} else {
+				chatID, _ := positiveID(page.ChatID)
+				page.EnabledAppendIDs, err = kritui_db.GetChatPromptAppendIDs(r.Context(), database, chatID)
+				if err != nil {
+					log.Printf("get chat prompt append IDs after settings save: %v", err)
+					failurePage := page
+					failurePage.Saved = false
+					failurePage.ErrorMessage = "Failed to load chat appends."
+					renderSettingsPage(w, r, http.StatusInternalServerError, failurePage)
+					return
+				}
 			}
 		}
 		render(http.StatusOK, "")

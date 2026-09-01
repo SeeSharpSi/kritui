@@ -99,7 +99,7 @@ func NewMessageHistoryCommand(name, description string, change MessageHistoryFun
 			header := make(http.Header)
 			header.Set("HX-Retarget", "#message-list")
 			header.Set("HX-Reswap", "outerHTML")
-			header.Set("HX-Trigger-After-Settle", trigger)
+			header.Set("HX-Trigger", trigger)
 			return Result{Status: http.StatusOK, Header: header, Body: body}, nil
 		},
 	)

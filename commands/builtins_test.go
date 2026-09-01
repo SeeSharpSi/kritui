@@ -114,8 +114,8 @@ func TestMessageHistoryCommand(t *testing.T) {
 	if got := result.Header.Get("HX-Reswap"); got != "outerHTML" {
 		t.Errorf("HX-Reswap = %q", got)
 	}
-	if got := result.Header.Get("HX-Trigger-After-Settle"); got != `{"kritui:command":{"preserveInput":true}}` {
-		t.Errorf("HX-Trigger-After-Settle = %q", got)
+	if got := result.Header.Get("HX-Trigger"); got != `{"kritui:command":{"preserveInput":true}}` {
+		t.Errorf("HX-Trigger = %q", got)
 	}
 
 	_, err = execCommand(t, command, Parsed{Name: "undo", Arguments: "extra"})

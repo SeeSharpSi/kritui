@@ -31,7 +31,7 @@ type HomeData struct {
 
 templ Home(data HomeData) {
 	@Layout("Kritui") {
-		<main hx-history="false">
+		<main>
 			<section class="chat">
 				<div class="message-panel">
 					@MessageList(data.ChatID, data.Messages, false) {
@@ -117,9 +117,9 @@ templ Home(data HomeData) {
 				hx-encoding="multipart/form-data"
 				hx-target="#messages"
 				hx-swap="beforeend"
-				hx-trigger="submit queue:none"
+				hx-trigger="submit"
 				hx-sync="#messages:drop"
-				hx-disabled-elt="find button[type='submit']"
+				hx-disable="find button[type='submit']"
 				if data.ChatURL != "" {
 					hx-replace-url={ data.ChatURL }
 				}
@@ -176,7 +176,7 @@ templ AppendsPicker(promptAppends []kritui_db.PromptAppend, enabledAppendIDs []s
 
 templ PageError(message string) {
 	@Layout("Kritui") {
-		<main hx-history="false">
+		<main>
 			<section class="chat">
 				<div class="message-panel">
 					<div class="message-list">

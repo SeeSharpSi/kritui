@@ -134,7 +134,7 @@ templ UserMessage(chatID string, message llm.Message) {
 					hx-target={ "#" + messageEditErrorID(message.ID) }
 					hx-swap="outerHTML"
 					hx-sync="#messages:drop"
-					hx-disabled-elt="find input"
+					hx-disable="find input"
 					hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"
 				>
 					<label class="visually-hidden" for={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }>Edit message</label>
@@ -298,29 +298,30 @@ templ ActiveCompletion(chatID string, requestID string, model string, tools []st
 templ pendingCompletion(chatID string, requestID string, model string, tools []string, start bool) {
 	<article
 		class="message loading-message completion-active"
+		id={ "completion-" + requestID }
 		if start {
 			hx-post={ "/messages/complete?chat=" + chatID }
 			hx-trigger="load"
 			hx-include="this"
 			hx-sync="#messages:queue last"
-			hx-disabled-elt="#message-form button[type='submit']"
+			hx-disable="#message-form button[type='submit']"
 		}
+		hx-vals={ `js:{client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone}` }
 		hx-target="this"
 		hx-swap="outerHTML"
-		hx-ext="sse"
-		sse-connect={ "/messages/tools?request=" + requestID }
-		sse-swap="completion"
-		sse-close="close"
 		role="status"
 		aria-label="Waiting for model response"
 	>
-		<div class="completion-progress">
+		<div
+			class="completion-progress"
+			hx-sse:connect={ "/messages/tools?request=" + requestID }
+			hx-sse:close="close"
+			hx-config="sse.pauseOnBackground:false"
+		>
 			<div
 				class="tool-call-list"
 				role="list"
-				sse-swap="tools"
-				hx-target="this"
-				hx-swap="innerHTML"
+				id={ "completion-tools-" + requestID }
 			></div>
 			<strong class="thinking-indicator"><span class="braille-spinner" aria-hidden="true"></span>{ model }</strong>
 		</div>
@@ -357,7 +358,7 @@ templ CompletionRetry(chatID string, model string, tools []string) {
 		hx-target="closest article"
 		hx-swap="outerHTML"
 		hx-sync="#messages:drop"
-		hx-disabled-elt="find button[type='submit']"
+		hx-disable="find button[type='submit']"
 	>
 		<input type="hidden" name="model" value={ model }/>
 		for _, tool := range tools {

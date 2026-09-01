@@ -252,7 +252,7 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("HX-Retarget", "#messages")
 		w.Header().Set("HX-Reswap", "innerHTML")
-		w.Header().Set("HX-Trigger-After-Settle", "kritui:message-edited")
+		w.Header().Set("HX-Trigger", "kritui:message-edited")
 		_, _ = w.Write(fragment.Bytes())
 	}
 }

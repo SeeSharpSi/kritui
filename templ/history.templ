@@ -95,6 +95,7 @@ templ HistoryLoader(chatID string, beforeUpdatedAt string, beforeID int64) {
 			hx-target="this"
 			hx-swap="outerHTML"
 			hx-sync="this:drop"
+			hx-vals={ `js:{limit: Math.min(50, Math.max(1, Math.ceil((this.closest('.history-page')?.clientHeight ?? 0) / 80)))}` }
 		}
 		aria-label="Loading chat history"
 	>

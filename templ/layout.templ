@@ -6,7 +6,7 @@ templ Layout(title string) {
 		<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<meta name="htmx-config" content={ `{"reportValidityOfForms":true,"allowNestedOobSwaps":false,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true},{"code":"...","swap":false}]}` }/>
+			<meta name="htmx-config" content={ `{"defaultTimeout":0,"defaultSettleDelay":20,"extensions":"sse"}` }/>
 			<title>{ title }</title>
 			<link rel="icon" href="/static/logo.png" type="image/png"/>
 			<link rel="icon" href="/static/favicon.ico" sizes="any"/>
@@ -15,7 +15,7 @@ templ Layout(title string) {
 			<link rel="manifest" href="/static/manifest.json"/>
 			<meta name="theme-color" content="#17151b"/>
 			<script src="/static/htmx.min.js"></script>
-			<script src="/static/htmx-ext-sse.min.js"></script>
+			<script src="/static/hx-sse.js"></script>
 			<script src="/static/app.js" defer></script>
 			<link rel="stylesheet" href="/static/styles.css"/>
 		</head>
