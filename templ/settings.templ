@@ -32,6 +32,46 @@ type SettingsPanelData struct {
 	SelectedTheme               themes.Theme
 }
 
+templ MCPServerEditor(server kritui_db.MCPServer, enabledByDefault bool, clearAuthorization bool) {
+	<fieldset class="settings-mcp-server">
+		<legend>{ server.Name }</legend>
+		<input type="hidden" name="mcp_id" value={ server.ID }/>
+		<label class="settings-append-default">
+			<input type="checkbox" role="switch" name="default_tool" value={ kritui_db.MCPServerCapability(server.ID) } if enabledByDefault { checked }/>
+			<span>Enable for new chats</span>
+		</label>
+		<div class="settings-mcp-field">
+			<label for={ "mcp-name-" + server.ID }>Name</label>
+			<input id={ "mcp-name-" + server.ID } type="text" name={ "mcp_name_" + server.ID } value={ server.Name } maxlength="80" required/>
+		</div>
+		<div class="settings-mcp-field">
+			<label for={ "mcp-url-" + server.ID }>Streamable HTTP URL</label>
+			<input id={ "mcp-url-" + server.ID } type="url" name={ "mcp_url_" + server.ID } value={ server.URL } maxlength="2048" placeholder="https://example.com/mcp" required/>
+		</div>
+		<div class="settings-mcp-field">
+			<label for={ "mcp-authorization-" + server.ID }>Bearer token</label>
+			<input
+				id={ "mcp-authorization-" + server.ID }
+				type="password"
+				name={ "mcp_authorization_" + server.ID }
+				autocomplete="new-password"
+				maxlength="16384"
+				hx-preserve="true"
+				if server.AuthorizationConfigured {
+					placeholder="Stored token unchanged when blank"
+				}
+			/>
+			if server.AuthorizationConfigured {
+				<label class="settings-mcp-clear">
+					<input type="checkbox" name="clear_mcp_authorization" value={ server.ID } if clearAuthorization { checked }/>
+					<span>Clear stored token when settings save</span>
+				</label>
+			}
+		</div>
+		<button class="settings-remove" type="submit" name="remove_mcp_server" value={ server.ID } formnovalidate>Remove</button>
+	</fieldset>
+}
+
 templ SettingsPage(data SettingsPanelData) {
 	<section
 		id="settings-page"
@@ -234,49 +274,23 @@ templ SettingsPage(data SettingsPanelData) {
 						<span class="settings-section-description">Remote Streamable HTTP servers. Expand to add, edit, or remove connections.</span>
 					</span>
 				</summary>
-				<div class="settings-mcp-list">
+				<div id="mcp-server-list" class="settings-mcp-list">
 					for _, server := range data.MCPServers {
-						<fieldset class="settings-mcp-server">
-							<legend>{ server.Name }</legend>
-							<input type="hidden" name="mcp_id" value={ server.ID }/>
-							<label class="settings-append-default">
-								<input type="checkbox" role="switch" name="default_tool" value={ kritui_db.MCPServerCapability(server.ID) } if slices.Contains(data.DefaultTools, kritui_db.MCPServerCapability(server.ID)) { checked }/>
-								<span>Enable for new chats</span>
-							</label>
-							<div class="settings-mcp-field">
-								<label for={ "mcp-name-" + server.ID }>Name</label>
-								<input id={ "mcp-name-" + server.ID } type="text" name={ "mcp_name_" + server.ID } value={ server.Name } maxlength="80" required/>
-							</div>
-							<div class="settings-mcp-field">
-								<label for={ "mcp-url-" + server.ID }>Streamable HTTP URL</label>
-								<input id={ "mcp-url-" + server.ID } type="url" name={ "mcp_url_" + server.ID } value={ server.URL } maxlength="2048" placeholder="https://example.com/mcp" required/>
-							</div>
-							<div class="settings-mcp-field">
-								<label for={ "mcp-authorization-" + server.ID }>Bearer token</label>
-								<input
-									id={ "mcp-authorization-" + server.ID }
-									type="password"
-									name={ "mcp_authorization_" + server.ID }
-									autocomplete="new-password"
-									maxlength="16384"
-									hx-preserve="true"
-									if server.AuthorizationConfigured {
-										placeholder="Stored token unchanged when blank"
-									}
-								/>
-								if server.AuthorizationConfigured {
-									<label class="settings-mcp-clear">
-										<input type="checkbox" name="clear_mcp_authorization" value={ server.ID } if slices.Contains(data.ClearMCPAuthorizationIDs, server.ID) { checked }/>
-										<span>Clear stored token when settings save</span>
-									</label>
-								}
-							</div>
-							<button class="settings-remove" type="submit" name="remove_mcp_server" value={ server.ID } formnovalidate>Remove</button>
-						</fieldset>
+						@MCPServerEditor(server, slices.Contains(data.DefaultTools, kritui_db.MCPServerCapability(server.ID)), slices.Contains(data.ClearMCPAuthorizationIDs, server.ID))
 					}
 				</div>
 				<div class="settings-mcp-actions">
-					<button class="settings-add" type="submit" name="mcp_action" value="add" formnovalidate>Add server</button>
+					<button
+						class="settings-add"
+						type="button"
+						hx-post={ "/settings?chat=" + data.ChatID }
+						hx-target="#mcp-server-list"
+						hx-swap="beforeend"
+						hx-vals={ `{"mcp_action":"add"}` }
+						hx-include="#append-picker input[name='append']:checked, #tool-picker input[name='tool']:checked"
+						hx-status:4xx="target:#settings-page swap:outerHTML"
+						hx-status:5xx="target:#settings-page swap:outerHTML"
+					>Add server</button>
 				</div>
 			</details>
 			<div class="settings-save-bar">

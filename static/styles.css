@@ -442,6 +442,10 @@ main {
                     }
                 }
 
+				.settings-mcp-list:empty + .settings-mcp-actions {
+					padding-top: 1rem;
+				}
+
                 .settings-append,
 				.settings-mcp-server {
                     display: grid;

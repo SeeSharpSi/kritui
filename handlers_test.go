@@ -20,6 +20,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -408,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=8`,
-		`/static/hx-sse.js?v=8`,
-		`/static/app.js?v=8`,
-		`/static/styles.css?v=8`,
+		`/static/htmx.min.js?v=9`,
+		`/static/hx-sse.js?v=9`,
+		`/static/app.js?v=9`,
+		`/static/styles.css?v=9`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -1624,6 +1625,15 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 		`Save settings`,
 		`hx-target="#settings-page"`,
 		`hx-swap="outerHTML"`,
+		`id="mcp-server-list"`,
+		`type="button"`,
+		`hx-post="/settings?chat=8"`,
+		`hx-target="#mcp-server-list"`,
+		`hx-swap="beforeend"`,
+		`hx-vals="{&#34;mcp_action&#34;:&#34;add&#34;}"`,
+		`hx-include="#append-picker input[name='append']:checked, #tool-picker input[name='tool']:checked"`,
+		`hx-status:4xx="target:#settings-page swap:outerHTML"`,
+		`hx-status:5xx="target:#settings-page swap:outerHTML"`,
 	)
 	if count := strings.Count(response.Body.String(), ">Save settings</button>"); count != 1 {
 		t.Errorf("Save settings button count = %d, want 1", count)
@@ -2667,7 +2677,7 @@ func TestSettingsHandlerStoresPreservesAndClearsMCPSecret(t *testing.T) {
 	}
 }
 
-func TestSettingsHandlerMCPAddPreservesPendingAuthorizationClear(t *testing.T) {
+func TestSettingsHandlerMCPAddRendersOnlyNewEditor(t *testing.T) {
 	database := openTestDatabase(t)
 	const (
 		serverID = "mcp-0123456789abcdef"
@@ -2692,8 +2702,8 @@ func TestSettingsHandlerMCPAddPreservesPendingAuthorizationClear(t *testing.T) {
 		"max_tool_rounds":         {"invalid"},
 		"mcp_form":                {"1"},
 		"mcp_id":                  {serverID},
-		"mcp_name_" + serverID:    {"Existing"},
-		"mcp_url_" + serverID:     {"https://mcp.example"},
+		"mcp_name_" + serverID:    {"Unsaved name"},
+		"mcp_url_" + serverID:     {"https://unsaved.example/mcp"},
 		"clear_mcp_authorization": {serverID},
 		"mcp_action":              {"add"},
 	})
@@ -2702,14 +2712,21 @@ func TestSettingsHandlerMCPAddPreservesPendingAuthorizationClear(t *testing.T) {
 	}
 	body := response.Body.String()
 	requireContains(t, body,
-		`>Existing</legend>`,
-		`name="clear_mcp_authorization" value="mcp-0123456789abcdef" checked`,
 		">new server</legend>",
 	)
-	requireNotContains(t, body, token)
-	if count := strings.Count(body, `name="mcp_id" value="`); count != 2 {
-		t.Errorf("rendered MCP server count = %d, want existing plus new", count)
+	if count := strings.Count(body, `<fieldset class="settings-mcp-server">`); count != 1 {
+		t.Errorf("rendered MCP editor count = %d, want 1", count)
 	}
+	if !regexp.MustCompile(`name="mcp_id" value="mcp-[0-9a-f]{16}"`).MatchString(body) {
+		t.Errorf("response lacks valid generated MCP ID: %q", body)
+	}
+	requireNotContains(t, body,
+		`id="settings-page"`,
+		`>Existing</legend>`,
+		`mcp_name_`+serverID,
+		"Save settings",
+		token,
+	)
 
 	var count int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM mcp_servers`).Scan(&count); err != nil {

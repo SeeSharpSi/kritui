@@ -419,11 +419,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					renderSettingsPage(w, r, http.StatusInternalServerError, value)
 					return
 				}
-				submittedMCPServers = append(submittedMCPServers, kritui_db.MCPServer{ID: id, Name: "new server"})
-				value := actionPage()
-				value.MCPServers = submittedMCPServers
-				value.MCPServersOpen = true
-				renderSettingsPage(w, r, http.StatusOK, value)
+				renderMCPServerEditor(w, r, http.StatusOK, kritui_db.MCPServer{ID: id, Name: "new server"})
 				return
 			}
 			if removeID := strings.TrimSpace(r.FormValue("remove_mcp_server")); removeID != "" {
@@ -948,6 +944,17 @@ func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data
 			log.Printf("render prompt appends: %v", err)
 			return
 		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(page.Bytes())
+}
+
+func renderMCPServerEditor(w http.ResponseWriter, r *http.Request, status int, server kritui_db.MCPServer) {
+	var page bytes.Buffer
+	if err := templates.MCPServerEditor(server, false, false).Render(r.Context(), &page); err != nil {
+		log.Printf("render MCP server editor: %v", err)
+		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
