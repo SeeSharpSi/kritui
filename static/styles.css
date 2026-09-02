@@ -155,19 +155,59 @@ main {
                         text-transform: uppercase;
                     }
 
-                    h2 {
+                    h2,
+                    .settings-section-title {
+						display: block;
                         margin: 0;
                         font-size: 1rem;
+						font-weight: 700;
                         letter-spacing: .01em;
                     }
 
+					.settings-section-description,
                     p {
+						display: block;
                         margin: .3rem 0 0;
                         color: var(--color-text-muted);
                         font-size: .85rem;
                         line-height: 1.45;
                     }
                 }
+
+				.settings-expandable {
+					>.settings-section-heading {
+						display: flex;
+						align-items: center;
+						justify-content: space-between;
+						gap: 1rem;
+						list-style: none;
+						cursor: pointer;
+
+						&::-webkit-details-marker {
+							display: none;
+						}
+
+						&::after {
+							content: "+";
+							flex: 0 0 auto;
+							color: var(--color-accent);
+							font-size: 1.35rem;
+							font-weight: 500;
+						}
+					}
+
+					&[open]>.settings-section-heading::after {
+						content: "-";
+					}
+
+					&:not([open])>.settings-section-heading {
+						border-bottom: 0;
+					}
+
+					.settings-expandable-copy {
+						min-width: 0;
+					}
+				}
 
                 .settings-fields {
                     display: grid;
@@ -391,7 +431,8 @@ main {
                     }
                 }
 
-                .settings-append-list {
+                .settings-append-list,
+				.settings-mcp-list {
                     display: grid;
                     gap: .9rem;
                     padding: 1rem;
@@ -401,7 +442,8 @@ main {
                     }
                 }
 
-                .settings-append {
+                .settings-append,
+				.settings-mcp-server {
                     display: grid;
                     gap: .85rem;
                     min-width: 0;
@@ -428,7 +470,8 @@ main {
                     }
                 }
 
-                .settings-append-field {
+                .settings-append-field,
+				.settings-mcp-field {
                     display: grid;
                     gap: .4rem;
 
@@ -439,6 +482,15 @@ main {
                         letter-spacing: .02em;
                     }
                 }
+
+				.settings-mcp-clear {
+					display: flex;
+					align-items: center;
+					gap: .65rem;
+					color: var(--color-text-muted);
+					font-size: .78rem;
+					cursor: pointer;
+				}
 
                 .settings-remove {
                     justify-self: start;
@@ -457,13 +509,14 @@ main {
                     }
                 }
 
-                .settings-append-actions {
+                .settings-append-actions,
+				.settings-mcp-actions {
                     display: flex;
                     justify-content: flex-end;
                     gap: .65rem;
                     padding: 0 1rem 1rem;
 
-                    .settings-add {
+					>.settings-add {
                         margin-right: auto;
                         border-color: var(--color-border);
                         background: transparent;
@@ -585,7 +638,8 @@ main {
                         }
                     }
 
-                    .settings-append-actions {
+                    .settings-append-actions,
+					.settings-mcp-actions {
                         flex-wrap: wrap;
 
                         button {

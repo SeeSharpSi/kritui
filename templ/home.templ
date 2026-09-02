@@ -22,6 +22,7 @@ type HomeData struct {
 	Tools               []string
 	EnabledTools        []string
 	DefaultTools        []string
+	MCPServers          []kritui_db.MCPServer
 	PromptAppends       []kritui_db.PromptAppend
 	NtfySettings        kritui_db.NtfySettings
 	EnabledAppendIDs    []string
@@ -55,6 +56,7 @@ templ Home(data HomeData) {
 							MaxToolRounds: data.MaxToolRounds,
 							ToolNames:     data.Tools,
 							DefaultTools:  data.DefaultTools,
+							MCPServers:    data.MCPServers,
 							PromptAppends: data.PromptAppends,
 							NtfySettings:  data.NtfySettings,
 							Themes:        themes.Options(),
@@ -91,20 +93,7 @@ templ Home(data HomeData) {
 								}
 							</div>
 						</details>
-						<details class="tool-picker">
-							<summary>
-								Tools
-							</summary>
-							<div class="tool-options">
-								for _, tool := range data.Tools {
-									<label>
-										<input type="checkbox" name="tool" value={ tool } form="message-form" if slices.Contains(data.EnabledTools, tool) { checked }/>
-										<span>{ tool }</span>
-										<span class="tool-state" aria-hidden="true"></span>
-									</label>
-								}
-							</div>
-						</details>
+						@ToolPicker(data.Tools, data.MCPServers, data.EnabledTools, false)
 						@AppendsPicker(data.PromptAppends, data.EnabledAppendIDs, false)
 					</div>
 					<summary style="outline: none;">
@@ -153,6 +142,34 @@ templ Home(data HomeData) {
 			</form>
 		</main>
 	}
+}
+
+templ ToolPicker(builtinTools []string, mcpServers []kritui_db.MCPServer, enabledTools []string, outOfBand bool) {
+	<details
+		id="tool-picker"
+		class="tool-picker"
+		if outOfBand {
+			hx-swap-oob="outerHTML"
+		}
+	>
+		<summary>Tools</summary>
+		<div class="tool-options">
+			for _, tool := range builtinTools {
+				<label>
+					<input type="checkbox" name="tool" value={ tool } form="message-form" if slices.Contains(enabledTools, tool) { checked }/>
+					<span>{ tool }</span>
+					<span class="tool-state" aria-hidden="true"></span>
+				</label>
+			}
+			for _, server := range mcpServers {
+				<label>
+					<input type="checkbox" name="tool" value={ kritui_db.MCPServerCapability(server.ID) } form="message-form" if slices.Contains(enabledTools, kritui_db.MCPServerCapability(server.ID)) { checked }/>
+					<span>{ server.Name }</span>
+					<span class="tool-state" aria-hidden="true"></span>
+				</label>
+			}
+		</div>
+	</details>
 }
 
 templ AppendsPicker(promptAppends []kritui_db.PromptAppend, enabledAppendIDs []string, outOfBand bool) {

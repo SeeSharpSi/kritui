@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS prompt_appends (
     enabled_by_default INTEGER NOT NULL DEFAULT 0 CHECK (enabled_by_default IN (0, 1))
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id TEXT PRIMARY KEY CHECK (id <> ''),
+    position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+    name TEXT NOT NULL CHECK (name <> ''),
+    url TEXT NOT NULL CHECK (url <> ''),
+    authorization_token TEXT
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS model_endpoint_preferences (
     model TEXT PRIMARY KEY CHECK (trim(model) <> ''),
     endpoint_type TEXT NOT NULL CHECK (endpoint_type IN ('responses', 'messages', 'chat_completions'))
@@ -149,4 +157,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 15;
+PRAGMA user_version = 16;

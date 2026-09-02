@@ -9,23 +9,27 @@ import (
 )
 
 // SettingsPanelData groups every input the settings panel renders, including
-// the out-of-band appends picker refresh that follows a successful save.
+// out-of-band picker refreshes that follow a successful save.
 type SettingsPanelData struct {
-	ChatID           string
-	Models           []string
-	SelectedModel    string
-	MaxToolRounds    int
-	ToolNames        []string
-	DefaultTools     []string
-	PromptAppends    []kritui_db.PromptAppend
-	NtfySettings     kritui_db.NtfySettings
-	ClearNtfyAPIKey  bool
-	Saved            bool
-	Visible          bool
-	ErrorMessage     string
-	EnabledAppendIDs []string
-	Themes           []themes.Theme
-	SelectedTheme    themes.Theme
+	ChatID                      string
+	Models                      []string
+	SelectedModel               string
+	MaxToolRounds               int
+	ToolNames                   []string
+	DefaultTools                []string
+	MCPServers                  []kritui_db.MCPServer
+	MCPServersOpen              bool
+	ClearMCPAuthorizationIDs    []string
+	PromptAppends               []kritui_db.PromptAppend
+	NtfySettings                kritui_db.NtfySettings
+	ClearNtfyAPIKey             bool
+	Saved                       bool
+	Visible                     bool
+	ErrorMessage                string
+	EnabledAppendIDs            []string
+	EnabledToolNames            []string
+	Themes                      []themes.Theme
+	SelectedTheme               themes.Theme
 }
 
 templ SettingsPage(data SettingsPanelData) {
@@ -51,10 +55,12 @@ templ SettingsPage(data SettingsPanelData) {
 			hx-post={ "/settings?chat=" + data.ChatID }
 			hx-target="#settings-page"
 			hx-swap="outerHTML"
-			hx-include="#append-picker input[name='append']:checked"
+			hx-include="#append-picker input[name='append']:checked, #tool-picker input[name='tool']:checked"
 		>
 			<input type="hidden" name="append_selection" value="1"/>
+			<input type="hidden" name="tool_selection" value="1"/>
 			<input type="hidden" name="append_form" value="1"/>
+			<input type="hidden" name="mcp_form" value="1"/>
 			<input type="hidden" name="ntfy_form" value="1"/>
 			if data.Saved {
 				<p class="settings-status" role="status" data-settings-saved>Settings saved.</p>
@@ -220,6 +226,59 @@ templ SettingsPage(data SettingsPanelData) {
 					</div>
 				</div>
 			</section>
+			<details id="mcp-settings" class="settings-section settings-expandable" if data.MCPServersOpen { open }>
+				<summary class="settings-section-heading">
+					<span class="settings-expandable-copy">
+						<span class="settings-section-label">05 / Integrations</span>
+						<span id="mcp-settings-heading" class="settings-section-title">MCP servers</span>
+						<span class="settings-section-description">Remote Streamable HTTP servers. Expand to add, edit, or remove connections.</span>
+					</span>
+				</summary>
+				<div class="settings-mcp-list">
+					for _, server := range data.MCPServers {
+						<fieldset class="settings-mcp-server">
+							<legend>{ server.Name }</legend>
+							<input type="hidden" name="mcp_id" value={ server.ID }/>
+							<label class="settings-append-default">
+								<input type="checkbox" role="switch" name="default_tool" value={ kritui_db.MCPServerCapability(server.ID) } if slices.Contains(data.DefaultTools, kritui_db.MCPServerCapability(server.ID)) { checked }/>
+								<span>Enable for new chats</span>
+							</label>
+							<div class="settings-mcp-field">
+								<label for={ "mcp-name-" + server.ID }>Name</label>
+								<input id={ "mcp-name-" + server.ID } type="text" name={ "mcp_name_" + server.ID } value={ server.Name } maxlength="80" required/>
+							</div>
+							<div class="settings-mcp-field">
+								<label for={ "mcp-url-" + server.ID }>Streamable HTTP URL</label>
+								<input id={ "mcp-url-" + server.ID } type="url" name={ "mcp_url_" + server.ID } value={ server.URL } maxlength="2048" placeholder="https://example.com/mcp" required/>
+							</div>
+							<div class="settings-mcp-field">
+								<label for={ "mcp-authorization-" + server.ID }>Bearer token</label>
+								<input
+									id={ "mcp-authorization-" + server.ID }
+									type="password"
+									name={ "mcp_authorization_" + server.ID }
+									autocomplete="new-password"
+									maxlength="16384"
+									hx-preserve="true"
+									if server.AuthorizationConfigured {
+										placeholder="Stored token unchanged when blank"
+									}
+								/>
+								if server.AuthorizationConfigured {
+									<label class="settings-mcp-clear">
+										<input type="checkbox" name="clear_mcp_authorization" value={ server.ID } if slices.Contains(data.ClearMCPAuthorizationIDs, server.ID) { checked }/>
+										<span>Clear stored token when settings save</span>
+									</label>
+								}
+							</div>
+							<button class="settings-remove" type="submit" name="remove_mcp_server" value={ server.ID } formnovalidate>Remove</button>
+						</fieldset>
+					}
+				</div>
+				<div class="settings-mcp-actions">
+					<button class="settings-add" type="submit" name="mcp_action" value="add" formnovalidate>Add server</button>
+				</div>
+			</details>
 			<div class="settings-save-bar">
 				<span>All changes save together.</span>
 				<button class="settings-save" type="submit">Save settings</button>

@@ -18,13 +18,14 @@ type settingWriter interface {
 }
 
 // SettingsUpdate describes the desired settings for one atomic save.
-// Nil PromptAppends or Ntfy values, and an empty Theme, leave those settings
-// untouched.
+// Nil PromptAppends, MCPServers, or Ntfy values, and an empty Theme, leave
+// those settings untouched.
 type SettingsUpdate struct {
 	Model         string
 	MaxToolRounds int
 	DefaultTools  []string
 	PromptAppends []PromptAppend
+	MCPServers    []MCPServerUpdate
 	Ntfy          *NtfySettingsUpdate
 	Theme         string
 }
@@ -87,6 +88,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 	}
 	if update.PromptAppends != nil {
 		if err := setPromptAppends(ctx, tx, update.PromptAppends); err != nil {
+			return err
+		}
+	}
+	if update.MCPServers != nil {
+		if err := setMCPServers(ctx, tx, update.MCPServers); err != nil {
 			return err
 		}
 	}

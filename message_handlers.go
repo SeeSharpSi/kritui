@@ -28,13 +28,16 @@ import (
 	"seesharpsi/kritui/templ"
 	"seesharpsi/kritui/tools"
 	"seesharpsi/kritui/tools/git"
+	mcptools "seesharpsi/kritui/tools/mcp"
 )
 
 type messageRequest struct {
-	chat     string
-	chatID   int64
-	model    string
-	selected *tools.Registry
+	chat      string
+	chatID    int64
+	model     string
+	selected  *tools.Registry
+	toolNames []string
+	mcpTools  []string
 }
 
 type persistedUserMessage struct {
@@ -69,6 +72,9 @@ var (
 	// errInvalidAppendSelection means a submitted prompt-append ID is unknown
 	// or repeated against the definitions read inside the message transaction.
 	errInvalidAppendSelection = errors.New("prompt append selection is invalid")
+	// errInvalidToolSelection means a submitted MCP server was removed before
+	// the message transaction could persist its chat selection.
+	errInvalidToolSelection = errors.New("tool selection is invalid")
 	// errPromptAppendTooLarge means the expanded message exceeds the body limit.
 	errPromptAppendTooLarge = errors.New("message with prompt appends is too large")
 )
@@ -132,7 +138,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 			renderMessageError(w, r, http.StatusBadRequest, "Selected model does not support images.")
 			return
 		}
-		requestID, err := toolCalls.create(request.chatID, request.model, request.selected.Names())
+		requestID, err := toolCalls.create(request.chatID, request.model, request.toolNames)
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
 				renderMessageError(w, r, http.StatusConflict, "A response is already in progress.")
@@ -142,12 +148,14 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 			renderMessageError(w, r, http.StatusInternalServerError, "Failed to prepare message.")
 			return
 		}
-		persisted, err := persistUserMessage(r.Context(), database, request.chatID, message, images, request.selected.Names(), r.Form["append"])
+		persisted, err := persistUserMessage(r.Context(), database, request.chatID, message, images, request.toolNames, r.Form["append"])
 		if err != nil {
 			toolCalls.delete(requestID)
 			switch {
 			case errors.Is(err, errInvalidAppendSelection):
 				renderMessageError(w, r, http.StatusBadRequest, "Prompt append selection is invalid.")
+			case errors.Is(err, errInvalidToolSelection):
+				renderMessageError(w, r, http.StatusBadRequest, "Tool selection is invalid.")
 			case errors.Is(err, errPromptAppendTooLarge):
 				renderMessageError(w, r, http.StatusRequestEntityTooLarge, "Message with prompt appends is too large.")
 			default:
@@ -160,7 +168,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 		appendTexts := promptAppendTexts(persisted.appends)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		userMessage := llm.Message{ID: persisted.id, Role: "user", Content: message, Images: images, PromptAppendTexts: appendTexts}
-		if err := templates.PendingSubmission(strconv.FormatInt(request.chatID, 10), requestID, userMessage, request.model, request.selected.Names()).Render(r.Context(), w); err != nil {
+		if err := templates.PendingSubmission(strconv.FormatInt(request.chatID, 10), requestID, userMessage, request.model, request.toolNames).Render(r.Context(), w); err != nil {
 			toolCalls.delete(requestID)
 			log.Printf("render pending message: %v", err)
 		}
@@ -204,7 +212,7 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			return
 		}
 
-		requestID, err := toolCalls.create(request.chatID, request.model, request.selected.Names())
+		requestID, err := toolCalls.create(request.chatID, request.model, request.toolNames)
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
 				renderMessageEditError(w, r, http.StatusConflict, messageID, "A response is already in progress.")
@@ -215,12 +223,14 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			return
 		}
 
-		err = editUserMessage(r.Context(), database, request.chatID, messageID, message, request.selected.Names(), r.Form["append"])
+		err = editUserMessage(r.Context(), database, request.chatID, messageID, message, request.toolNames, r.Form["append"])
 		if err != nil {
 			toolCalls.delete(requestID)
 			switch {
 			case errors.Is(err, errInvalidAppendSelection):
 				renderMessageEditError(w, r, http.StatusBadRequest, messageID, "Prompt append selection is invalid.")
+			case errors.Is(err, errInvalidToolSelection):
+				renderMessageEditError(w, r, http.StatusBadRequest, messageID, "Tool selection is invalid.")
 			case errors.Is(err, errPromptAppendTooLarge):
 				renderMessageEditError(w, r, http.StatusRequestEntityTooLarge, messageID, "Message with prompt appends is too large.")
 			case errors.Is(err, kritui_db.ErrChatNotFound), errors.Is(err, kritui_db.ErrMessageNotFound):
@@ -242,7 +252,7 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			return
 		}
 		var fragment bytes.Buffer
-		if err := templates.EditedSubmission(request.chat, requestID, messages, request.model, request.selected.Names()).Render(r.Context(), &fragment); err != nil {
+		if err := templates.EditedSubmission(request.chat, requestID, messages, request.model, request.toolNames).Render(r.Context(), &fragment); err != nil {
 			toolCalls.delete(requestID)
 			log.Printf("render edited conversation: %v", err)
 			renderMessageEditError(w, r, http.StatusInternalServerError, messageID, "Message was edited, but the conversation could not be displayed.")
@@ -314,7 +324,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		}
 
 		requestID := strings.TrimSpace(r.FormValue("request"))
-		selectedTools := request.selected.Names()
+		selectedTools := request.toolNames
 		tracker, ok := toolCalls.claim(requestID, request.chatID, request.model, selectedTools)
 		if !ok {
 			renderMessageError(w, r, http.StatusBadRequest, "This completion request is no longer valid.")
@@ -327,7 +337,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 }
 
 func runMessageCompletion(ctx context.Context, database *sql.DB, request messageRequest, requestID string, tracker *toolCallTracker, toolCalls *toolCallStore, toolCallLogger *log.Logger, clientTimezone string) {
-	selectedTools := request.selected.Names()
+	selectedTools := request.toolNames
 	terminal := renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to complete message.", request.model, selectedTools))
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -373,7 +383,44 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 		return
 	}
 
-	conversation, err := llm.NewConversation(client, request.selected, llm.PromptContext{
+	conversationRegistry := request.selected
+	var mcpSession *mcptools.Session
+	if len(request.mcpTools) > 0 {
+		configs, err := kritui_db.GetMCPServerConfigs(ctx, database, request.mcpTools)
+		if err != nil {
+			log.Printf("get MCP server configs: %v", err)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load MCP server settings.", request.model, selectedTools))
+			return
+		}
+		remoteConfigs := make([]mcptools.ServerConfig, 0, len(configs))
+		for _, config := range configs {
+			remoteConfigs = append(remoteConfigs, mcptools.ServerConfig{
+				Name:               config.Name,
+				URL:                config.URL,
+				AuthorizationToken: config.AuthorizationToken,
+				Capability:         kritui_db.MCPServerCapability(config.ID),
+			})
+		}
+		mcpSession, err = mcptools.Connect(ctx, remoteConfigs)
+		if err != nil {
+			log.Printf("connect MCP servers: %v", err)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to connect to MCP servers.", request.model, selectedTools))
+			return
+		}
+		defer func() {
+			if err := mcpSession.Close(); err != nil {
+				log.Printf("close MCP servers: %v", err)
+			}
+		}()
+		conversationRegistry, err = conversationRegistry.With(mcpSession.Tools()...)
+		if err != nil {
+			log.Printf("register MCP tools: %v", err)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure MCP tools.", request.model, selectedTools))
+			return
+		}
+	}
+
+	conversation, err := llm.NewConversation(client, conversationRegistry, llm.PromptContext{
 		CurrentTime:    time.Now(),
 		ClientLocation: clientLocation(clientTimezone),
 	}, conversationMessages...)
@@ -488,7 +535,7 @@ func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *
 		}
 		if err != nil {
 			log.Printf("get retry message: %v", err)
-			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to prepare retry.", request.model, request.selected.Names())
+			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to prepare retry.", request.model, request.toolNames)
 			return
 		}
 		if role != "user" {
@@ -496,19 +543,19 @@ func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *
 			return
 		}
 
-		requestID, err := toolCalls.create(request.chatID, request.model, request.selected.Names())
+		requestID, err := toolCalls.create(request.chatID, request.model, request.toolNames)
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
-				renderCompletionError(w, r, http.StatusConflict, request.chat, "A response is already in progress.", request.model, request.selected.Names())
+				renderCompletionError(w, r, http.StatusConflict, request.chat, "A response is already in progress.", request.model, request.toolNames)
 				return
 			}
 			log.Printf("create retry tracker: %v", err)
-			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to prepare retry.", request.model, request.selected.Names())
+			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to prepare retry.", request.model, request.toolNames)
 			return
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.PendingCompletion(request.chat, requestID, request.model, request.selected.Names()).Render(r.Context(), w); err != nil {
+		if err := templates.PendingCompletion(request.chat, requestID, request.model, request.toolNames).Render(r.Context(), w); err != nil {
 			toolCalls.delete(requestID)
 			log.Printf("render retry: %v", err)
 		}
@@ -550,12 +597,61 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 			return messageRequest{}, false
 		}
 	}
-	selected, err := registry.Select(r.Form["tool"]...)
+	mcpRequested := false
+	for _, name := range r.Form["tool"] {
+		if _, ok := kritui_db.ParseMCPServerCapability(strings.TrimSpace(name)); ok {
+			mcpRequested = true
+			break
+		}
+	}
+	if !mcpRequested {
+		selected, err := registry.Select(r.Form["tool"]...)
+		if err != nil {
+			renderError(http.StatusBadRequest, "Tool selection is invalid.")
+			return messageRequest{}, false
+		}
+		return messageRequest{
+			chat:      chat,
+			chatID:    chatID,
+			model:     model,
+			selected:  selected,
+			toolNames: selected.Names(),
+		}, true
+	}
+
+	mcpServers, err := kritui_db.GetMCPServers(r.Context(), database)
+	if err != nil {
+		log.Printf("get MCP servers: %v", err)
+		renderError(http.StatusInternalServerError, "Failed to load tool settings.")
+		return messageRequest{}, false
+	}
+	selectedNames, err := selectedDefaultTools(registry, mcpServers, r.Form["tool"])
 	if err != nil {
 		renderError(http.StatusBadRequest, "Tool selection is invalid.")
 		return messageRequest{}, false
 	}
-	return messageRequest{chat: chat, chatID: chatID, model: model, selected: selected}, true
+	builtinNames := make([]string, 0, len(selectedNames))
+	mcpNames := make([]string, 0, len(selectedNames))
+	for _, name := range selectedNames {
+		if _, ok := kritui_db.ParseMCPServerCapability(name); ok {
+			mcpNames = append(mcpNames, name)
+		} else {
+			builtinNames = append(builtinNames, name)
+		}
+	}
+	selected, err := registry.Select(builtinNames...)
+	if err != nil {
+		renderError(http.StatusBadRequest, "Tool selection is invalid.")
+		return messageRequest{}, false
+	}
+	return messageRequest{
+		chat:      chat,
+		chatID:    chatID,
+		model:     model,
+		selected:  selected,
+		toolNames: selectedNames,
+		mcpTools:  mcpNames,
+	}, true
 }
 
 // persistUserMessage resolves submitted prompt-append IDs against the current
@@ -571,6 +667,9 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	}
 	defer tx.Rollback()
 
+	if err := validateMessageMCPTools(ctx, tx, tools); err != nil {
+		return persistedUserMessage{}, err
+	}
 	selectedAppends, err := selectMessageAppends(ctx, tx, message, appendIDs)
 	if err != nil {
 		return persistedUserMessage{}, err
@@ -613,6 +712,9 @@ func editUserMessage(ctx context.Context, database *sql.DB, chatID, messageID in
 	}
 	defer tx.Rollback()
 
+	if err := validateMessageMCPTools(ctx, tx, tools); err != nil {
+		return err
+	}
 	selectedAppends, err := selectMessageAppends(ctx, tx, message, appendIDs)
 	if err != nil {
 		return err
@@ -629,6 +731,22 @@ func editUserMessage(ctx context.Context, database *sql.DB, chatID, messageID in
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit message edit: %w", err)
+	}
+	return nil
+}
+
+func validateMessageMCPTools(ctx context.Context, database *sql.Tx, names []string) error {
+	mcpNames := make([]string, 0, len(names))
+	for _, name := range names {
+		if _, ok := kritui_db.ParseMCPServerCapability(name); ok {
+			mcpNames = append(mcpNames, name)
+		}
+	}
+	if len(mcpNames) == 0 {
+		return nil
+	}
+	if _, err := kritui_db.GetMCPServerConfigs(ctx, database, mcpNames); err != nil {
+		return fmt.Errorf("%w: %v", errInvalidToolSelection, err)
 	}
 	return nil
 }

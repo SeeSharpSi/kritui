@@ -140,6 +140,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			Tools:               toolRegistry.Names(),
 			EnabledTools:        enabledTools,
 			DefaultTools:        renderSettings.defaultTools,
+			MCPServers:          renderSettings.mcpServers,
 			PromptAppends:       renderSettings.promptAppends,
 			NtfySettings:        renderSettings.ntfySettings,
 			EnabledAppendIDs:    enabledAppendIDs,
@@ -165,6 +166,7 @@ type homeRenderSettings struct {
 	defaultModel  string
 	maxToolRounds int
 	defaultTools  []string
+	mcpServers    []kritui_db.MCPServer
 	ntfySettings  kritui_db.NtfySettings
 	theme         themes.Theme
 }
@@ -198,6 +200,10 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 			log.Printf("get default tools: %v", err)
 			return homeRenderSettings{}, fmt.Errorf("load default tools: %w", err)
 		}
+	}
+	if settings.mcpServers, err = kritui_db.GetMCPServers(ctx, database); err != nil {
+		log.Printf("get MCP servers: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load MCP servers: %w", err)
 	}
 	if settings.ntfySettings, err = kritui_db.GetNtfySettings(ctx, database); err != nil {
 		log.Printf("get ntfy settings: %v", err)
@@ -298,6 +304,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.PromptAppends = promptAppends
+		mcpServers, err := kritui_db.GetMCPServers(r.Context(), database)
+		if err != nil {
+			log.Printf("get MCP servers: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.MCPServers = mcpServers
 		ntfySettings, err := kritui_db.GetNtfySettings(r.Context(), database)
 		if err != nil {
 			log.Printf("get ntfy settings: %v", err)
@@ -322,9 +335,9 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				render(http.StatusBadRequest, "Invalid settings form.")
 				return
 			}
+
 			submittedModel := strings.TrimSpace(r.FormValue("model"))
 			submittedRounds, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("max_tool_rounds")))
-			submittedTools, submittedToolsErr := selectedDefaultTools(registry, r.Form["default_tool"])
 			submittedTheme := strings.TrimSpace(r.FormValue("theme"))
 			actionTheme := page.SelectedTheme
 			themeUnknown := false
@@ -335,6 +348,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					themeUnknown = true
 				}
 			}
+
 			ntfySubmitted := r.FormValue("ntfy_form") == "1"
 			ntfyAPIKey := ""
 			clearNtfyAPIKey := false
@@ -345,6 +359,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				clearNtfyAPIKey = r.FormValue("clear_ntfy_api_key") == "1"
 				page.ClearNtfyAPIKey = clearNtfyAPIKey
 			}
+
 			submittedAppends := page.PromptAppends
 			if r.FormValue("append_form") == "1" {
 				submittedAppends, err = promptAppendsFromForm(r)
@@ -355,6 +370,24 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					return
 				}
 			}
+
+			mcpSubmitted := r.FormValue("mcp_form") == "1"
+			submittedMCPServers := page.MCPServers
+			var submittedMCPUpdates []kritui_db.MCPServerUpdate
+			if mcpSubmitted {
+				submittedMCPUpdates, err = mcpServersFromForm(r, page.MCPServers)
+				submittedMCPServers = mcpServersFromUpdates(submittedMCPUpdates)
+				page.MCPServers = submittedMCPServers
+				page.MCPServersOpen = true
+				page.ClearMCPAuthorizationIDs = mcpAuthorizationClearIDs(submittedMCPUpdates)
+				if err != nil {
+					page.SelectedModel = submittedModel
+					render(http.StatusBadRequest, fmt.Sprintf("MCP server form is invalid: %v.", err))
+					return
+				}
+			}
+
+			submittedTools, submittedToolsErr := selectedDefaultTools(registry, submittedMCPServers, r.Form["default_tool"])
 			actionModel, actionRounds, actionTools := page.SelectedModel, page.MaxToolRounds, page.DefaultTools
 			if submittedModel != "" {
 				actionModel = submittedModel
@@ -365,28 +398,68 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			if submittedToolsErr == nil {
 				actionTools = submittedTools
 			}
+			actionPage := func() templates.SettingsPanelData {
+				value := page
+				value.SelectedModel = actionModel
+				value.MaxToolRounds = actionRounds
+				value.DefaultTools = actionTools
+				value.SelectedTheme = actionTheme
+				value.PromptAppends = submittedAppends
+				value.MCPServers = submittedMCPServers
+				return value
+			}
+
+			if r.FormValue("mcp_action") == "add" {
+				id, err := newMCPServerID()
+				if err != nil {
+					log.Printf("create MCP server ID: %v", err)
+					value := actionPage()
+					value.ErrorMessage = "Failed to add MCP server."
+					value.MCPServersOpen = true
+					renderSettingsPage(w, r, http.StatusInternalServerError, value)
+					return
+				}
+				submittedMCPServers = append(submittedMCPServers, kritui_db.MCPServer{ID: id, Name: "new server"})
+				value := actionPage()
+				value.MCPServers = submittedMCPServers
+				value.MCPServersOpen = true
+				renderSettingsPage(w, r, http.StatusOK, value)
+				return
+			}
+			if removeID := strings.TrimSpace(r.FormValue("remove_mcp_server")); removeID != "" {
+				if err := kritui_db.ValidateMCPServerID(removeID); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("MCP server remove is invalid: %v.", err))
+					return
+				}
+				filtered := submittedMCPServers[:0]
+				for _, server := range submittedMCPServers {
+					if server.ID != removeID {
+						filtered = append(filtered, server)
+					}
+				}
+				removedCapability := kritui_db.MCPServerCapability(removeID)
+				actionTools = slices.DeleteFunc(actionTools, func(name string) bool { return name == removedCapability })
+				value := actionPage()
+				value.DefaultTools = actionTools
+				value.MCPServers = filtered
+				value.MCPServersOpen = true
+				renderSettingsPage(w, r, http.StatusOK, value)
+				return
+			}
+
 			if r.FormValue("append_action") == "add" {
 				id, err := newPromptAppendID()
 				if err != nil {
 					log.Printf("create prompt append ID: %v", err)
-					actionPage := page
-					actionPage.ErrorMessage = "Failed to add prompt append."
-					actionPage.SelectedModel = actionModel
-					actionPage.MaxToolRounds = actionRounds
-					actionPage.DefaultTools = actionTools
-					actionPage.SelectedTheme = actionTheme
-					actionPage.PromptAppends = submittedAppends
-					renderSettingsPage(w, r, http.StatusInternalServerError, actionPage)
+					value := actionPage()
+					value.ErrorMessage = "Failed to add prompt append."
+					renderSettingsPage(w, r, http.StatusInternalServerError, value)
 					return
 				}
 				submittedAppends = append(submittedAppends, kritui_db.PromptAppend{ID: id, Name: "new append"})
-				actionPage := page
-				actionPage.SelectedModel = actionModel
-				actionPage.MaxToolRounds = actionRounds
-				actionPage.DefaultTools = actionTools
-				actionPage.SelectedTheme = actionTheme
-				actionPage.PromptAppends = submittedAppends
-				renderSettingsPage(w, r, http.StatusOK, actionPage)
+				value := actionPage()
+				value.PromptAppends = submittedAppends
+				renderSettingsPage(w, r, http.StatusOK, value)
 				return
 			}
 			if removeID := strings.TrimSpace(r.FormValue("remove_append")); removeID != "" {
@@ -400,17 +473,18 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 						filtered = append(filtered, value)
 					}
 				}
-				actionPage := page
-				actionPage.SelectedModel = actionModel
-				actionPage.MaxToolRounds = actionRounds
-				actionPage.DefaultTools = actionTools
-				actionPage.SelectedTheme = actionTheme
-				actionPage.PromptAppends = filtered
-				renderSettingsPage(w, r, http.StatusOK, actionPage)
+				value := actionPage()
+				value.PromptAppends = filtered
+				renderSettingsPage(w, r, http.StatusOK, value)
 				return
 			}
+
 			page.SelectedModel = submittedModel
 			page.SelectedTheme = actionTheme
+			page.MaxToolRounds = submittedRounds
+			page.DefaultTools = submittedTools
+			page.PromptAppends = submittedAppends
+			page.MCPServers = submittedMCPServers
 			if page.SelectedModel == "" {
 				render(http.StatusBadRequest, "A model is required.")
 				return
@@ -427,17 +501,19 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				render(http.StatusBadRequest, "Tool selection is invalid.")
 				return
 			}
-			page.DefaultTools = submittedTools
 			if r.FormValue("append_form") == "1" {
-				page.MaxToolRounds = submittedRounds
-				page.PromptAppends = submittedAppends
 				if err := kritui_db.ValidatePromptAppends(submittedAppends); err != nil {
 					render(http.StatusBadRequest, fmt.Sprintf("Prompt append settings are invalid: %v.", err))
 					return
 				}
 			}
-			page.MaxToolRounds = submittedRounds
-			page.PromptAppends = submittedAppends
+			if mcpSubmitted {
+				if err := kritui_db.ValidateMCPServers(submittedMCPUpdates); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("MCP server settings are invalid: %v.", err))
+					return
+				}
+			}
+
 			var ntfyUpdate *kritui_db.NtfySettingsUpdate
 			if ntfySubmitted {
 				endpoint := page.NtfySettings.Endpoint
@@ -460,20 +536,21 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 						return
 					}
 				}
-				update := kritui_db.NtfySettingsUpdate{Endpoint: endpoint, Topic: topic}
+				value := kritui_db.NtfySettingsUpdate{Endpoint: endpoint, Topic: topic}
 				switch {
 				case clearNtfyAPIKey:
-					update.APIKeyChange = kritui_db.NtfyClearAPIKey
+					value.APIKeyChange = kritui_db.NtfyClearAPIKey
 					page.NtfySettings.APIKeyConfigured = false
 				case ntfyAPIKey != "":
-					update.APIKeyChange = kritui_db.NtfyReplaceAPIKey
-					update.APIKeyValue = ntfyAPIKey
+					value.APIKeyChange = kritui_db.NtfyReplaceAPIKey
+					value.APIKeyValue = ntfyAPIKey
 					page.NtfySettings.APIKeyConfigured = true
 				case endpoint == "":
 					page.NtfySettings.APIKeyConfigured = false
 				}
-				ntfyUpdate = &update
+				ntfyUpdate = &value
 			}
+
 			update := kritui_db.SettingsUpdate{
 				Model:         page.SelectedModel,
 				MaxToolRounds: page.MaxToolRounds,
@@ -484,15 +561,36 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			if r.FormValue("append_form") == "1" {
 				update.PromptAppends = submittedAppends
 			}
+			if mcpSubmitted {
+				update.MCPServers = submittedMCPUpdates
+			}
 			if err := kritui_db.SaveSettings(r.Context(), database, update); err != nil {
 				log.Printf("save settings: %v", err)
 				render(http.StatusInternalServerError, "Failed to save settings.")
 				return
 			}
+			if mcpSubmitted {
+				page.MCPServers = mcpServersAfterSave(submittedMCPUpdates)
+				page.ClearMCPAuthorizationIDs = nil
+			}
 			page.Saved = true
 		}
 
 		if page.Saved && r.Header.Get("HX-Request") == "true" {
+			if r.FormValue("tool_selection") == "1" {
+				page.EnabledToolNames, _ = selectedDefaultTools(registry, page.MCPServers, r.Form["tool"])
+			} else {
+				chatID, _ := positiveID(page.ChatID)
+				page.EnabledToolNames, err = kritui_db.GetChatTools(r.Context(), database, chatID)
+				if err != nil {
+					log.Printf("get chat tools after settings save: %v", err)
+					failurePage := page
+					failurePage.Saved = false
+					failurePage.ErrorMessage = "Failed to load chat tools."
+					renderSettingsPage(w, r, http.StatusInternalServerError, failurePage)
+					return
+				}
+			}
 			if r.FormValue("append_selection") == "1" {
 				available := make(map[string]struct{}, len(page.PromptAppends))
 				for _, value := range page.PromptAppends {
@@ -527,8 +625,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 }
 
 // selectedDefaultTools returns submitted capability names after validating
-// them against the registry. Unknown capabilities return an error.
-func selectedDefaultTools(registry *tools.Registry, names []string) ([]string, error) {
+// them against built-in tools and configured MCP servers. Unknown capabilities
+// return an error.
+func selectedDefaultTools(registry *tools.Registry, mcpServers []kritui_db.MCPServer, names []string) ([]string, error) {
+	availableMCP := make(map[string]struct{}, len(mcpServers))
+	for _, server := range mcpServers {
+		availableMCP[kritui_db.MCPServerCapability(server.ID)] = struct{}{}
+	}
 	selected := make([]string, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
@@ -536,7 +639,8 @@ func selectedDefaultTools(registry *tools.Registry, names []string) ([]string, e
 		if name == "" {
 			continue
 		}
-		if !registry.HasCapability(name) {
+		_, isMCPServer := availableMCP[name]
+		if !registry.HasCapability(name) && !isMCPServer {
 			return nil, fmt.Errorf("unknown tool %q", name)
 		}
 		if _, duplicate := seen[name]; duplicate {
@@ -728,6 +832,105 @@ func newPromptAppendID() (string, error) {
 	return "append-" + hex.EncodeToString(value[:]), nil
 }
 
+func mcpServersFromForm(r *http.Request, stored []kritui_db.MCPServer) ([]kritui_db.MCPServerUpdate, error) {
+	storedByID := make(map[string]kritui_db.MCPServer, len(stored))
+	for _, server := range stored {
+		storedByID[server.ID] = server
+	}
+	clearIDs := make(map[string]struct{}, len(r.Form["clear_mcp_authorization"]))
+	for _, id := range r.Form["clear_mcp_authorization"] {
+		id = strings.TrimSpace(id)
+		if err := kritui_db.ValidateMCPServerID(id); err != nil {
+			return nil, err
+		}
+		clearIDs[id] = struct{}{}
+	}
+
+	ids := r.Form["mcp_id"]
+	updates := make([]kritui_db.MCPServerUpdate, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if err := kritui_db.ValidateMCPServerID(id); err != nil {
+			return updates, err
+		}
+		if _, ok := seen[id]; ok {
+			return updates, fmt.Errorf("MCP server %q is duplicated", id)
+		}
+		seen[id] = struct{}{}
+		server := kritui_db.MCPServer{
+			ID:   id,
+			Name: r.FormValue("mcp_name_" + id),
+			URL:  r.FormValue("mcp_url_" + id),
+		}
+		if previous, ok := storedByID[id]; ok {
+			server.AuthorizationConfigured = previous.AuthorizationConfigured
+		}
+		value := strings.TrimSpace(r.FormValue("mcp_authorization_" + id))
+		_, clear := clearIDs[id]
+		update := kritui_db.MCPServerUpdate{Server: server}
+		switch {
+		case clear && value != "":
+			updates = append(updates, update)
+			return updates, fmt.Errorf("choose replacing or clearing authorization token for %q, not both", server.Name)
+		case clear:
+			update.AuthorizationChange = kritui_db.MCPClearAuthorization
+		case value != "":
+			update.AuthorizationChange = kritui_db.MCPReplaceAuthorization
+			update.AuthorizationValue = value
+			update.Server.AuthorizationConfigured = true
+		}
+		updates = append(updates, update)
+	}
+	for id := range clearIDs {
+		if _, ok := seen[id]; !ok {
+			return updates, fmt.Errorf("unknown MCP server authorization clear %q", id)
+		}
+	}
+	return updates, nil
+}
+
+func mcpServersFromUpdates(updates []kritui_db.MCPServerUpdate) []kritui_db.MCPServer {
+	servers := make([]kritui_db.MCPServer, 0, len(updates))
+	for _, update := range updates {
+		servers = append(servers, update.Server)
+	}
+	return servers
+}
+
+func mcpAuthorizationClearIDs(updates []kritui_db.MCPServerUpdate) []string {
+	ids := make([]string, 0, len(updates))
+	for _, update := range updates {
+		if update.AuthorizationChange == kritui_db.MCPClearAuthorization {
+			ids = append(ids, update.Server.ID)
+		}
+	}
+	return ids
+}
+
+func mcpServersAfterSave(updates []kritui_db.MCPServerUpdate) []kritui_db.MCPServer {
+	servers := make([]kritui_db.MCPServer, 0, len(updates))
+	for _, update := range updates {
+		server := update.Server
+		switch update.AuthorizationChange {
+		case kritui_db.MCPClearAuthorization:
+			server.AuthorizationConfigured = false
+		case kritui_db.MCPReplaceAuthorization:
+			server.AuthorizationConfigured = true
+		}
+		servers = append(servers, server)
+	}
+	return servers
+}
+
+func newMCPServerID() (string, error) {
+	var value [8]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	return "mcp-" + hex.EncodeToString(value[:]), nil
+}
+
 func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data templates.SettingsPanelData) {
 	data.Visible = true
 	data.Models, data.SelectedModel = availableModels(r, data.SelectedModel)
@@ -737,6 +940,10 @@ func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data
 		return
 	}
 	if data.Saved && r.Header.Get("HX-Request") == "true" {
+		if err := templates.ToolPicker(data.ToolNames, data.MCPServers, data.EnabledToolNames, true).Render(r.Context(), &page); err != nil {
+			log.Printf("render tools: %v", err)
+			return
+		}
 		if err := templates.AppendsPicker(data.PromptAppends, data.EnabledAppendIDs, true).Render(r.Context(), &page); err != nil {
 			log.Printf("render prompt appends: %v", err)
 			return

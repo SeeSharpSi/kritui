@@ -497,3 +497,198 @@ func TestThemeColumnRejectsInvalidValues(t *testing.T) {
 		t.Errorf("stored theme = %q, want og", stored)
 	}
 }
+
+func TestSaveSettingsStoresMCPServersAndPrunesRemovedCapabilities(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	const keptID = "mcp-0123456789abcdef"
+	const removedID = "mcp-fedcba9876543210"
+	const addedID = "mcp-0000000000000000"
+	removedCapability := MCPServerCapability(removedID)
+
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "old-model",
+		MaxToolRounds: 3,
+		DefaultTools:  []string{"webfetch", removedCapability},
+		MCPServers: []MCPServerUpdate{
+			{Server: MCPServer{ID: keptID, Name: "kept", URL: "https://kept.example.com"}, AuthorizationChange: MCPReplaceAuthorization, AuthorizationValue: "kept-token"},
+			{Server: MCPServer{ID: removedID, Name: "removed", URL: "https://removed.example.com"}},
+		},
+	}); err != nil {
+		t.Fatalf("seed SaveSettings() error: %v", err)
+	}
+	chatID := insertNamedChat(t, database, "mcp prune chat", []string{removedCapability, "webfetch"}, nil)
+
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "new-model",
+		MaxToolRounds: 5,
+		DefaultTools:  []string{"webfetch", removedCapability},
+		MCPServers: []MCPServerUpdate{
+			{Server: MCPServer{ID: keptID, Name: "kept", URL: "https://kept.example.com"}},
+			{Server: MCPServer{ID: addedID, Name: "added", URL: "https://added.example.com"}, AuthorizationChange: MCPReplaceAuthorization, AuthorizationValue: "added-token"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveSettings() error: %v", err)
+	}
+
+	servers, err := GetMCPServers(ctx, database)
+	if err != nil {
+		t.Fatalf("GetMCPServers() error: %v", err)
+	}
+	want := []MCPServer{
+		{ID: keptID, Name: "kept", URL: "https://kept.example.com", AuthorizationConfigured: true},
+		{ID: addedID, Name: "added", URL: "https://added.example.com", AuthorizationConfigured: true},
+	}
+	if !slices.Equal(servers, want) {
+		t.Errorf("GetMCPServers() = %#v, want %#v", servers, want)
+	}
+	tokens := storedMCPServerTokens(t, database)
+	if tokens[keptID] != "kept-token" {
+		t.Errorf("kept server token = %q, want preserved kept-token", tokens[keptID])
+	}
+	if tokens[addedID] != "added-token" {
+		t.Errorf("added server token = %q, want added-token", tokens[addedID])
+	}
+	if _, ok := tokens[removedID]; ok {
+		t.Errorf("removed server token = %q, want no row", tokens[removedID])
+	}
+	if got, want := storedDefaultToolNames(t, database), []string{"webfetch"}; !slices.Equal(got, want) {
+		t.Errorf("default tools after save = %v, want %v", got, want)
+	}
+	if got, want := storedChatToolNames(t, database, chatID), []string{"webfetch"}; !slices.Equal(got, want) {
+		t.Errorf("chat tools after save = %v, want %v", got, want)
+	}
+}
+
+func TestSaveSettingsWithNilMCPServersPreservesServersAndTokens(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "old-model",
+		MaxToolRounds: 3,
+		DefaultTools:  []string{"git"},
+		MCPServers: []MCPServerUpdate{
+			{Server: MCPServer{ID: "mcp-0123456789abcdef", Name: "docs", URL: "https://docs.example.com"}, AuthorizationChange: MCPReplaceAuthorization, AuthorizationValue: "token-a"},
+			{Server: MCPServer{ID: "mcp-fedcba9876543210", Name: "open", URL: "https://open.example.com"}},
+		},
+	}); err != nil {
+		t.Fatalf("seed SaveSettings() error: %v", err)
+	}
+	wantServers, err := GetMCPServers(ctx, database)
+	if err != nil {
+		t.Fatalf("GetMCPServers() after seed: %v", err)
+	}
+	wantTokens := storedMCPServerTokens(t, database)
+
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "new-model",
+		MaxToolRounds: 9,
+		DefaultTools:  []string{"webfetch"},
+	}); err != nil {
+		t.Fatalf("SaveSettings() error: %v", err)
+	}
+
+	if got, err := GetMCPServers(ctx, database); err != nil {
+		t.Fatalf("GetMCPServers() error: %v", err)
+	} else if !slices.Equal(got, wantServers) {
+		t.Errorf("mcp servers after nil save = %#v, want %#v", got, wantServers)
+	}
+	if got := storedMCPServerTokens(t, database); !slices.Equal(toSortedPairs(got), toSortedPairs(wantTokens)) {
+		t.Errorf("mcp tokens after nil save = %v, want %v", got, wantTokens)
+	}
+}
+
+func TestSaveSettingsRollsBackWhenMCPServerInsertFails(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	const failingID = "mcp-ffffffffffffffff"
+	oldNtfy := NtfySettingsUpdate{
+		Endpoint:     "https://ntfy.example/old",
+		Topic:        "old-topic",
+		APIKeyChange: NtfyReplaceAPIKey,
+		APIKeyValue:  "old-secret",
+	}
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "old-model",
+		MaxToolRounds: 3,
+		DefaultTools:  []string{"git"},
+		MCPServers: []MCPServerUpdate{
+			{Server: MCPServer{ID: "mcp-0123456789abcdef", Name: "docs", URL: "https://docs.example.com"}, AuthorizationChange: MCPReplaceAuthorization, AuthorizationValue: "token-a"},
+			{Server: MCPServer{ID: "mcp-fedcba9876543210", Name: "open", URL: "https://open.example.com"}},
+		},
+		Ntfy: &oldNtfy,
+	}); err != nil {
+		t.Fatalf("seed SaveSettings() error: %v", err)
+	}
+
+	if _, err := database.Exec(`
+		CREATE TRIGGER fail_mcp_servers_insert
+		BEFORE INSERT ON mcp_servers
+		WHEN NEW.id = 'mcp-ffffffffffffffff'
+		BEGIN
+			SELECT RAISE(ABORT, 'injected mcp servers failure');
+		END;
+	`); err != nil {
+		t.Fatalf("inject failure trigger: %v", err)
+	}
+	newNtfy := NtfySettingsUpdate{
+		Endpoint:     "https://ntfy.example/new",
+		Topic:        "new-topic",
+		APIKeyChange: NtfyReplaceAPIKey,
+		APIKeyValue:  "new-secret",
+	}
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "new-model",
+		MaxToolRounds: 9,
+		DefaultTools:  []string{"webfetch"},
+		MCPServers: []MCPServerUpdate{
+			{Server: MCPServer{ID: failingID, Name: "failing", URL: "https://failing.example.com"}, AuthorizationChange: MCPReplaceAuthorization, AuthorizationValue: "token-b"},
+		},
+		Ntfy: &newNtfy,
+	}); err == nil {
+		t.Fatal("SaveSettings() error = nil, want injected mcp servers failure")
+	}
+
+	if got, err := GetDefaultModel(ctx, database, "fallback"); err != nil {
+		t.Fatalf("GetDefaultModel() error: %v", err)
+	} else if got != "old-model" {
+		t.Errorf("default model after rollback = %q, want old-model", got)
+	}
+	if got, err := GetMaxToolRounds(ctx, database, 1); err != nil {
+		t.Fatalf("GetMaxToolRounds() error: %v", err)
+	} else if got != 3 {
+		t.Errorf("max tool rounds after rollback = %d, want 3", got)
+	}
+	if got, err := GetDefaultEnabledTools(ctx, database, nil); err != nil {
+		t.Fatalf("GetDefaultEnabledTools() error: %v", err)
+	} else if !slices.Equal(got, []string{"git"}) {
+		t.Errorf("default enabled tools after rollback = %v, want [git]", got)
+	}
+	if got, err := GetNtfyPublishConfig(ctx, database); err != nil {
+		t.Fatalf("GetNtfyPublishConfig() error: %v", err)
+	} else if got.Endpoint != oldNtfy.Endpoint || got.Topic != oldNtfy.Topic || got.APIKey != oldNtfy.APIKeyValue {
+		t.Errorf("ntfy after rollback = %#v, want old config", got)
+	}
+	wantServers := []MCPServer{
+		{ID: "mcp-0123456789abcdef", Name: "docs", URL: "https://docs.example.com", AuthorizationConfigured: true},
+		{ID: "mcp-fedcba9876543210", Name: "open", URL: "https://open.example.com"},
+	}
+	if got, err := GetMCPServers(ctx, database); err != nil {
+		t.Fatalf("GetMCPServers() error: %v", err)
+	} else if !slices.Equal(got, wantServers) {
+		t.Errorf("mcp servers after rollback = %#v, want %#v", got, wantServers)
+	}
+	wantTokens := map[string]string{"mcp-0123456789abcdef": "token-a"}
+	if got := storedMCPServerTokens(t, database); !slices.Equal(toSortedPairs(got), toSortedPairs(wantTokens)) {
+		t.Errorf("mcp tokens after rollback = %v, want %v", got, wantTokens)
+	}
+}
+
+func toSortedPairs(tokens map[string]string) []string {
+	pairs := make([]string, 0, len(tokens))
+	for id, token := range tokens {
+		pairs = append(pairs, id+"="+token)
+	}
+	slices.Sort(pairs)
+	return pairs
+}

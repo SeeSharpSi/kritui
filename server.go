@@ -416,6 +416,16 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	},
 	migrateSettingsThemeRosePineDark,
 	migrateSettingsThemeOG,
+	func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mcp_servers (
+			id TEXT PRIMARY KEY CHECK (id <> ''),
+			position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+			name TEXT NOT NULL CHECK (name <> ''),
+			url TEXT NOT NULL CHECK (url <> ''),
+			authorization_token TEXT
+		) STRICT`)
+		return err
+	},
 }
 
 // rebuildSettingsThemeConstraint rebuilds the settings table so its theme

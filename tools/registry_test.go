@@ -317,6 +317,117 @@ func TestSelectCapabilityEnablesGroupedTools(t *testing.T) {
 	}
 }
 
+func TestWithAppendsToolsWithoutMutatingReceiver(t *testing.T) {
+	appended := newStubTool("appended")
+	appended.execute = func(_ context.Context, arguments json.RawMessage) (string, error) {
+		return string(arguments), nil
+	}
+
+	registry, err := NewRegistry(newStubTool("base"))
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	before := registry.Names()
+
+	combined, err := registry.With(appended)
+	if err != nil {
+		t.Fatalf("With() error: %v", err)
+	}
+	if got := combined.Names(); !reflect.DeepEqual(got, []string{"base", "appended"}) {
+		t.Fatalf("combined Names() = %v, want [base appended]", got)
+	}
+	if got := registry.Names(); !reflect.DeepEqual(got, before) {
+		t.Fatalf("receiver Names() = %v, want unchanged %v", got, before)
+	}
+	if _, ok := registry.Lookup("appended"); ok {
+		t.Fatal("receiver contains appended tool")
+	}
+
+	result, err := combined.Execute(context.Background(), "appended", json.RawMessage(`{"ok":true}`))
+	if err != nil || result != `{"ok":true}` {
+		t.Fatalf("Execute(appended) = %q, error: %v", result, err)
+	}
+	selected, err := combined.Select("appended")
+	if err != nil {
+		t.Fatalf("Select(appended) error: %v", err)
+	}
+	if got := selected.Names(); !reflect.DeepEqual(got, []string{"appended"}) {
+		t.Fatalf("selected Names() = %v, want [appended]", got)
+	}
+}
+
+func TestWithFromSelectedRegistry(t *testing.T) {
+	registry, err := NewRegistry(newStubTool("first"), newStubTool("second"))
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	selected, err := registry.Select("second")
+	if err != nil {
+		t.Fatalf("Select() error: %v", err)
+	}
+
+	combined, err := selected.With(newStubTool("third"))
+	if err != nil {
+		t.Fatalf("With() error: %v", err)
+	}
+	if got := combined.Names(); !reflect.DeepEqual(got, []string{"second", "third"}) {
+		t.Fatalf("combined Names() = %v, want [second third]", got)
+	}
+	if _, ok := combined.Lookup("first"); ok {
+		t.Fatal("combined registry contains unselected tool first")
+	}
+	if got := selected.Names(); !reflect.DeepEqual(got, []string{"second"}) {
+		t.Fatalf("selected Names() = %v, want unchanged [second]", got)
+	}
+}
+
+func TestWithRejectsConflictsWithoutMutatingReceiver(t *testing.T) {
+	registry, err := NewRegistry(newStubTool("search"))
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	before := registry.Names()
+
+	if _, err := registry.With(newGroupedTool("fetch", "search")); err == nil || !strings.Contains(err.Error(), "may be shared only by CapabilityTool") {
+		t.Fatalf("With(ordinary name, grouped capability) error = %v, want capability collision", err)
+	}
+	if _, err := registry.With(newStubTool("search")); err == nil || !strings.Contains(err.Error(), "duplicate tool name") {
+		t.Fatalf("With(duplicate) error = %v, want duplicate tool name", err)
+	}
+	if got := registry.Names(); !reflect.DeepEqual(got, before) {
+		t.Fatalf("receiver Names() = %v, want unchanged %v", got, before)
+	}
+
+	grouped, err := NewRegistry(newGroupedTool("search_alpha", "search"))
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	if _, err := grouped.With(newStubTool("search")); err == nil || !strings.Contains(err.Error(), "may be shared only by CapabilityTool") {
+		t.Fatalf("With(grouped capability, ordinary name) error = %v, want capability collision", err)
+	}
+}
+
+func TestWithNoArgumentsReturnsEquivalentRegistry(t *testing.T) {
+	registry, err := NewRegistry(newStubTool("first"), newGroupedTool("search_alpha", "search"))
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+
+	same, err := registry.With()
+	if err != nil {
+		t.Fatalf("With() error: %v", err)
+	}
+	if same == registry {
+		t.Fatal("With() returned the receiver")
+	}
+	if got := same.Names(); !reflect.DeepEqual(got, registry.Names()) {
+		t.Fatalf("Names() = %v, want %v", got, registry.Names())
+	}
+	if got := same.Definitions(); !reflect.DeepEqual(got, registry.Definitions()) {
+		t.Fatalf("Definitions() = %v, want %v", got, registry.Definitions())
+	}
+}
+
 func toolNames(definitions []Definition) []string {
 	names := make([]string, 0, len(definitions))
 	for _, definition := range definitions {

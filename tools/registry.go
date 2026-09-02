@@ -139,6 +139,17 @@ func (r *Registry) Definitions() []Definition {
 	return definitions
 }
 
+// With returns a new registry containing the receiver's tools followed by
+// toolList. The receiver remains unchanged.
+func (r *Registry) With(toolList ...Tool) (*Registry, error) {
+	combined := make([]Tool, 0, len(r.order)+len(toolList))
+	for _, name := range r.order {
+		combined = append(combined, r.byName[name].tool)
+	}
+	combined = append(combined, toolList...)
+	return NewRegistry(combined...)
+}
+
 // Lookup returns a registered tool by its executable definition name.
 func (r *Registry) Lookup(name string) (Tool, bool) {
 	registered, ok := r.byName[name]

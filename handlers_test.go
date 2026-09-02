@@ -408,10 +408,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=6`,
-		`/static/hx-sse.js?v=6`,
-		`/static/app.js?v=6`,
-		`/static/styles.css?v=6`,
+		`/static/htmx.min.js?v=8`,
+		`/static/hx-sse.js?v=8`,
+		`/static/app.js?v=8`,
+		`/static/styles.css?v=8`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -524,7 +524,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 		`class="panel-page settings-page"`,
 		`hx-post="/settings?chat=8"`,
 		`hx-target="#settings-page"`,
-		`hx-include="#append-picker input[name='append']:checked"`,
+		`hx-include="#append-picker input[name='append']:checked, #tool-picker input[name='tool']:checked"`,
 		`name="append_selection" value="1"`,
 		`id="history-page"`,
 		`class="panel-page history-page"`,
@@ -559,6 +559,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, string(script), `option.dataset.commandRequiresArguments === 'true'`)
 	requireContains(t, string(script), `input.form?.requestSubmit()`)
 	requireContains(t, string(script), `if (!event.detail?.preserveInput)`)
+	requireContains(t, string(script), `input[name^="mcp_authorization_"]`)
 	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger", "htmx:oobBeforeSwap", "htmx:oobAfterSwap", "htmx:configRequest")
 }
 
@@ -2581,6 +2582,339 @@ func TestHomeHandlerAllocatesChatWithoutDefaultPromptAppendsWhenUnset(t *testing
 		`name="append" value="link-check" form="message-form" checked`,
 		`name="append" value="research" form="message-form" checked`,
 	)
+}
+
+func TestSettingsHandlerStoresPreservesAndClearsMCPSecret(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	handler := settingsHandler(database, newTestToolRegistry(t))
+	const (
+		serverID   = "mcp-0123456789abcdef"
+		token      = "secret-token"
+		configured = `placeholder="Stored token unchanged when blank"`
+		clearInput = `name="clear_mcp_authorization" value="mcp-0123456789abcdef"`
+	)
+	storedToken := func() sql.NullString {
+		t.Helper()
+		var value sql.NullString
+		if err := database.QueryRow(`SELECT authorization_token FROM mcp_servers WHERE id = ?`, serverID).Scan(&value); err != nil {
+			t.Fatalf("query stored MCP token: %v", err)
+		}
+		return value
+	}
+
+	response := postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":                         {"saved-model"},
+		"max_tool_rounds":               {"16"},
+		"mcp_form":                      {"1"},
+		"mcp_id":                        {serverID},
+		"mcp_name_" + serverID:          {"Example"},
+		"mcp_url_" + serverID:           {"https://mcp.example"},
+		"mcp_authorization_" + serverID: {token},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("store status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body := response.Body.String()
+	requireContains(t, body,
+		"Settings saved.",
+		`>Example</legend>`,
+		`name="mcp_id" value="`+serverID+`"`,
+		configured,
+		clearInput,
+	)
+	requireNotContains(t, body, token)
+	if got := storedToken(); !got.Valid || got.String != token {
+		t.Errorf("stored token after save = %#v, want %q", got, token)
+	}
+
+	response = postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":                         {"saved-model"},
+		"max_tool_rounds":               {"16"},
+		"mcp_form":                      {"1"},
+		"mcp_id":                        {serverID},
+		"mcp_name_" + serverID:          {"Example"},
+		"mcp_url_" + serverID:           {"https://mcp.example"},
+		"mcp_authorization_" + serverID: {""},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("preserve status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body = response.Body.String()
+	requireContains(t, body, configured, clearInput)
+	requireNotContains(t, body, token)
+	if got := storedToken(); !got.Valid || got.String != token {
+		t.Errorf("stored token after blank resave = %#v, want preserved %q", got, token)
+	}
+
+	response = postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":                   {"saved-model"},
+		"max_tool_rounds":         {"16"},
+		"mcp_form":                {"1"},
+		"mcp_id":                  {serverID},
+		"mcp_name_" + serverID:    {"Example"},
+		"mcp_url_" + serverID:     {"https://mcp.example"},
+		"clear_mcp_authorization": {serverID},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body = response.Body.String()
+	requireNotContains(t, body, token, configured, clearInput)
+	if got := storedToken(); got.Valid {
+		t.Errorf("stored token after clear = %#v, want NULL", got)
+	}
+}
+
+func TestSettingsHandlerMCPAddPreservesPendingAuthorizationClear(t *testing.T) {
+	database := openTestDatabase(t)
+	const (
+		serverID = "mcp-0123456789abcdef"
+		token    = "secret-token"
+	)
+	if err := kritui_db.SaveSettings(context.Background(), database, kritui_db.SettingsUpdate{
+		Model:         "saved-model",
+		MaxToolRounds: 16,
+		MCPServers: []kritui_db.MCPServerUpdate{{
+			Server:              kritui_db.MCPServer{ID: serverID, Name: "Existing", URL: "https://mcp.example"},
+			AuthorizationChange: kritui_db.MCPReplaceAuthorization,
+			AuthorizationValue:  token,
+		}},
+	}); err != nil {
+		t.Fatalf("seed MCP server: %v", err)
+	}
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":                   {""},
+		"max_tool_rounds":         {"invalid"},
+		"mcp_form":                {"1"},
+		"mcp_id":                  {serverID},
+		"mcp_name_" + serverID:    {"Existing"},
+		"mcp_url_" + serverID:     {"https://mcp.example"},
+		"clear_mcp_authorization": {serverID},
+		"mcp_action":              {"add"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body := response.Body.String()
+	requireContains(t, body,
+		`>Existing</legend>`,
+		`name="clear_mcp_authorization" value="mcp-0123456789abcdef" checked`,
+		">new server</legend>",
+	)
+	requireNotContains(t, body, token)
+	if count := strings.Count(body, `name="mcp_id" value="`); count != 2 {
+		t.Errorf("rendered MCP server count = %d, want existing plus new", count)
+	}
+
+	var count int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM mcp_servers`).Scan(&count); err != nil {
+		t.Fatalf("count mcp servers: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("mcp server count = %d, want 1; add action must not persist", count)
+	}
+	var stored sql.NullString
+	if err := database.QueryRow(`SELECT authorization_token FROM mcp_servers WHERE id = ?`, serverID).Scan(&stored); err != nil {
+		t.Fatalf("query stored MCP token: %v", err)
+	}
+	if !stored.Valid || stored.String != token {
+		t.Errorf("stored token after add action = %#v, want preserved %q", stored, token)
+	}
+}
+
+func TestSettingsHandlerHTMXSaveEmitsToolPickerWithMCPCapability(t *testing.T) {
+	database := openTestDatabase(t)
+	const (
+		serverID   = "mcp-0123456789abcdef"
+		capability = "mcp_server_0123456789abcdef"
+	)
+	if err := kritui_db.SaveSettings(context.Background(), database, kritui_db.SettingsUpdate{
+		Model:         "stored-model",
+		MaxToolRounds: 16,
+		MCPServers: []kritui_db.MCPServerUpdate{{
+			Server: kritui_db.MCPServer{ID: serverID, Name: "Example", URL: "https://mcp.example"},
+		}},
+	}); err != nil {
+		t.Fatalf("seed MCP server: %v", err)
+	}
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+
+	form := url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+		"default_tool":    {"webfetch", capability},
+		"tool_selection":  {"1"},
+		"tool":            {capability, "webfetch"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/settings?chat=8", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("HX-Request", "true")
+	response := httptest.NewRecorder()
+	settingsHandler(database, newTestToolRegistry(t))(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(),
+		"Settings saved.",
+		`id="tool-picker"`,
+		`hx-swap-oob="outerHTML"`,
+		`name="tool" value="webfetch" form="message-form" checked`,
+		`name="tool" value="mcp_server_0123456789abcdef" form="message-form" checked`,
+	)
+	names, err := kritui_db.GetDefaultEnabledTools(context.Background(), database, nil)
+	if err != nil {
+		t.Fatalf("get default tools: %v", err)
+	}
+	if !slices.Equal(names, []string{"webfetch", capability}) {
+		t.Errorf("default tools = %v, want [webfetch %s]", names, capability)
+	}
+}
+
+func TestPersistAndEditUserMessageRejectRemovedMCPCapability(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	const (
+		serverID   = "mcp-0123456789abcdef"
+		capability = "mcp_server_0123456789abcdef"
+	)
+	seedServer := func() {
+		t.Helper()
+		if err := kritui_db.SaveSettings(ctx, database, kritui_db.SettingsUpdate{
+			Model:         "saved-model",
+			MaxToolRounds: 16,
+			MCPServers: []kritui_db.MCPServerUpdate{{
+				Server: kritui_db.MCPServer{ID: serverID, Name: "Example", URL: "https://mcp.example"},
+			}},
+		}); err != nil {
+			t.Fatalf("seed MCP server: %v", err)
+		}
+	}
+	removeServer := func() {
+		t.Helper()
+		if err := kritui_db.SaveSettings(ctx, database, kritui_db.SettingsUpdate{
+			Model:         "saved-model",
+			MaxToolRounds: 16,
+			MCPServers:    []kritui_db.MCPServerUpdate{},
+		}); err != nil {
+			t.Fatalf("remove MCP server: %v", err)
+		}
+	}
+
+	seedServer()
+	insertAcceptedUser(t, database, 1, "Original")
+	removeServer()
+
+	if _, err := persistUserMessage(ctx, database, 2, "Use mcp", nil, []string{capability}, nil); !errors.Is(err, errInvalidToolSelection) {
+		t.Fatalf("persistUserMessage() error = %v, want errInvalidToolSelection", err)
+	}
+	var chats, messages int
+	if err := database.QueryRow(`SELECT (SELECT COUNT(*) FROM chats), (SELECT COUNT(*) FROM messages)`).Scan(&chats, &messages); err != nil {
+		t.Fatalf("count stored rows: %v", err)
+	}
+	if chats != 1 || messages != 1 {
+		t.Errorf("stored rows = chats %d, messages %d, want unchanged 1, 1", chats, messages)
+	}
+
+	var messageID int64
+	if err := database.QueryRow(`SELECT id FROM messages WHERE chat_id = 1`).Scan(&messageID); err != nil {
+		t.Fatalf("query stored message: %v", err)
+	}
+	if err := editUserMessage(ctx, database, 1, messageID, "Edited", []string{capability}, nil); !errors.Is(err, errInvalidToolSelection) {
+		t.Fatalf("editUserMessage() error = %v, want errInvalidToolSelection", err)
+	}
+	var content string
+	if err := database.QueryRow(`SELECT content FROM messages WHERE id = ?`, messageID).Scan(&content); err != nil {
+		t.Fatalf("query unchanged message: %v", err)
+	}
+	if content != "Original" {
+		t.Errorf("stored content = %q, want unchanged Original", content)
+	}
+	tools, err := kritui_db.GetChatTools(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("get chat tools: %v", err)
+	}
+	if len(tools) != 0 {
+		t.Errorf("chat tools = %v, want unchanged empty", tools)
+	}
+}
+
+func TestMigrateDatabaseCreatesMCPServersFromVersionFifteen(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	if _, err := database.Exec(`PRAGMA user_version = 15`); err != nil {
+		t.Fatalf("initialize version fifteen database: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	var version int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != len(databaseMigrations) {
+		t.Fatalf("migrated schema version = %d, want %d", version, len(databaseMigrations))
+	}
+	var columns int
+	if err := database.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('mcp_servers')
+		WHERE name IN ('id', 'position', 'name', 'url', 'authorization_token')
+	`).Scan(&columns); err != nil {
+		t.Fatalf("inspect mcp servers columns: %v", err)
+	}
+	if columns != 5 {
+		t.Fatalf("mcp servers column count = %d, want 5", columns)
+	}
+
+	ctx := context.Background()
+	const (
+		serverID   = "mcp-0123456789abcdef"
+		capability = "mcp_server_0123456789abcdef"
+		token      = "secret-token"
+	)
+	if _, err := database.Exec(`
+		INSERT INTO mcp_servers (id, position, name, url, authorization_token)
+		VALUES (?, 0, ?, ?, ?)
+	`, serverID, "Example", "https://mcp.example", token); err != nil {
+		t.Fatalf("store MCP server in migrated schema: %v", err)
+	}
+	servers, err := kritui_db.GetMCPServers(ctx, database)
+	if err != nil {
+		t.Fatalf("get MCP servers from migrated schema: %v", err)
+	}
+	if len(servers) != 1 || servers[0].ID != serverID || !servers[0].AuthorizationConfigured {
+		t.Fatalf("migrated MCP servers = %#v, want configured %q", servers, serverID)
+	}
+	configs, err := kritui_db.GetMCPServerConfigs(ctx, database, []string{capability})
+	if err != nil {
+		t.Fatalf("resolve MCP capability in migrated schema: %v", err)
+	}
+	if len(configs) != 1 || configs[0].ID != serverID || configs[0].AuthorizationToken != token {
+		t.Errorf("resolved MCP configs = %#v, want stored token", configs)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("rerun migrations: %v", err)
+	}
+	servers, err = kritui_db.GetMCPServers(ctx, database)
+	if err != nil {
+		t.Fatalf("get MCP servers after rerun: %v", err)
+	}
+	if len(servers) != 1 || servers[0].ID != serverID || !servers[0].AuthorizationConfigured {
+		t.Errorf("MCP servers after rerun = %#v, want preserved configured %q", servers, serverID)
+	}
 }
 
 func containsString(values []string, target string) bool {

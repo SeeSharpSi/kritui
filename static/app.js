@@ -775,11 +775,11 @@ document.addEventListener('htmx:after:settle', (event) => {
     applySettingsTheme(event.detail?.task?.target);
     const settingsPage = document.querySelector('#settings-page');
     if (event.detail?.task?.target?.matches?.('#settings-page') && settingsPage?.querySelector('[data-settings-saved]')) {
-        const apiKey = settingsPage.querySelector('#ntfy-api-key');
-        if (apiKey) {
-            apiKey.value = '';
-            apiKey.disabled = false;
-        }
+        const secretInputs = settingsPage.querySelectorAll('#ntfy-api-key, input[name^="mcp_authorization_"]');
+        secretInputs.forEach((input) => {
+            input.value = '';
+            input.disabled = false;
+        });
     }
 });
 document.addEventListener('htmx:after:request', (event) => {
