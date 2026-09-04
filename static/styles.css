@@ -2028,6 +2028,130 @@ main {
     animation: braille-spinner 820ms steps(1, end) infinite;
 }
 
+@keyframes request-overlay-square-spinner {
+    /* Square-dot rendering of the braille frame sequence. */
+    /* Two columns by four rows; shadow order is dot2, dot3, dot7, dot4, dot5, dot6, dot8. */
+    0% { /* ⠋ */
+        background-color: currentColor;
+        box-shadow:
+            0 0.4em 0 currentColor,
+            0 0.8em 0 transparent,
+            0 1.2em 0 transparent,
+            0.4em 0 0 currentColor,
+            0.4em 0.4em 0 transparent,
+            0.4em 0.8em 0 transparent,
+            0.4em 1.2em 0 transparent;
+    }
+
+    10% { /* ⠙ */
+        background-color: currentColor;
+        box-shadow:
+            0 0.4em 0 transparent,
+            0 0.8em 0 transparent,
+            0 1.2em 0 transparent,
+            0.4em 0 0 currentColor,
+            0.4em 0.4em 0 currentColor,
+            0.4em 0.8em 0 transparent,
+            0.4em 1.2em 0 transparent;
+    }
+
+    20% { /* ⠹ */
+        background-color: currentColor;
+        box-shadow:
+            0 0.4em 0 transparent,
+            0 0.8em 0 transparent,
+            0 1.2em 0 transparent,
+            0.4em 0 0 currentColor,
+            0.4em 0.4em 0 currentColor,
+            0.4em 0.8em 0 currentColor,
+            0.4em 1.2em 0 transparent;
+    }
+
+    30% { /* ⠸ */
+        background-color: transparent;
+        box-shadow:
+            0 0.4em 0 transparent,
+            0 0.8em 0 transparent,
+            0 1.2em 0 transparent,
+            0.4em 0 0 currentColor,
+            0.4em 0.4em 0 currentColor,
+            0.4em 0.8em 0 currentColor,
+            0.4em 1.2em 0 transparent;
+    }
+
+    40% { /* ⠼ */
+        background-color: transparent;
+        box-shadow:
+            0 0.4em 0 transparent,
+            0 0.8em 0 currentColor,
+            0 1.2em 0 transparent,
+            0.4em 0 0 currentColor,
+            0.4em 0.4em 0 currentColor,
+            0.4em 0.8em 0 currentColor,
+            0.4em 1.2em 0 transparent;
+    }
+
+    50% { /* ⠴ */
+        background-color: transparent;
+        box-shadow:
+            0 0.4em 0 transparent,
+            0 0.8em 0 currentColor,
+            0 1.2em 0 transparent,
+            0.4em 0 0 transparent,
+            0.4em 0.4em 0 currentColor,
+            0.4em 0.8em 0 currentColor,
+            0.4em 1.2em 0 transparent;
+    }
+
+    60% { /* ⠦ */
+        background-color: transparent;
+        box-shadow:
+            0 0.4em 0 currentColor,
+            0 0.8em 0 currentColor,
+            0 1.2em 0 transparent,
+            0.4em 0 0 transparent,
+            0.4em 0.4em 0 transparent,
+            0.4em 0.8em 0 currentColor,
+            0.4em 1.2em 0 transparent;
+    }
+
+    70% { /* ⠧ */
+        background-color: currentColor;
+        box-shadow:
+            0 0.4em 0 currentColor,
+            0 0.8em 0 currentColor,
+            0 1.2em 0 transparent,
+            0.4em 0 0 transparent,
+            0.4em 0.4em 0 transparent,
+            0.4em 0.8em 0 currentColor,
+            0.4em 1.2em 0 transparent;
+    }
+
+    80% { /* ⠇ */
+        background-color: currentColor;
+        box-shadow:
+            0 0.4em 0 currentColor,
+            0 0.8em 0 currentColor,
+            0 1.2em 0 transparent,
+            0.4em 0 0 transparent,
+            0.4em 0.4em 0 transparent,
+            0.4em 0.8em 0 transparent,
+            0.4em 1.2em 0 transparent;
+    }
+
+    90% { /* ⠏ */
+        background-color: currentColor;
+        box-shadow:
+            0 0.4em 0 currentColor,
+            0 0.8em 0 currentColor,
+            0 1.2em 0 transparent,
+            0.4em 0 0 currentColor,
+            0.4em 0.4em 0 transparent,
+            0.4em 0.8em 0 transparent,
+            0.4em 1.2em 0 transparent;
+    }
+}
+
 .request-overlay {
     position: fixed;
     inset: 0;
@@ -2041,8 +2165,23 @@ main {
     pointer-events: none;
 
     .braille-spinner::before {
+        content: "";
+        display: block;
         font-size: 4rem;
-        width: 1.1em;
+        width: 0.22em;
+        height: 0.22em;
+        border-radius: 0;
+        background-color: currentColor;
+        box-shadow:
+            0 0.4em 0 currentColor,
+            0 0.8em 0 transparent,
+            0 1.2em 0 transparent,
+            0.4em 0 0 currentColor,
+            0.4em 0.4em 0 transparent,
+            0.4em 0.8em 0 transparent,
+            0.4em 1.2em 0 transparent;
+        transform: translate(-0.2em, -0.6em);
+        animation: request-overlay-square-spinner 820ms steps(1, end) infinite;
     }
 }
 
