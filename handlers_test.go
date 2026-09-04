@@ -409,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=12`,
-		`/static/hx-sse.js?v=12`,
-		`/static/app.js?v=12`,
-		`/static/styles.css?v=12`,
+		`/static/htmx.min.js?v=13`,
+		`/static/hx-sse.js?v=13`,
+		`/static/app.js?v=13`,
+		`/static/styles.css?v=13`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -549,7 +549,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	}
 	requireContains(t, string(script), `selectedPanel.dispatchEvent(new Event('history-open'))`)
 	requireContains(t, string(script), `button.setAttribute('aria-expanded', String(active))`)
-	requireContains(t, string(script), `selectedPanel.querySelector('[data-panel-initial-focus]')?.focus()`)
+	requireContains(t, string(script), `matches('[data-panel-initial-focus]')`)
 	requireContains(t, string(script), `panelButton?.focus()`)
 	requireContains(t, string(script), `document.addEventListener('kritui:command'`)
 	requireContains(t, string(script), `messageInput.value = ''`)
@@ -562,6 +562,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, string(script), `if (!event.detail?.preserveInput)`)
 	requireContains(t, string(script), `input[name^="mcp_authorization_"]`)
 	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger", "htmx:oobBeforeSwap", "htmx:oobAfterSwap", "htmx:configRequest")
+	requireContains(t, string(script), `settingsPage.scrollTop = settingsPageScrollTop`)
 }
 
 func TestHomeHandlerRendersEndpointModels(t *testing.T) {
@@ -1612,17 +1613,13 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		`id="settings-page"`,
 		`class="panel-page settings-page"`,
-		`id="settings-heading"`,
+		`aria-label="Settings"`,
 		`tabindex="-1"`,
 		`data-panel-initial-focus`,
-		`>Settings</h1>`,
 		`action="/settings?chat=8"`,
 		`method="post"`,
 		`name="ntfy_form" value="1"`,
-		`01 / Chat`,
-		`02 / Prompts`,
-		`03 / Delivery`,
-		`Save settings`,
+		`Save all`,
 		`hx-target="#settings-page"`,
 		`hx-swap="outerHTML"`,
 		`id="mcp-server-list"`,
@@ -1635,9 +1632,12 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 		`hx-status:4xx="target:#settings-page swap:outerHTML"`,
 		`hx-status:5xx="target:#settings-page swap:outerHTML"`,
 	)
-	if count := strings.Count(response.Body.String(), ">Save settings</button>"); count != 1 {
-		t.Errorf("Save settings button count = %d, want 1", count)
+	if count := strings.Count(response.Body.String(), ">Save all</button>"); count != 1 {
+		t.Errorf("Save all button count = %d, want 1", count)
 	}
+	requireNotContains(t, response.Body.String(), "Save settings",
+		"01 / Chat", "02 / Prompts", "03 / Delivery", "04 / Appearance", "05 / Integrations",
+		"Conversation defaults")
 	requireNotContains(t, response.Body.String(), "Save notifications")
 	requireNotContains(t, response.Body.String(), `id="send-button"`, `id="settings-button"`)
 }
@@ -2071,7 +2071,6 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 		`<option value="nord">Nord</option>`,
 		`<option value="tokyo-night">Tokyo Night</option>`,
 		`<option value="og">OG</option>`,
-		`04 / Appearance`,
 		`data-theme-id="rose-pine"`,
 		`data-theme-color="#faf4ed"`,
 		`color-scheme:light`,

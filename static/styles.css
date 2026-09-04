@@ -145,16 +145,6 @@ main {
                     border-bottom: 1px solid var(--color-border);
                     background: color-mix(in srgb, var(--color-surface-muted) 38%, transparent);
 
-                    .settings-section-label {
-                        display: block;
-                        margin-bottom: .45rem;
-                        color: var(--color-accent);
-                        font-size: .68rem;
-                        font-weight: 750;
-                        letter-spacing: .12em;
-                        text-transform: uppercase;
-                    }
-
                     h2,
                     .settings-section-title {
 						display: block;
@@ -341,8 +331,8 @@ main {
                     min-width: 2.5rem;
                     flex: 0 0 2.5rem;
                     margin: 0;
-                    border: 1px solid var(--color-border-strong);
-                    border-radius: .2rem;
+                    border: 2px solid var(--color-border-strong);
+                    border-radius: 0;
                     appearance: none;
                     background: var(--color-background);
                     cursor: pointer;
@@ -353,10 +343,10 @@ main {
                         content: "";
                         position: absolute;
                         top: 50%;
-                        left: .15rem;
-                        width: 1rem;
-                        height: 1rem;
-                        border-radius: .08rem;
+                        left: .25rem;
+                        width: .75rem;
+                        height: .75rem;
+                        border-radius: 0;
                         background: var(--color-border-strong);
                         transform: translateY(-50%);
                         transition: background-color 150ms ease, transform 150ms ease;
@@ -368,7 +358,7 @@ main {
 
                         &::before {
                             background: var(--color-on-accent);
-                            transform: translate(1.08rem, -50%);
+                            transform: translate(1rem, -50%);
                         }
                     }
 

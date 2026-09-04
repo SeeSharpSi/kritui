@@ -547,7 +547,10 @@ function togglePanel(panelID, panelButton) {
         selectedPanel.dispatchEvent(new Event('history-open'));
     }
     if (opening) {
-        selectedPanel.querySelector('[data-panel-initial-focus]')?.focus();
+        const focusTarget = selectedPanel.matches('[data-panel-initial-focus]')
+            ? selectedPanel
+            : selectedPanel.querySelector('[data-panel-initial-focus]');
+        focusTarget?.focus();
     } else {
         panelButton?.focus();
     }
@@ -787,10 +790,17 @@ async function copyMessage(button) {
 }
 
 document.addEventListener('htmx:after:process', (event) => scrollMessages(event.target));
+let settingsPageScrollTop = 0;
+let settingsPageScrollPending = false;
+
 document.addEventListener('htmx:before:swap', (event) => {
     const ctx = event.detail?.ctx;
     if (!ctx) {
         return;
+    }
+    if (ctx.target?.matches?.('#settings-page')) {
+        settingsPageScrollTop = ctx.target.scrollTop;
+        settingsPageScrollPending = true;
     }
     rememberMessageScroll(ctx.target);
     const swapRoot = ctx.target?.closest?.('.completion-progress') || ctx.target;
@@ -819,6 +829,13 @@ document.addEventListener('htmx:after:swap', (event) => {
         }
     }
     restoreMessageScroll(event.detail?.ctx?.target);
+    if (settingsPageScrollPending) {
+        settingsPageScrollPending = false;
+        const settingsPage = document.getElementById('settings-page');
+        if (settingsPage) {
+            settingsPage.scrollTop = settingsPageScrollTop;
+        }
+    }
     syncPanelSendButton();
     autoresizeAllMessageInputs(event.target);
 });

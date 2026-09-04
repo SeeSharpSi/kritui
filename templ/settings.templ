@@ -76,7 +76,9 @@ templ SettingsPage(data SettingsPanelData) {
 	<section
 		id="settings-page"
 		class="panel-page settings-page"
-		aria-labelledby="settings-heading"
+		aria-label="Settings"
+		tabindex="-1"
+		data-panel-initial-focus
 		data-theme-id={ data.SelectedTheme.ID }
 		data-theme-style={ data.SelectedTheme.Style }
 		data-theme-color={ data.SelectedTheme.Colors["background"] }
@@ -84,10 +86,6 @@ templ SettingsPage(data SettingsPanelData) {
 			hidden
 		}
 	>
-		<header class="panel-heading">
-			<h1 id="settings-heading" tabindex="-1" data-panel-initial-focus>Settings</h1>
-			<p>Conversation defaults and app notifications.</p>
-		</header>
 		<form
 			class="settings-main-form"
 			action={ "/settings?chat=" + data.ChatID }
@@ -110,8 +108,7 @@ templ SettingsPage(data SettingsPanelData) {
 			}
 			<section class="settings-section" aria-labelledby="chat-defaults-heading">
 				<header class="settings-section-heading">
-					<span class="settings-section-label">01 / Chat</span>
-					<h2 id="chat-defaults-heading">Chat defaults</h2>
+				<h2 id="chat-defaults-heading">Chat defaults</h2>
 					<p>Starting point for every new conversation.</p>
 				</header>
 				<div class="settings-fields">
@@ -157,8 +154,7 @@ templ SettingsPage(data SettingsPanelData) {
 			</section>
 			<section class="settings-section" aria-labelledby="prompt-appends-heading">
 				<header class="settings-section-heading">
-					<span class="settings-section-label">02 / Prompts</span>
-					<h2 id="prompt-appends-heading">Prompt appends</h2>
+				<h2 id="prompt-appends-heading">Prompt appends</h2>
 					<p>Presets appear in chat options; selected text is added to messages.</p>
 				</header>
 				<div class="settings-append-list">
@@ -188,8 +184,7 @@ templ SettingsPage(data SettingsPanelData) {
 			</section>
 			<section id="ntfy-settings" class="settings-section" aria-labelledby="ntfy-settings-heading">
 				<header class="settings-section-heading">
-					<span class="settings-section-label">03 / Delivery</span>
-					<h2 id="ntfy-settings-heading">Notifications</h2>
+				<h2 id="ntfy-settings-heading">Notifications</h2>
 					<p>Send notification when response completes. Leave endpoint and topic empty to disable.</p>
 				</header>
 				<div class="settings-fields">
@@ -246,8 +241,7 @@ templ SettingsPage(data SettingsPanelData) {
 			</section>
 			<section class="settings-section" aria-labelledby="theme-heading">
 				<header class="settings-section-heading">
-					<span class="settings-section-label">04 / Appearance</span>
-					<h2 id="theme-heading">Theme</h2>
+				<h2 id="theme-heading">Theme</h2>
 					<p>Colors for the whole interface.</p>
 				</header>
 				<div class="settings-fields">
@@ -269,7 +263,6 @@ templ SettingsPage(data SettingsPanelData) {
 			<details id="mcp-settings" class="settings-section settings-expandable" if data.MCPServersOpen { open }>
 				<summary class="settings-section-heading">
 					<span class="settings-expandable-copy">
-						<span class="settings-section-label">05 / Integrations</span>
 						<span id="mcp-settings-heading" class="settings-section-title">MCP servers</span>
 						<span class="settings-section-description">Remote Streamable HTTP servers. Expand to add, edit, or remove connections.</span>
 					</span>
@@ -295,7 +288,7 @@ templ SettingsPage(data SettingsPanelData) {
 			</details>
 			<div class="settings-save-bar">
 				<span>All changes save together.</span>
-				<button class="settings-save" type="submit">Save settings</button>
+				<button class="settings-save" type="submit">Save all</button>
 			</div>
 		</form>
 	</section>
