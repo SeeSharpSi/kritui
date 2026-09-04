@@ -1867,19 +1867,30 @@ main {
                 }
             }
 
-            >input {
+            >textarea#message {
+                display: block;
                 width: 100%;
                 box-sizing: border-box;
+                min-height: calc(1.4em + 1.5rem);
+                max-height: 33vh;
+                max-height: 33dvh;
                 padding: .75rem 3.5rem .75rem .75rem;
                 border: 0;
                 border-radius: inherit;
                 background: transparent;
+                color: inherit;
+                font: inherit;
+                font-size: max(1rem, 16px);
+                line-height: 1.4;
+                resize: none;
+                overflow-y: auto;
                 z-index: auto;
             }
 
             >#send-button {
                 position: absolute;
-                top: 50%;
+                top: auto;
+                bottom: .4rem;
                 right: .4rem;
                 width: 2.25rem;
                 height: 2.25rem;
@@ -1889,7 +1900,7 @@ main {
                 background: transparent;
                 color: var(--color-text-muted);
                 place-items: center;
-                transform: translateY(-50%);
+                transform: none;
                 line-height: 0;
                 transition: background-color 150ms ease, color 150ms ease;
 

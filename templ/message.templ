@@ -380,8 +380,8 @@ templ MessageHistoryResult(chatID string, messages []llm.Message, input string) 
 
 templ MessageInput(value string, outOfBand bool) {
 	if outOfBand {
-		<input id="message" name="message" value={ value } placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" hx-swap-oob="outerHTML"/>
+		<textarea id="message" name="message" rows="1" placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" hx-swap-oob="outerHTML">{ value }</textarea>
 	} else {
-		<input id="message" name="message" value={ value } placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" autofocus/>
+		<textarea id="message" name="message" rows="1" placeholder="Write a message..." required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" autofocus>{ value }</textarea>
 	}
 }

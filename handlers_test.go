@@ -409,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=10`,
-		`/static/hx-sse.js?v=10`,
-		`/static/app.js?v=10`,
-		`/static/styles.css?v=10`,
+		`/static/htmx.min.js?v=11`,
+		`/static/hx-sse.js?v=11`,
+		`/static/app.js?v=11`,
+		`/static/styles.css?v=11`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -942,7 +942,7 @@ func TestMessageHandlerUndoesAndRedoesLatestTurn(t *testing.T) {
 		"Earlier question",
 		"Earlier answer",
 		`id="message"`,
-		`value="Latest &lt;question&gt;"`,
+		`>Latest &lt;question&gt;</textarea>`,
 		`hx-swap-oob="outerHTML"`,
 	)
 	requireNotContains(t, undo.Body.String(), "Latest answer")
@@ -965,7 +965,7 @@ func TestMessageHandlerUndoesAndRedoesLatestTurn(t *testing.T) {
 	if redo.Code != http.StatusOK {
 		t.Fatalf("redo status = %d, want %d; body = %q", redo.Code, http.StatusOK, redo.Body.String())
 	}
-	requireContains(t, redo.Body.String(), "Latest &lt;question&gt;", "Latest answer", `id="message"`, `value=""`)
+	requireContains(t, redo.Body.String(), "Latest &lt;question&gt;", "Latest answer", `id="message"`, `></textarea>`)
 	active, err = kritui_db.GetMessages(context.Background(), database, 1)
 	if err != nil {
 		t.Fatalf("get messages after redo: %v", err)

@@ -468,9 +468,25 @@ function moveCommandSelection(input, offset) {
     return true;
 }
 
+function autoresizeMessageInput(el) {
+    if (!el) {
+        return;
+    }
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+}
+
+function autoresizeAllMessageInputs(root = document) {
+    if (root?.matches?.('#message')) {
+        autoresizeMessageInput(root);
+    }
+    root?.querySelectorAll?.('#message').forEach(autoresizeMessageInput);
+}
+
 function activateCommandOption(input, option) {
     input.value = `/${option.dataset.commandName}`;
     closeCommandAutocomplete(input);
+    autoresizeMessageInput(input);
     if (option.dataset.commandRequiresArguments === 'true') {
         input.value += ' ';
         input.focus();
@@ -540,6 +556,7 @@ function showCompletionNetworkError(event, message) {
 document.addEventListener('DOMContentLoaded', () => {
     scrollMessages(document);
     syncPanelSendButton();
+    autoresizeAllMessageInputs(document);
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js');
     }
@@ -572,6 +589,7 @@ document.addEventListener('pointerout', (event) => handleImagePointer(event, fal
 
 document.addEventListener('input', (event) => {
     if (event.target.matches('#message')) {
+        autoresizeMessageInput(event.target);
         updateCommandAutocomplete(event.target);
     }
 });
@@ -618,6 +636,18 @@ document.addEventListener('keydown', (event) => {
         return;
     }
 
+    if (event.ctrlKey && !event.metaKey && !event.altKey && (event.key === 'j' || event.key === 'J')) {
+        event.preventDefault();
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+        input.value = input.value.slice(0, start) + '\n' + input.value.slice(end);
+        const caret = start + 1;
+        input.setSelectionRange(caret, caret);
+        autoresizeMessageInput(input);
+        updateCommandAutocomplete(input);
+        return;
+    }
+
     switch (event.key) {
     case 'ArrowDown':
         if (moveCommandSelection(input, 1)) {
@@ -630,13 +660,18 @@ document.addEventListener('keydown', (event) => {
         }
         break;
     case 'Enter': {
+        if (event.shiftKey) {
+            break;
+        }
         const autocomplete = commandAutocompleteFor(input);
         const selected = autocomplete?.hidden
             ? null
             : autocomplete?.querySelector('.command-option[aria-selected="true"]:not([hidden])');
+        event.preventDefault();
         if (selected) {
-            event.preventDefault();
             activateCommandOption(input, selected);
+        } else {
+            input.form?.requestSubmit();
         }
         break;
     }
@@ -749,6 +784,7 @@ document.addEventListener('htmx:before:swap', (event) => {
 document.addEventListener('htmx:after:swap', (event) => {
     restoreMessageScroll(event.detail?.ctx?.target);
     syncPanelSendButton();
+    autoresizeAllMessageInputs(event.target);
 });
 function applySettingsTheme(root) {
     const settingsPage = root?.matches?.('#settings-page')
@@ -773,6 +809,7 @@ function applySettingsTheme(root) {
 document.addEventListener('htmx:after:settle', (event) => {
     restoreMessageScroll(event.detail?.task?.target);
     applySettingsTheme(event.detail?.task?.target);
+    autoresizeAllMessageInputs(event.target);
     const settingsPage = document.querySelector('#settings-page');
     if (event.detail?.task?.target?.matches?.('#settings-page') && settingsPage?.querySelector('[data-settings-saved]')) {
         const secretInputs = settingsPage.querySelectorAll('#ntfy-api-key, input[name^="mcp_authorization_"]');
@@ -791,6 +828,7 @@ document.addEventListener('htmx:after:request', (event) => {
         if (input) {
             clearImageAttachments(input);
         }
+        autoresizeAllMessageInputs(source);
     }
     syncPanelSendButton();
 });
@@ -802,6 +840,8 @@ document.addEventListener('kritui:command', (event) => {
     if (messageInput) {
         if (!event.detail?.preserveInput) {
             messageInput.value = '';
+            messageInput.style.height = 'auto';
+            autoresizeMessageInput(messageInput);
         }
         closeCommandAutocomplete(messageInput);
     }
@@ -818,7 +858,12 @@ document.addEventListener('kritui:command', (event) => {
     }
 });
 document.addEventListener('kritui:message-edited', () => {
-    document.querySelector('#message')?.focus();
+    const messageInput = document.querySelector('#message');
+    if (messageInput) {
+        messageInput.style.height = 'auto';
+        autoresizeMessageInput(messageInput);
+        messageInput.focus();
+    }
 });
 document.addEventListener('htmx:before:cleanup', (event) => {
     const root = event.target;
