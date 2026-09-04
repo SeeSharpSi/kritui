@@ -25,6 +25,10 @@ const (
 	defaultModelsTimeout       = 5 * time.Second
 	defaultCompletionTimeout   = 10 * time.Minute
 	providerConnectTimeout     = 10 * time.Second
+
+	openCodeSessionHeader     = "X-OpenCode-Session"
+	openCodeGoModelsSessionID = "models"
+	krituiUserAgent           = "kritui/1.0"
 )
 
 // EndpointType identifies a provider request and response protocol.
@@ -76,6 +80,7 @@ type UserImage struct {
 	Height    int
 	Data      []byte
 }
+
 // ImageSupport reports provider knowledge about model image input.
 type ImageSupport uint8
 
@@ -230,6 +235,8 @@ func (e *APIError) Error() string {
 type Client struct {
 	apiKey              string
 	model               string
+	sessionID           string
+	openCodeGo          bool
 	endpoints           []endpointCandidate
 	configuredEndpoint  EndpointType
 	modelsEndpoint      string
@@ -256,6 +263,10 @@ type ClientOptions struct {
 	// EndpointSelected runs after a protocol produces a valid completion and
 	// differs from PreferredEndpoint. It must be safe for synchronous use.
 	EndpointSelected func(EndpointType)
+	// SessionID is a stable per-conversation ID (plain chat ID decimal for
+	// completions, "models" fallback for model listing); only sent to
+	// OpenCode Go endpoints.
+	SessionID string
 }
 
 // New creates a client. Endpoint must be a full Responses, Messages, or Chat
@@ -320,6 +331,8 @@ func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, err
 	return &Client{
 		apiKey:              apiKey,
 		model:               model,
+		sessionID:           strings.TrimSpace(configuration.SessionID),
+		openCodeGo:          isOpenCodeGoEndpoint(parsedEndpoint),
 		endpoints:           endpoints,
 		configuredEndpoint:  configuredEndpoint,
 		modelsEndpoint:      modelsEndpoint,
@@ -330,6 +343,29 @@ func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, err
 		endpointSelected:    configuration.EndpointSelected,
 		preferredEndpoint:   configuration.PreferredEndpoint,
 	}, nil
+}
+
+func isOpenCodeGoEndpoint(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "opencode.ai" && !strings.HasSuffix(host, ".opencode.ai") {
+		return false
+	}
+	return strings.Contains(strings.ToLower(u.Path), "/go/")
+}
+
+func (c *Client) applyProviderHeaders(req *http.Request) {
+	// User-Agent identifies client everywhere; session header Go-only.
+	req.Header.Set("User-Agent", krituiUserAgent)
+	if c.openCodeGo {
+		session := strings.TrimSpace(c.sessionID)
+		if session == "" {
+			session = openCodeGoModelsSessionID
+		}
+		req.Header.Set(openCodeSessionHeader, session)
+	}
 }
 
 func (c *Client) complete(ctx context.Context, messages []Message, definitions []tools.Definition) (Message, error) {
@@ -400,6 +436,7 @@ func (c *Client) ModelInfos(ctx context.Context) ([]ModelInfo, error) {
 			req.Header.Set("X-Api-Key", c.apiKey)
 			req.Header.Set("Anthropic-Version", "2023-06-01")
 		}
+		c.applyProviderHeaders(req)
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -493,6 +530,7 @@ func (c *Client) post(ctx context.Context, endpoint endpointCandidate, payload [
 		req.Header.Set("X-Api-Key", c.apiKey)
 		req.Header.Set("Anthropic-Version", "2023-06-01")
 	}
+	c.applyProviderHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

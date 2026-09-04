@@ -134,7 +134,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 		if !ok {
 			return
 		}
-		if len(images) > 0 && modelKnownUnsupported(r.Context(), request.model) {
+		if len(images) > 0 && modelKnownUnsupported(r.Context(), request.model, strconv.FormatInt(request.chatID, 10)) {
 			renderMessageError(w, r, http.StatusBadRequest, "Selected model does not support images.")
 			return
 		}
@@ -366,6 +366,7 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 		return
 	}
 	client, err := llm.New(os.Getenv("LLM_KEY"), request.model, os.Getenv("LLM_ENDPOINT"), llm.ClientOptions{
+		SessionID:         strconv.FormatInt(request.chatID, 10),
 		PreferredEndpoint: preferredEndpoint,
 		EndpointSelected: func(endpointType llm.EndpointType) {
 			if err := kritui_db.SetModelEndpointType(ctx, database, request.model, endpointType); err != nil {
@@ -888,8 +889,8 @@ func hasImages(messages []llm.Message) bool {
 	return false
 }
 
-func modelKnownUnsupported(ctx context.Context, model string) bool {
-	client, err := llm.New(os.Getenv("LLM_KEY"), model, os.Getenv("LLM_ENDPOINT"), llm.ClientOptions{})
+func modelKnownUnsupported(ctx context.Context, model, sessionID string) bool {
+	client, err := llm.New(os.Getenv("LLM_KEY"), model, os.Getenv("LLM_ENDPOINT"), llm.ClientOptions{SessionID: sessionID})
 	if err != nil {
 		return false
 	}

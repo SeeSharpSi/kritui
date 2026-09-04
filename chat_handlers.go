@@ -1003,7 +1003,11 @@ func positiveID(value string) (int64, bool) {
 
 func availableModels(r *http.Request, selected string) ([]string, string) {
 	selected = strings.TrimSpace(selected)
-	client, err := llm.New(os.Getenv("LLM_KEY"), selected, os.Getenv("LLM_ENDPOINT"))
+	sessionID := ""
+	if id, ok := positiveID(r.URL.Query().Get("chat")); ok {
+		sessionID = strconv.FormatInt(id, 10)
+	}
+	client, err := llm.New(os.Getenv("LLM_KEY"), selected, os.Getenv("LLM_ENDPOINT"), llm.ClientOptions{SessionID: sessionID})
 	if err != nil {
 		if selected == "" {
 			return nil, ""
