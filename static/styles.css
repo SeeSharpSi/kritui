@@ -2033,14 +2033,14 @@ main {
     z-index: 10000;
     display: grid;
     place-items: center;
-    background: #000;
+    background: transparent;
     color: var(--color-text);
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
 
     .braille-spinner::before {
-        font-size: 2rem;
+        font-size: 4rem;
         width: 1.1em;
     }
 }
@@ -2048,7 +2048,7 @@ main {
 .request-overlay.htmx-indicator.htmx-request {
     opacity: 1;
     visibility: visible;
-    pointer-events: auto;
+    pointer-events: none;
     transition: none;
 }
 
