@@ -220,7 +220,7 @@ templ ToolCalls(calls []llm.ToolCall, runningID string, toolErrors map[string]st
 
 templ toolCalls(calls []llm.ToolCall, runningID string, toolErrors map[string]string) {
 	for _, call := range calls {
-		<div class={ "tool-call", templ.KV("loading", call.ID == runningID), templ.KV("tool-error", toolErrors[call.ID] != "") } role="listitem">
+		<div class={ "tool-call", templ.KV("loading", call.ID == runningID), templ.KV("tool-error", toolErrors[call.ID] != "") } data-tool-call-id={ call.ID } role="listitem">
 			if call.ID == runningID {
 				<span class="braille-spinner" aria-hidden="true"></span>
 				<span class="visually-hidden">Running tool: </span>

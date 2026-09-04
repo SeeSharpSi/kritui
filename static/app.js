@@ -246,6 +246,32 @@ function restoreMessageScroll(root) {
     }
 }
 
+const pendingExpandedToolCalls = new WeakMap();
+
+function toolCallIDForElement(el) {
+    return el.getAttribute?.('data-tool-call-id') || '';
+}
+
+function snapshotExpandedToolCalls(root) {
+    const expanded = new Set();
+    root.querySelectorAll?.('.tool-call-list .tool-call.expanded').forEach((call) => {
+        const id = toolCallIDForElement(call);
+        if (id) expanded.add(id);
+    });
+    return expanded;
+}
+
+function restoreExpandedToolCalls(root, expanded) {
+    if (!expanded || expanded.size === 0) return;
+    root.querySelectorAll?.('.tool-call-list .tool-call[data-tool-call-id]').forEach((call) => {
+        const id = toolCallIDForElement(call);
+        if (id && expanded.has(id)) {
+            call.classList.add('expanded');
+            call.querySelector('.tool-call-toggle')?.setAttribute('aria-expanded', 'true');
+        }
+    });
+}
+
 function syncPanelSendButton() {
     const sendButton = document.querySelector('#send-button');
     if (!sendButton) {
@@ -767,6 +793,8 @@ document.addEventListener('htmx:before:swap', (event) => {
         return;
     }
     rememberMessageScroll(ctx.target);
+    const swapRoot = ctx.target?.closest?.('.completion-progress') || ctx.target;
+    if (swapRoot?.querySelectorAll) pendingExpandedToolCalls.set(ctx.target, snapshotExpandedToolCalls(swapRoot));
     if (ctx.sourceElement?.matches?.('.loading-message') && ctx.response?.status >= 500) {
         event.preventDefault();
         showCompletionNetworkError(event, 'Failed to complete message. Check your connection and retry.');
@@ -782,6 +810,14 @@ document.addEventListener('htmx:before:swap', (event) => {
     }
 });
 document.addEventListener('htmx:after:swap', (event) => {
+    const swapCtxTarget = event.detail?.ctx?.target;
+    if (swapCtxTarget) {
+        const swapRootAfter = swapCtxTarget.closest?.('.completion-progress') || swapCtxTarget;
+        if (swapCtxTarget.isConnected !== false) {
+            restoreExpandedToolCalls(swapRootAfter, pendingExpandedToolCalls.get(swapCtxTarget));
+            pendingExpandedToolCalls.delete(swapCtxTarget);
+        }
+    }
     restoreMessageScroll(event.detail?.ctx?.target);
     syncPanelSendButton();
     autoresizeAllMessageInputs(event.target);
@@ -870,8 +906,15 @@ document.addEventListener('htmx:before:cleanup', (event) => {
     clearComposerImages(root);
     destroyMessageListStates(root);
 });
-document.addEventListener('htmx:sse:before:message', (event) => rememberMessageScroll(event.target));
+document.addEventListener('htmx:sse:before:message', (event) => {
+    rememberMessageScroll(event.target);
+    if (event.target?.querySelectorAll) {
+        pendingExpandedToolCalls.set(event.target, snapshotExpandedToolCalls(event.target));
+    }
+});
 document.addEventListener('htmx:sse:after:message', (event) => {
+    restoreExpandedToolCalls(event.target, pendingExpandedToolCalls.get(event.target));
+    pendingExpandedToolCalls.delete(event.target);
     restoreMessageScroll(event.target);
     syncPanelSendButton();
 });
