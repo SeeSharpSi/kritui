@@ -9,9 +9,9 @@ import (
 
 func TestOptionsListsBuiltInThemesInFixedOrder(t *testing.T) {
 	options := Options()
-	wantIDs := []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og"}
-	wantLabels := []string{"Rose Pine Light", "Rose Pine Dark", "Nord", "Tokyo Night", "OG"}
-	wantModes := []string{"light", "dark", "dark", "dark", "dark"}
+	wantIDs := []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og", "forest-night"}
+	wantLabels := []string{"Rose Pine Light", "Rose Pine Dark", "Nord", "Tokyo Night", "OG", "Forest Night"}
+	wantModes := []string{"light", "dark", "dark", "dark", "dark", "dark"}
 	if len(options) != len(wantIDs) {
 		t.Fatalf("Options() returned %d themes, want %d", len(options), len(wantIDs))
 	}
@@ -65,6 +65,25 @@ func TestByIDResolvesBuiltInIDsOnly(t *testing.T) {
 	}
 	if og.Colors["background"] != "#17151b" {
 		t.Errorf("og background = %q, want #17151b", og.Colors["background"])
+	}
+	forestNight, err := ByID("forest-night")
+	if err != nil {
+		t.Fatalf("ByID(forest-night) error: %v", err)
+	}
+	if forestNight.Label != "Forest Night" || forestNight.Mode != "dark" {
+		t.Errorf("ByID(forest-night) = (%q, %q), want (Forest Night, dark)", forestNight.Label, forestNight.Mode)
+	}
+	if forestNight.Colors["background"] != "#1a2125" {
+		t.Errorf("forest-night background = %q, want #1a2125", forestNight.Colors["background"])
+	}
+	if forestNight.Colors["foreground"] != "#c9d1d9" {
+		t.Errorf("forest-night foreground = %q, want #c9d1d9", forestNight.Colors["foreground"])
+	}
+	if forestNight.Colors["accent"] != "#8fbc8f" {
+		t.Errorf("forest-night accent = %q, want #8fbc8f", forestNight.Colors["accent"])
+	}
+	if forestNight.Colors["muted"] != "#4a5568" {
+		t.Errorf("forest-night muted = %q, want #4a5568", forestNight.Colors["muted"])
 	}
 	for _, id := range []string{"", "dracula", "../rose-pine", "Rose Pine", "rose-pine/colors.toml"} {
 		if _, err := ByID(id); !errors.Is(err, ErrUnknownTheme) {
@@ -162,8 +181,9 @@ func TestBuiltInThemesMapMutedForReadability(t *testing.T) {
 		"nord":           "#c2cbd8",
 		"tokyo-night":    "#b3bae0",
 		"og":             "#9f9694",
+		"forest-night":   "#4a5568",
 	}
-	for _, id := range []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og"} {
+	for _, id := range []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og", "forest-night"} {
 		theme, err := ByID(id)
 		if err != nil {
 			t.Fatalf("ByID(%s) error: %v", id, err)

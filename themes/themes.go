@@ -1,4 +1,4 @@
-// Package themes provides the five built-in color themes. Theme palettes are
+// Package themes provides the six built-in color themes. Theme palettes are
 // embedded Omarchy colors.toml files parsed once at startup; only the fixed
 // built-in IDs can be resolved, so stored settings can never select arbitrary
 // files.
@@ -44,6 +44,7 @@ var definitions = []struct {
 	{"nord", "Nord"},
 	{"tokyo-night", "Tokyo Night"},
 	{"og", "OG"},
+	{"forest-night", "Forest Night"},
 }
 
 // cssVariables maps each CSS custom property to its canonical palette key and

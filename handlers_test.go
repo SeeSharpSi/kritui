@@ -2071,6 +2071,7 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 		`<option value="nord">Nord</option>`,
 		`<option value="tokyo-night">Tokyo Night</option>`,
 		`<option value="og">OG</option>`,
+		`<option value="forest-night">Forest Night</option>`,
 		`data-theme-id="rose-pine"`,
 		`data-theme-color="#faf4ed"`,
 		`color-scheme:light`,
@@ -2094,6 +2095,7 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 		`<option value="rose-pine-dark">Rose Pine Dark</option>`,
 		`<option value="tokyo-night" selected>Tokyo Night</option>`,
 		`<option value="og">OG</option>`,
+		`<option value="forest-night">Forest Night</option>`,
 		`data-theme-id="tokyo-night"`,
 		`data-theme-color="#1a1b26"`,
 		`color-scheme:dark`,
@@ -2124,6 +2126,34 @@ func TestSettingsHandlerStoresTheme(t *testing.T) {
 		`<option value="nord" selected>Nord</option>`,
 		`data-theme-id="nord"`,
 		`data-theme-color="#2e3440"`,
+	)
+}
+
+func TestSettingsHandlerStoresForestNightTheme(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+		"theme":           {"forest-night"},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	theme, err := kritui_db.GetTheme(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get theme: %v", err)
+	}
+	if theme != "forest-night" {
+		t.Errorf("theme = %q, want forest-night", theme)
+	}
+	requireContains(t, response.Body.String(),
+		`<option value="forest-night" selected>Forest Night</option>`,
+		`data-theme-id="forest-night"`,
+		`data-theme-color="#1a2125"`,
+		`color-scheme:dark`,
 	)
 }
 
@@ -5099,6 +5129,71 @@ func TestMigrateDatabaseRebuildsSettingsForOGTheme(t *testing.T) {
 	}
 	if stored != "og" {
 		t.Errorf("stored theme = %q, want og", stored)
+	}
+}
+
+func TestMigrateDatabaseRebuildsSettingsForForestNightTheme(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	if _, err := database.Exec(`
+		CREATE TABLE settings (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			default_model TEXT,
+			max_tool_rounds INTEGER CHECK (max_tool_rounds IS NULL OR max_tool_rounds BETWEEN 1 AND 100),
+			default_tools_configured INTEGER NOT NULL DEFAULT 0 CHECK (default_tools_configured IN (0, 1)),
+			prompt_appends_configured INTEGER NOT NULL DEFAULT 0 CHECK (prompt_appends_configured IN (0, 1)),
+			ntfy_endpoint TEXT,
+			ntfy_topic TEXT,
+			ntfy_api_key TEXT,
+			theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og'))
+		) STRICT;
+		INSERT INTO settings (id, default_model, max_tool_rounds, default_tools_configured, prompt_appends_configured, ntfy_endpoint, ntfy_topic, theme)
+			VALUES (1, 'kept-model', 7, 1, 1, 'https://ntfy.example', 'topic', 'og');
+		PRAGMA user_version = 15;
+	`); err != nil {
+		t.Fatalf("initialize version fifteen database: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	var version int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != len(databaseMigrations) {
+		t.Fatalf("migrated schema version = %d, want %d", version, len(databaseMigrations))
+	}
+	var theme sql.NullString
+	var model string
+	var maxToolRounds int
+	var ntfyEndpoint, ntfyTopic string
+	if err := database.QueryRow(`
+		SELECT theme, default_model, max_tool_rounds, ntfy_endpoint, ntfy_topic
+		FROM settings WHERE id = 1
+	`).Scan(&theme, &model, &maxToolRounds, &ntfyEndpoint, &ntfyTopic); err != nil {
+		t.Fatalf("read settings after migration: %v", err)
+	}
+	if !theme.Valid || theme.String != "og" || model != "kept-model" || maxToolRounds != 7 || ntfyEndpoint != "https://ntfy.example" || ntfyTopic != "topic" {
+		t.Errorf("migrated settings = theme %#v, model %q, rounds %d, endpoint %q, topic %q, want values preserved",
+			theme, model, maxToolRounds, ntfyEndpoint, ntfyTopic)
+	}
+	if _, err := database.Exec(`UPDATE settings SET theme = 'dracula' WHERE id = 1`); err == nil {
+		t.Error("store invalid theme after migration error = nil, want constraint rejection")
+	}
+	if _, err := database.Exec(`UPDATE settings SET theme = 'forest-night' WHERE id = 1`); err != nil {
+		t.Errorf("store forest-night after migration error: %v", err)
+	}
+	stored, err := kritui_db.GetTheme(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get theme after migration: %v", err)
+	}
+	if stored != "forest-night" {
+		t.Errorf("stored theme = %q, want forest-night", stored)
 	}
 }
 

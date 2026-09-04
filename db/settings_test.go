@@ -489,12 +489,15 @@ func TestThemeColumnRejectsInvalidValues(t *testing.T) {
 	if _, err := database.Exec(`UPDATE settings SET theme = 'og' WHERE id = 1`); err != nil {
 		t.Errorf("store og theme error: %v", err)
 	}
+	if _, err := database.Exec(`UPDATE settings SET theme = 'forest-night' WHERE id = 1`); err != nil {
+		t.Errorf("store forest-night theme error: %v", err)
+	}
 	stored, err := GetTheme(context.Background(), database)
 	if err != nil {
 		t.Fatalf("GetTheme() error: %v", err)
 	}
-	if stored != "og" {
-		t.Errorf("stored theme = %q, want og", stored)
+	if stored != "forest-night" {
+		t.Errorf("stored theme = %q, want forest-night", stored)
 	}
 }
 

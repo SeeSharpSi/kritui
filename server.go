@@ -416,6 +416,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	},
 	migrateSettingsThemeRosePineDark,
 	migrateSettingsThemeOG,
+	migrateSettingsThemeForestNight,
 	func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mcp_servers (
 			id TEXT PRIMARY KEY CHECK (id <> ''),
@@ -524,6 +525,13 @@ func migrateSettingsThemeRosePineDark(ctx context.Context, tx *sql.Tx) error {
 func migrateSettingsThemeOG(ctx context.Context, tx *sql.Tx) error {
 	return rebuildSettingsThemeConstraint(ctx, tx, "settings_theme_15",
 		[]string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og"})
+}
+
+// migrateSettingsThemeForestNight upgrades the settings theme CHECK from the
+// five-theme set to the six-theme set including forest-night.
+func migrateSettingsThemeForestNight(ctx context.Context, tx *sql.Tx) error {
+	return rebuildSettingsThemeConstraint(ctx, tx, "settings_theme_16",
+		[]string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og", "forest-night"})
 }
 
 type legacyChatCollections struct {

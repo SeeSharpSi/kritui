@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS settings (
     ntfy_endpoint TEXT,
     ntfy_topic TEXT,
     ntfy_api_key TEXT,
-    theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og'))
+    theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og', 'forest-night'))
 ) STRICT;
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -157,4 +157,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 16;
+PRAGMA user_version = 17;
