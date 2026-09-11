@@ -558,6 +558,10 @@ function autoresizeAllMessageInputs(root = document) {
     root?.querySelectorAll?.('#message').forEach(autoresizeMessageInput);
 }
 
+function isCoarsePointer() {
+    return window.matchMedia?.('(pointer: coarse)').matches === true;
+}
+
 function activateCommandOption(input, option) {
     input.value = `/${option.dataset.commandName}`;
     closeCommandAutocomplete(input);
@@ -759,10 +763,13 @@ document.addEventListener('keydown', (event) => {
         const selected = autocomplete?.hidden
             ? null
             : autocomplete?.querySelector('.command-option[aria-selected="true"]:not([hidden])');
-        event.preventDefault();
         if (selected) {
+            event.preventDefault();
             activateCommandOption(input, selected);
+        } else if (isCoarsePointer()) {
+            break;
         } else {
+            event.preventDefault();
             input.form?.requestSubmit();
         }
         break;
