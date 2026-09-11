@@ -2075,7 +2075,7 @@ main {
                 min-height: 48px;
                 max-height: 33vh;
                 max-height: 33dvh;
-                padding: 13px 54px 13px 12px;
+                padding: 13px 96px 13px 12px;
                 border: 0;
                 border-radius: inherit;
                 background: transparent;
@@ -2116,6 +2116,47 @@ main {
 
                 &:hover:not(:disabled) {
                     background: color-mix(in srgb, var(--color-accent) 85%, white);
+                }
+
+                &:focus-visible {
+                    outline: 2px solid var(--color-accent);
+                    outline-offset: 2px;
+                }
+
+                &:disabled {
+                    cursor: not-allowed;
+                    opacity: .5;
+                }
+            }
+
+            >#attach-button {
+                position: absolute;
+                top: auto;
+                bottom: 6px;
+                right: calc(6px + 2.25rem + 6px);
+                width: 2.25rem;
+                height: 2.25rem;
+                display: grid;
+                box-sizing: border-box;
+                padding: 0;
+                border: 1px solid var(--color-border-strong);
+                background: var(--color-surface);
+                color: var(--color-text);
+                border-radius: 0;
+                place-items: center;
+                transform: none;
+                line-height: 0;
+                cursor: pointer;
+                transition: background-color 150ms ease, color 150ms ease;
+
+                svg {
+                    width: 1.25rem;
+                    height: 1.25rem;
+                }
+
+                &:hover:not(:disabled) {
+                    background: var(--color-surface-muted);
+                    border-color: var(--color-text);
                 }
 
                 &:focus-visible {

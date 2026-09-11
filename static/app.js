@@ -319,6 +319,7 @@ function restoreExpandedToolCalls(root, expanded) {
 
 function syncPanelSendButton() {
     const sendButton = document.querySelector('#send-button');
+    const attachButton = document.querySelector('#attach-button');
     if (!sendButton) {
         return;
     }
@@ -326,6 +327,9 @@ function syncPanelSendButton() {
     const panelOpen = document.querySelector('#page-panel > .panel-page:not([hidden])');
     const requestActive = document.querySelector('#message-form.htmx-request, .loading-message.completion-active:not(.completion-failed)');
     sendButton.disabled = Boolean(panelOpen || requestActive);
+    if (attachButton) {
+        attachButton.disabled = Boolean(panelOpen || requestActive);
+    }
 }
 
 function settingsClearState(button, pending) {
@@ -692,6 +696,18 @@ document.addEventListener('paste', (event) => {
     }
 });
 
+document.addEventListener('change', (event) => {
+    const input = event.target;
+    if (!input.matches?.('#image-input')) {
+        return;
+    }
+    const selected = Array.from(input.files || []);
+    syncImageInput(input);
+    if (selected.length > 0) {
+        addImageAttachments(input, selected);
+    }
+});
+
 document.addEventListener('focusin', (event) => {
     if (event.target.matches('#message')) {
         updateCommandAutocomplete(event.target);
@@ -1007,6 +1023,12 @@ document.addEventListener('htmx:confirm', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+    const attachButton = event.target.closest('#attach-button');
+    if (attachButton) {
+        attachButton.closest('form')?.querySelector('#image-input')?.click();
+        return;
+    }
+
     const clearOpen = event.target.closest('[data-settings-clear-open]');
     if (clearOpen) {
         clearOpen.closest('.settings-section')?.querySelector('[data-settings-clear-dialog]')?.showModal();

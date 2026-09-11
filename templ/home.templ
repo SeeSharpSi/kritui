@@ -154,6 +154,7 @@ templ Home(data HomeData) {
 					}
 				</div>
 				@MessageInput("", false)
+				@AttachButton()
 				@SendButton()
 			</form>
 		</main>
@@ -230,5 +231,11 @@ templ PageError(message string) {
 templ SendButton() {
 	<button id="send-button" type="submit" aria-label="Send message" title="Send message">
 		@Icon("M22 2 11 13", "M22 2 15 22 11 13 2 9 22 2")
+	</button>
+}
+
+templ AttachButton() {
+	<button id="attach-button" type="button" aria-label="Attach images" title="Attach images">
+		@Icon("M12 5v14", "M5 12h14")
 	</button>
 }
