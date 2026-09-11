@@ -1,0 +1,27 @@
+# 1975
+# Based on https://usgraphics.com/products
+# Stark white page, black hairline borders with hard offset shadows, grotesk
+# sans + Berkeley Mono data type. Dark-green primary actions, light-yellow
+# typeface tags, light-blue experimental tags, signal-red errors.
+mode = "light"
+
+background = "#ffffff"
+foreground = "#000000"
+surface = "#f4f4f4"
+surface_muted = "#eeeeee"
+text = "#000000"
+muted = "#555555"
+selection_background = "#c9e5ff"
+selection_foreground = "#000000"
+border = "#000000"
+border_strong = "#000000"
+accent = "#00794c"
+on_accent = "#ffffff"
+gold = "#ffb700"
+error = "#e7040f"
+cursor = "#000000"
+
+color0 = "#f4f4f4"
+color1 = "#e7040f"
+color3 = "#ffb700"
+color8 = "#555555"

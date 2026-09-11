@@ -63,7 +63,7 @@ func TestChatSummaryTracksVisibleHistory(t *testing.T) {
 }
 
 func TestMatteBlackMigrationPreservesExistingSettings(t *testing.T) {
-	preserved := []string{"", "rose-pine", "rose-pine-dark", "nord", "tokyo-night", "forest-night"}
+	preserved := []string{"", "rose-pine", "rose-pine-dark", "nord", "forest-night"}
 	remapped := map[string]string{"og": "rose-pine-dark", "omarchy": "matte-black"}
 	savedThemes := append(append([]string{}, preserved...), "og", "omarchy")
 	for _, savedTheme := range savedThemes {
@@ -75,9 +75,9 @@ func TestMatteBlackMigrationPreservesExistingSettings(t *testing.T) {
 			defer database.Close()
 			database.SetMaxOpenConns(1)
 			previousSchema := strings.Replace(schema,
-				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'forest-night', 'matte-black'",
+				"'rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'",
 				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og', 'forest-night', 'omarchy'", 1)
-			previousSchema = strings.Replace(previousSchema, "user_version = 19", "user_version = 18", 1)
+			previousSchema = strings.Replace(previousSchema, "user_version = 21", "user_version = 18", 1)
 			if _, err := database.Exec(previousSchema); err != nil {
 				t.Fatal(err)
 			}
@@ -111,10 +111,112 @@ func TestMatteBlackMigrationPreservesExistingSettings(t *testing.T) {
 			if _, err := database.Exec(`UPDATE settings SET theme = 'matte-black' WHERE id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			for _, removed := range []string{"og", "omarchy"} {
+			for _, removed := range []string{"og", "omarchy", "tokyo-night"} {
 				if _, err := database.Exec(`UPDATE settings SET theme = ? WHERE id = 1`, removed); err == nil {
 					t.Fatalf("migrated schema unexpectedly accepts removed theme %q", removed)
 				}
+			}
+			if err := migrateDatabase(database); err != nil {
+				t.Fatalf("repeated migration: %v", err)
+			}
+		})
+	}
+}
+
+func Test1975MigrationPreservesExistingSettings(t *testing.T) {
+	preserved := []string{"", "rose-pine", "rose-pine-dark", "nord", "forest-night", "matte-black"}
+	for _, savedTheme := range preserved {
+		t.Run("theme="+savedTheme, func(t *testing.T) {
+			database, err := sql.Open("sqlite", ":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			database.SetMaxOpenConns(1)
+			previousSchema := strings.Replace(schema,
+				"'rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'",
+				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'forest-night', 'matte-black'", 1)
+			previousSchema = strings.Replace(previousSchema, "user_version = 21", "user_version = 19", 1)
+			if _, err := database.Exec(previousSchema); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(`UPDATE settings SET theme = NULLIF(?, ''), default_model = 'kept-model', max_tool_rounds = 9,
+				default_tools_configured = 1, prompt_appends_configured = 1,
+				ntfy_endpoint = 'https://ntfy.example', ntfy_topic = 'kept-topic', ntfy_api_key = 'kept-key' WHERE id = 1`, savedTheme); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(`UPDATE settings SET theme = '1975' WHERE id = 1`); err == nil {
+				t.Fatal("version 19 unexpectedly accepts the new theme")
+			}
+			if err := migrateDatabase(database); err != nil {
+				t.Fatal(err)
+			}
+			var theme sql.NullString
+			var model, endpoint, topic, key string
+			var rounds, defaultTools, appends int
+			if err := database.QueryRow(`SELECT theme, default_model, max_tool_rounds, default_tools_configured,
+				prompt_appends_configured, ntfy_endpoint, ntfy_topic, ntfy_api_key FROM settings WHERE id = 1`).Scan(
+				&theme, &model, &rounds, &defaultTools, &appends, &endpoint, &topic, &key); err != nil {
+				t.Fatal(err)
+			}
+			if theme.String != savedTheme || theme.Valid != (savedTheme != "") || model != "kept-model" || rounds != 9 ||
+				defaultTools != 1 || appends != 1 || endpoint != "https://ntfy.example" || topic != "kept-topic" || key != "kept-key" {
+				t.Fatalf("migration produced theme %q, want %q (other settings must be preserved)", theme.String, savedTheme)
+			}
+			if _, err := database.Exec(`UPDATE settings SET theme = '1975' WHERE id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if err := migrateDatabase(database); err != nil {
+				t.Fatalf("repeated migration: %v", err)
+			}
+		})
+	}
+}
+
+func TestTokyoNightRemovalRemapsToMatteBlack(t *testing.T) {
+	preserved := []string{"", "rose-pine", "rose-pine-dark", "nord", "forest-night", "matte-black", "1975"}
+	savedThemes := append(append([]string{}, preserved...), "tokyo-night")
+	for _, savedTheme := range savedThemes {
+		t.Run("theme="+savedTheme, func(t *testing.T) {
+			database, err := sql.Open("sqlite", ":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			database.SetMaxOpenConns(1)
+			previousSchema := strings.Replace(schema,
+				"'rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'",
+				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'forest-night', 'matte-black', '1975'", 1)
+			previousSchema = strings.Replace(previousSchema, "user_version = 21", "user_version = 20", 1)
+			if _, err := database.Exec(previousSchema); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(`UPDATE settings SET theme = NULLIF(?, ''), default_model = 'kept-model', max_tool_rounds = 9,
+				default_tools_configured = 1, prompt_appends_configured = 1,
+				ntfy_endpoint = 'https://ntfy.example', ntfy_topic = 'kept-topic', ntfy_api_key = 'kept-key' WHERE id = 1`, savedTheme); err != nil {
+				t.Fatal(err)
+			}
+			if err := migrateDatabase(database); err != nil {
+				t.Fatal(err)
+			}
+			var theme sql.NullString
+			var model, endpoint, topic, key string
+			var rounds, defaultTools, appends int
+			if err := database.QueryRow(`SELECT theme, default_model, max_tool_rounds, default_tools_configured,
+				prompt_appends_configured, ntfy_endpoint, ntfy_topic, ntfy_api_key FROM settings WHERE id = 1`).Scan(
+				&theme, &model, &rounds, &defaultTools, &appends, &endpoint, &topic, &key); err != nil {
+				t.Fatal(err)
+			}
+			wantTheme := savedTheme
+			if savedTheme == "tokyo-night" {
+				wantTheme = "matte-black"
+			}
+			if theme.String != wantTheme || theme.Valid != (wantTheme != "") || model != "kept-model" || rounds != 9 ||
+				defaultTools != 1 || appends != 1 || endpoint != "https://ntfy.example" || topic != "kept-topic" || key != "kept-key" {
+				t.Fatalf("migration produced theme %q, want %q (other settings must be preserved)", theme.String, wantTheme)
+			}
+			if _, err := database.Exec(`UPDATE settings SET theme = 'tokyo-night' WHERE id = 1`); err == nil {
+				t.Fatal("migrated schema unexpectedly accepts removed theme tokyo-night")
 			}
 			if err := migrateDatabase(database); err != nil {
 				t.Fatalf("repeated migration: %v", err)

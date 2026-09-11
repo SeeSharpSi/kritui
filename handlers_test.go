@@ -2070,9 +2070,9 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 		`<option value="rose-pine">Rose Pine Light</option>`,
 		`<option value="matte-black" selected>Matte Black</option>`,
 		`<option value="nord">Nord</option>`,
-		`<option value="tokyo-night">Tokyo Night</option>`,
 		`<option value="rose-pine-dark">Rose Pine Dark</option>`,
 		`<option value="forest-night">Forest Night</option>`,
+		`<option value="1975">1975</option>`,
 		`data-theme-id="matte-black"`,
 		`data-theme-color="#090909"`,
 		`color-scheme:dark`,
@@ -2082,7 +2082,7 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 		Model:         "model",
 		MaxToolRounds: 3,
 		DefaultTools:  []string{"git"},
-		Theme:         "tokyo-night",
+		Theme:         "nord",
 	}); err != nil {
 		t.Fatalf("seed theme: %v", err)
 	}
@@ -2094,11 +2094,12 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		`<option value="rose-pine">Rose Pine Light</option>`,
 		`<option value="rose-pine-dark">Rose Pine Dark</option>`,
-		`<option value="tokyo-night" selected>Tokyo Night</option>`,
+		`<option value="nord" selected>Nord</option>`,
 		`<option value="forest-night">Forest Night</option>`,
 		`<option value="matte-black">Matte Black</option>`,
-		`data-theme-id="tokyo-night"`,
-		`data-theme-color="#1a1b26"`,
+		`<option value="1975">1975</option>`,
+		`data-theme-id="nord"`,
+		`data-theme-color="#242933"`,
 		`color-scheme:dark`,
 	)
 }
@@ -2155,6 +2156,34 @@ func TestSettingsHandlerStoresForestNightTheme(t *testing.T) {
 		`data-theme-id="forest-night"`,
 		`data-theme-color="#1a2125"`,
 		`color-scheme:dark`,
+	)
+}
+
+func TestSettingsHandlerStores1975Theme(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+		"theme":           {"1975"},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	theme, err := kritui_db.GetTheme(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get theme: %v", err)
+	}
+	if theme != "1975" {
+		t.Errorf("theme = %q, want 1975", theme)
+	}
+	requireContains(t, response.Body.String(),
+		`<option value="1975" selected>1975</option>`,
+		`data-theme-id="1975"`,
+		`data-theme-color="#ffffff"`,
+		`color-scheme:light`,
 	)
 }
 
@@ -2216,7 +2245,7 @@ func TestHomeHandlerRendersStoredTheme(t *testing.T) {
 		Model:         "model",
 		MaxToolRounds: 3,
 		DefaultTools:  []string{"git"},
-		Theme:         "tokyo-night",
+		Theme:         "1975",
 	}); err != nil {
 		t.Fatalf("seed theme: %v", err)
 	}
@@ -2229,11 +2258,11 @@ func TestHomeHandlerRendersStoredTheme(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	requireContains(t, response.Body.String(),
-		`data-theme="tokyo-night"`,
-		`--color-background:#1a1b26`,
-		`color-scheme:dark`,
-		`name="theme-color" content="#1a1b26"`,
-		`<option value="tokyo-night" selected>Tokyo Night</option>`,
+		`data-theme="1975"`,
+		`--color-background:#ffffff`,
+		`color-scheme:light`,
+		`name="theme-color" content="#ffffff"`,
+		`<option value="1975" selected>1975</option>`,
 	)
 }
 

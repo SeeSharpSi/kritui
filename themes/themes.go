@@ -42,9 +42,9 @@ var definitions = []struct {
 	{"rose-pine", "Rose Pine Light"},
 	{"rose-pine-dark", "Rose Pine Dark"},
 	{"nord", "Nord"},
-	{"tokyo-night", "Tokyo Night"},
 	{"forest-night", "Forest Night"},
 	{"matte-black", "Matte Black"},
+	{"1975", "1975"},
 }
 
 // cssVariables maps each CSS custom property to its canonical palette key and

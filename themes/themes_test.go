@@ -9,9 +9,9 @@ import (
 
 func TestOptionsListsBuiltInThemesInFixedOrder(t *testing.T) {
 	options := Options()
-	wantIDs := []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "forest-night", "matte-black"}
-	wantLabels := []string{"Rose Pine Light", "Rose Pine Dark", "Nord", "Tokyo Night", "Forest Night", "Matte Black"}
-	wantModes := []string{"light", "dark", "dark", "dark", "dark", "dark"}
+	wantIDs := []string{"rose-pine", "rose-pine-dark", "nord", "forest-night", "matte-black", "1975"}
+	wantLabels := []string{"Rose Pine Light", "Rose Pine Dark", "Nord", "Forest Night", "Matte Black", "1975"}
+	wantModes := []string{"light", "dark", "dark", "dark", "dark", "light"}
 	if len(options) != len(wantIDs) {
 		t.Fatalf("Options() returned %d themes, want %d", len(options), len(wantIDs))
 	}
@@ -87,6 +87,25 @@ func TestByIDResolvesBuiltInIDsOnly(t *testing.T) {
 	}
 	if forestNight.Colors["muted"] != "#4a5568" {
 		t.Errorf("forest-night muted = %q, want #4a5568", forestNight.Colors["muted"])
+	}
+	usGraphics, err := ByID("1975")
+	if err != nil {
+		t.Fatalf("ByID(1975) error: %v", err)
+	}
+	if usGraphics.Label != "1975" || usGraphics.Mode != "light" {
+		t.Errorf("ByID(1975) = (%q, %q), want (1975, light)", usGraphics.Label, usGraphics.Mode)
+	}
+	if usGraphics.Colors["background"] != "#ffffff" {
+		t.Errorf("1975 background = %q, want #ffffff", usGraphics.Colors["background"])
+	}
+	if usGraphics.Colors["foreground"] != "#000000" {
+		t.Errorf("1975 foreground = %q, want #000000", usGraphics.Colors["foreground"])
+	}
+	if usGraphics.Colors["accent"] != "#00794c" {
+		t.Errorf("1975 accent = %q, want #00794c", usGraphics.Colors["accent"])
+	}
+	if usGraphics.Colors["muted"] != "#555555" {
+		t.Errorf("1975 muted = %q, want #555555", usGraphics.Colors["muted"])
 	}
 	for _, id := range []string{"", "dracula", "og", "omarchy", "../rose-pine", "Rose Pine", "rose-pine/colors.toml"} {
 		if _, err := ByID(id); !errors.Is(err, ErrUnknownTheme) {
@@ -182,11 +201,11 @@ func TestBuiltInThemesMapMutedForReadability(t *testing.T) {
 		"rose-pine":      "#5f5a78",
 		"rose-pine-dark": "#9f9694",
 		"nord":           "#7f8ca3",
-		"tokyo-night":    "#b3bae0",
 		"forest-night":   "#4a5568",
 		"matte-black":    "#8a8a8d",
+		"1975":           "#555555",
 	}
-	for _, id := range []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "forest-night", "matte-black"} {
+	for _, id := range []string{"rose-pine", "rose-pine-dark", "nord", "forest-night", "matte-black", "1975"} {
 		theme, err := ByID(id)
 		if err != nil {
 			t.Fatalf("ByID(%s) error: %v", id, err)
