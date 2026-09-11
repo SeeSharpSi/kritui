@@ -230,6 +230,40 @@ func loadStoredTheme(ctx context.Context, database *sql.DB) (themes.Theme, error
 	return theme, nil
 }
 
+// chatSummaryHandler renders presentation metadata from the current stored chat.
+// Tool protocol messages and hidden undo groups do not count as visible messages.
+func chatSummaryHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID, ok := positiveID(r.PathValue("chat"))
+		if !ok {
+			http.Error(w, "A valid chat is required.", http.StatusBadRequest)
+			return
+		}
+		var title string
+		var count int
+		err := database.QueryRowContext(r.Context(), `
+			SELECT title, (
+				SELECT COUNT(*) FROM messages
+				WHERE chat_id = chats.id AND undo_sequence IS NULL AND role != 'tool'
+				AND NOT EXISTS (SELECT 1 FROM message_tool_calls WHERE message_id = messages.id)
+			) FROM chats WHERE id = ?
+		`, chatID).Scan(&title, &count)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("get chat summary: %v", err)
+			http.Error(w, "Failed to load chat summary.", http.StatusInternalServerError)
+			return
+		}
+		if strings.TrimSpace(title) == "" {
+			title = "New chat"
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		if err := templates.ChatSummary(title, count).Render(r.Context(), w); err != nil {
+			log.Printf("render chat summary: %v", err)
+		}
+	}
+}
+
 func historyHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
@@ -752,6 +786,15 @@ func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *
 	}
 	if err := templates.HistoryError("", true).Render(ctx, &fragment); err != nil {
 		return fmt.Errorf("render history status: %w", err)
+	}
+	var count int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE EXISTS (
+		SELECT 1 FROM messages WHERE messages.chat_id = chats.id
+	)`).Scan(&count); err != nil {
+		return fmt.Errorf("count chat history: %w", err)
+	}
+	if err := templates.HistoryCount(count).Render(ctx, &fragment); err != nil {
+		return fmt.Errorf("render history count: %w", err)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if _, err := w.Write(fragment.Bytes()); err != nil {

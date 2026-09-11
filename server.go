@@ -96,6 +96,7 @@ func main() {
 	mux.HandleFunc("POST /settings", settingsHandler(database, toolRegistry))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
+	mux.HandleFunc("GET /chats/{chat}/summary", chatSummaryHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, commandRegistry, toolCalls))
 	mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, toolRegistry, toolCalls))
 	mux.HandleFunc("POST /messages/retry", messageRetryHandler(database, toolRegistry, toolCalls))
@@ -426,6 +427,10 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 			authorization_token TEXT
 		) STRICT`)
 		return err
+	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		return rebuildSettingsThemeConstraint(ctx, tx, "settings_theme_18",
+			[]string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og", "forest-night", "omarchy"})
 	},
 }
 

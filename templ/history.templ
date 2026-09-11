@@ -24,7 +24,15 @@ templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
 			{ children... }
 		</div>
 		if len(messages) == 0 {
-			<p class="chat-empty">begin a convo...</p>
+			<div class="chat-empty">
+				<p class="eyebrow">Empty thread</p>
+				<h1>No messages yet</h1>
+				<p class="empty-description">Type below to begin.<span class="empty-desktop-help">{ " History, settings stay on the bottom bar." }</span></p>
+				<div class="empty-commands">
+					<a href="/">/new</a>
+					<button type="button" data-panel-target="history-page" aria-controls="history-page" aria-expanded="false">/history</button>
+				</div>
+			</div>
 		}
 	</div>
 }
@@ -42,6 +50,7 @@ templ HistoryPage(chatID string) {
 		hidden
 	>
 		<header class="panel-heading">
+			<p id="history-count" class="eyebrow">Browse</p>
 			<h1 id="history-heading" tabindex="-1" data-panel-initial-focus>Chat history</h1>
 		</header>
 		<nav class="history-nav" aria-label="Chat history">
@@ -201,12 +210,25 @@ templ HistoryButton() {
 		title="History"
 		aria-expanded="false"
 	>
-		@Icon(
-			"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8",
-			"M3 3v5h5",
-			"M12 7v5l4 2",
-		)
+		History
 	</button>
+}
+
+templ ChatSummary(title string, count int) {
+	<span class="chat-summary-title">{ title }</span>
+	<span class="chat-summary-count">{ " · " + countLabel(count, "message") }</span>
+}
+
+templ HistoryCount(count int) {
+	<p id="history-count" class="eyebrow" hx-swap-oob="outerHTML">Browse · { countLabel(count, "chat") }</p>
+	<span id="history-summary-count" hx-swap-oob="outerHTML">{ " · " + countLabel(count, "chat") }</span>
+}
+
+func countLabel(count int, noun string) string {
+	if count != 1 {
+		noun += "s"
+	}
+	return strconv.Itoa(count) + " " + noun
 }
 
 func historyEntriesURL(chatID, beforeUpdatedAt string, beforeID int64) string {

@@ -10,6 +10,10 @@ function scrollMessages(root) {
 const messageListStates = new WeakMap();
 const messageBlockSelector = '.message, .completed-tool-calls, .chat-empty';
 
+function refreshChatSummary() {
+    document.body.dispatchEvent(new Event('chat-updated'));
+}
+
 function messageListFor(root) {
     return root?.matches?.('.message-list')
         ? root
@@ -876,6 +880,9 @@ document.addEventListener('htmx:after:request', (event) => {
     const ctx = event.detail?.ctx;
     const source = ctx?.sourceElement;
     const status = ctx?.response?.status;
+    if (status >= 200 && status <= 399 && source?.matches?.('#message-form, .message-edit-form, .history-rename, .history-delete')) {
+        refreshChatSummary();
+    }
     if (status >= 200 && status <= 399 && source?.matches?.('#message-form')) {
         const input = source.querySelector('#image-input');
         if (input) {
@@ -934,6 +941,9 @@ document.addEventListener('htmx:sse:after:message', (event) => {
     pendingExpandedToolCalls.delete(event.target);
     restoreMessageScroll(event.target);
     syncPanelSendButton();
+    if (!document.querySelector('.completion-active:not(.completion-failed)')) {
+        refreshChatSummary();
+    }
 });
 document.addEventListener('htmx:sse:close', (event) => {
     if (event.detail?.reason === 'message') {

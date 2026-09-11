@@ -1,0 +1,17 @@
+# Kritui (copy) Paper palette
+mode = "dark"
+
+background = "#090909"
+foreground = "#bebebe"
+surface = "#121212"
+surface_muted = "#1e1e1e"
+text = "#bebebe"
+muted = "#8a8a8d"
+selection_background = "#2a2a2a"
+selection_foreground = "#bebebe"
+border = "#333333"
+border_strong = "#555555"
+accent = "#e68e0d"
+on_accent = "#090909"
+gold = "#f59e0b"
+error = "#f08080"

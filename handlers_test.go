@@ -409,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=14`,
-		`/static/hx-sse.js?v=14`,
-		`/static/app.js?v=14`,
-		`/static/styles.css?v=14`,
+		`/static/htmx.min.js?v=15`,
+		`/static/hx-sse.js?v=15`,
+		`/static/app.js?v=15`,
+		`/static/styles.css?v=15`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -430,7 +430,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 	if count := strings.Count(response.Body.String(), `class="message-copy-button"`); count != 1 {
 		t.Errorf("message copy button count = %d, want 1", count)
 	}
-	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "begin a convo...", "<strong>assistant</strong>", `role="button"`, `hx-replace-url`)
+	requireNotContains(t, response.Body.String(), "What would you like to discuss?", "No messages yet", "<strong>assistant</strong>", `role="button"`, `hx-replace-url`)
 	requireNotContains(t, response.Body.String(), `hx-history="false"`)
 }
 
@@ -444,7 +444,7 @@ func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	requireContains(t, response.Body.String(), "begin a convo...")
+	requireContains(t, response.Body.String(), "No messages yet", "Empty thread", `id="chat-summary"`, `hx-get="/chats/8/summary"`)
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?")
 }
 
@@ -2067,14 +2067,15 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 	}
 	requireContains(t, response.Body.String(),
 		`<select id="theme" name="theme">`,
-		`<option value="rose-pine" selected>Rose Pine Light</option>`,
+		`<option value="rose-pine">Rose Pine Light</option>`,
+		`<option value="omarchy" selected>Omarchy</option>`,
 		`<option value="nord">Nord</option>`,
 		`<option value="tokyo-night">Tokyo Night</option>`,
 		`<option value="og">OG</option>`,
 		`<option value="forest-night">Forest Night</option>`,
-		`data-theme-id="rose-pine"`,
-		`data-theme-color="#faf4ed"`,
-		`color-scheme:light`,
+		`data-theme-id="omarchy"`,
+		`data-theme-color="#090909"`,
+		`color-scheme:dark`,
 	)
 
 	if err := kritui_db.SaveSettings(context.Background(), database, kritui_db.SettingsUpdate{
@@ -2248,11 +2249,11 @@ func TestHomeHandlerRendersDefaultThemeWhenUnset(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	requireContains(t, response.Body.String(),
-		`data-theme="rose-pine"`,
-		`--color-background:#faf4ed`,
-		`color-scheme:light`,
-		`name="theme-color" content="#faf4ed"`,
-		`<option value="rose-pine" selected>Rose Pine Light</option>`,
+		`data-theme="omarchy"`,
+		`--color-background:#090909`,
+		`color-scheme:dark`,
+		`name="theme-color" content="#090909"`,
+		`<option value="omarchy" selected>Omarchy</option>`,
 	)
 }
 
@@ -3093,7 +3094,7 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 		"No saved chats yet.",
 		`id="message-list"`,
 		`hx-swap-oob="outerHTML"`,
-		"begin a convo...",
+		"No messages yet",
 	)
 	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&chats); err != nil {
 		t.Fatalf("count chats: %v", err)

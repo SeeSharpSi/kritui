@@ -4,7 +4,7 @@ import (
 	"seesharpsi/kritui/themes"
 )
 
-const staticAssetVersion = "14"
+const staticAssetVersion = "15"
 
 func staticAsset(path string) string {
 	return path + "?v=" + staticAssetVersion
@@ -19,7 +19,7 @@ templ Layout(title string, theme themes.Theme) {
 	>
 		<head>
 			<meta charset="utf-8"/>
-			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 			<meta name="htmx-config" content={ `{"defaultTimeout":0,"defaultSettleDelay":20,"extensions":"sse"}` }/>
 			<title>{ title }</title>
 			<meta name="theme-color" content={ theme.Colors["background"] }/>

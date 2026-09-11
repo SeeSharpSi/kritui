@@ -499,6 +499,13 @@ func TestThemeColumnRejectsInvalidValues(t *testing.T) {
 	if stored != "forest-night" {
 		t.Errorf("stored theme = %q, want forest-night", stored)
 	}
+	if _, err := database.Exec(`UPDATE settings SET theme = 'omarchy' WHERE id = 1`); err != nil {
+		t.Fatalf("store omarchy theme: %v", err)
+	}
+	stored, err = GetTheme(context.Background(), database)
+	if err != nil || stored != "omarchy" {
+		t.Errorf("stored theme = %q, error = %v, want omarchy", stored, err)
+	}
 }
 
 func TestSaveSettingsStoresMCPServersAndPrunesRemovedCapabilities(t *testing.T) {

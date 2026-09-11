@@ -164,7 +164,7 @@ templ UserMessage(chatID string, message llm.Message) {
 							aria-label="Edit message"
 							title="Edit message"
 						>
-							@Icon("M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z")
+							Edit
 						</button>
 						<button
 							type="button"
@@ -172,8 +172,8 @@ templ UserMessage(chatID string, message llm.Message) {
 							aria-label="Copy message"
 							title="Copy message"
 						>
-							<span class="message-copy-default">@Icon("M8 8h12v12H8z", "M16 5V4H4v12h1")</span>
-							<span class="message-copy-confirmation">@Icon("m5 12 4 4L19 6")</span>
+							<span class="message-copy-default">Copy</span>
+							<span class="message-copy-confirmation">Copied</span>
 						</button>
 						<button
 							type="button"
@@ -181,7 +181,7 @@ templ UserMessage(chatID string, message llm.Message) {
 							aria-label="Cancel message edit"
 							title="Cancel message edit"
 						>
-							@Icon("M18 6 6 18", "m6 6 12 12")
+							Cancel
 						</button>
 					}
 				</div>
@@ -365,10 +365,7 @@ templ CompletionRetry(chatID string, model string, tools []string) {
 			<input type="hidden" name="tool" value={ tool }/>
 		}
 		<button class="completion-retry-button" type="submit" aria-label="Retry completion" title="Retry completion">
-			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-				<path d="M20 6v6h-6"></path>
-				<path d="M20 12a8 8 0 1 0-2.34 5.66"></path>
-			</svg>
+			Retry
 		</button>
 	</form>
 }

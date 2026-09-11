@@ -35,6 +35,24 @@ type HomeData struct {
 templ Home(data HomeData) {
 	@Layout("Kritui", data.Theme) {
 		<main>
+			<header class="app-header">
+				<span class="brand-mark" aria-hidden="true">
+					<svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 5a5 5 0 0 0 0 10Z" fill="currentColor"></path></svg>
+				</span>
+				<span class="brand-name">Kritui</span>
+				<span class="brand-section">Chat</span>
+				<div class="app-context">
+					<span class="context-chat" id="chat-summary" hx-get={ "/chats/" + data.ChatID + "/summary" } hx-trigger="load, chat-updated from:body" hx-swap="innerHTML" hx-sync="this:replace" hx-indicator="none" hx-status:4xx="swap:none" hx-status:5xx="swap:none">
+						if len(data.Messages) == 0 {
+							New chat · 0 messages
+						} else {
+							Conversation
+						}
+					</span>
+					<span class="context-settings">Settings</span>
+					<span class="context-history">History<span id="history-summary-count"></span></span>
+				</div>
+			</header>
 			<section class="chat">
 				<div class="message-panel">
 					@MessageList(data.ChatID, data.Messages, false) {
@@ -67,6 +85,7 @@ templ Home(data HomeData) {
 				</div>
 				@SettingsButton()
 				<details class="chat-options">
+					<summary aria-label="Toggle chat options">Options</summary>
 					<div class="chat-options-list">
 						<details class="model-picker">
 							<summary>
@@ -96,9 +115,6 @@ templ Home(data HomeData) {
 						@ToolPicker(data.Tools, data.MCPServers, data.EnabledTools, false)
 						@AppendsPicker(data.PromptAppends, data.EnabledAppendIDs, false)
 					</div>
-					<summary style="outline: none;">
-						<span class="visually-hidden">Toggle chat options</span>
-					</summary>
 				</details>
 				@HistoryButton()
 				<div id="image-previews" class="image-previews" aria-label="Attached images" hidden></div>

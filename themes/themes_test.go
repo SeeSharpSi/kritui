@@ -9,9 +9,9 @@ import (
 
 func TestOptionsListsBuiltInThemesInFixedOrder(t *testing.T) {
 	options := Options()
-	wantIDs := []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og", "forest-night"}
-	wantLabels := []string{"Rose Pine Light", "Rose Pine Dark", "Nord", "Tokyo Night", "OG", "Forest Night"}
-	wantModes := []string{"light", "dark", "dark", "dark", "dark", "dark"}
+	wantIDs := []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og", "forest-night", "omarchy"}
+	wantLabels := []string{"Rose Pine Light", "Rose Pine Dark", "Nord", "Tokyo Night", "OG", "Forest Night", "Omarchy"}
+	wantModes := []string{"light", "dark", "dark", "dark", "dark", "dark", "dark"}
 	if len(options) != len(wantIDs) {
 		t.Fatalf("Options() returned %d themes, want %d", len(options), len(wantIDs))
 	}
@@ -92,9 +92,9 @@ func TestByIDResolvesBuiltInIDsOnly(t *testing.T) {
 	}
 }
 
-func TestDefaultIsRosePine(t *testing.T) {
-	if Default().ID != "rose-pine" {
-		t.Errorf("Default() = %q, want rose-pine", Default().ID)
+func TestDefaultIsOmarchy(t *testing.T) {
+	if Default().ID != "omarchy" {
+		t.Errorf("Default() = %q, want omarchy", Default().ID)
 	}
 }
 

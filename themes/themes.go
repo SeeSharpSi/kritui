@@ -1,4 +1,4 @@
-// Package themes provides the six built-in color themes. Theme palettes are
+// Package themes provides the built-in color themes. Theme palettes are
 // embedded Omarchy colors.toml files parsed once at startup; only the fixed
 // built-in IDs can be resolved, so stored settings can never select arbitrary
 // files.
@@ -45,6 +45,7 @@ var definitions = []struct {
 	{"tokyo-night", "Tokyo Night"},
 	{"og", "OG"},
 	{"forest-night", "Forest Night"},
+	{"omarchy", "Omarchy"},
 }
 
 // cssVariables maps each CSS custom property to its canonical palette key and
@@ -238,7 +239,11 @@ func ByID(id string) (Theme, error) {
 
 // Default returns the theme used when nothing is configured.
 func Default() Theme {
-	return cloneTheme(builtInThemes[0])
+	theme, err := ByID("omarchy")
+	if err != nil {
+		panic("default theme missing")
+	}
+	return theme
 }
 
 func cloneTheme(theme Theme) Theme {
