@@ -1080,6 +1080,9 @@ document.addEventListener('click', (event) => {
 
     const messageEditButton = event.target.closest('.message-edit-toggle');
     if (messageEditButton) {
+        if (document.querySelector('.loading-message.completion-active:not(.completion-failed), .message-edit-form.htmx-request')) {
+            return;
+        }
         document.querySelectorAll('.message.user.editing').forEach((message) => {
             closeMessageEditor(message, false);
         });

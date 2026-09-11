@@ -999,7 +999,8 @@ main {
 
             &:has(.loading-message) .message-edit-toggle,
             &:has(.message-edit-form.htmx-request) .message-edit-toggle {
-                visibility: hidden;
+                opacity: .45;
+                cursor: not-allowed;
                 pointer-events: none;
             }
         }
