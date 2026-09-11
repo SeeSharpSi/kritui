@@ -475,7 +475,7 @@ func TestSaveSettingsRejectsUnknownTheme(t *testing.T) {
 
 func TestThemeColumnRejectsInvalidValues(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
-	for _, theme := range []string{"dracula", "rose-pine/colors.toml", ""} {
+	for _, theme := range []string{"dracula", "rose-pine/colors.toml", "", "og", "omarchy"} {
 		if _, err := database.Exec(`UPDATE settings SET theme = ? WHERE id = 1`, theme); err == nil {
 			t.Errorf("store invalid theme %q error = nil", theme)
 		}
@@ -485,9 +485,6 @@ func TestThemeColumnRejectsInvalidValues(t *testing.T) {
 	}
 	if _, err := database.Exec(`UPDATE settings SET theme = 'rose-pine-dark' WHERE id = 1`); err != nil {
 		t.Errorf("store rose-pine-dark theme error: %v", err)
-	}
-	if _, err := database.Exec(`UPDATE settings SET theme = 'og' WHERE id = 1`); err != nil {
-		t.Errorf("store og theme error: %v", err)
 	}
 	if _, err := database.Exec(`UPDATE settings SET theme = 'forest-night' WHERE id = 1`); err != nil {
 		t.Errorf("store forest-night theme error: %v", err)
@@ -499,12 +496,12 @@ func TestThemeColumnRejectsInvalidValues(t *testing.T) {
 	if stored != "forest-night" {
 		t.Errorf("stored theme = %q, want forest-night", stored)
 	}
-	if _, err := database.Exec(`UPDATE settings SET theme = 'omarchy' WHERE id = 1`); err != nil {
-		t.Fatalf("store omarchy theme: %v", err)
+	if _, err := database.Exec(`UPDATE settings SET theme = 'matte-black' WHERE id = 1`); err != nil {
+		t.Fatalf("store matte-black theme: %v", err)
 	}
 	stored, err = GetTheme(context.Background(), database)
-	if err != nil || stored != "omarchy" {
-		t.Errorf("stored theme = %q, error = %v, want omarchy", stored, err)
+	if err != nil || stored != "matte-black" {
+		t.Errorf("stored theme = %q, error = %v, want matte-black", stored, err)
 	}
 }
 

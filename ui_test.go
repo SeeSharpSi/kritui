@@ -62,8 +62,11 @@ func TestChatSummaryTracksVisibleHistory(t *testing.T) {
 	requireContains(t, response.Body.String(), "New chat", "0 messages")
 }
 
-func TestOmarchyMigrationPreservesExistingSettings(t *testing.T) {
-	for _, savedTheme := range []string{"", "rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og", "forest-night"} {
+func TestMatteBlackMigrationPreservesExistingSettings(t *testing.T) {
+	preserved := []string{"", "rose-pine", "rose-pine-dark", "nord", "tokyo-night", "forest-night"}
+	remapped := map[string]string{"og": "rose-pine-dark", "omarchy": "matte-black"}
+	savedThemes := append(append([]string{}, preserved...), "og", "omarchy")
+	for _, savedTheme := range savedThemes {
 		t.Run("theme="+savedTheme, func(t *testing.T) {
 			database, err := sql.Open("sqlite", ":memory:")
 			if err != nil {
@@ -71,8 +74,10 @@ func TestOmarchyMigrationPreservesExistingSettings(t *testing.T) {
 			}
 			defer database.Close()
 			database.SetMaxOpenConns(1)
-			previousSchema := strings.Replace(schema, ", 'omarchy'", "", 1)
-			previousSchema = strings.Replace(previousSchema, "user_version = 18", "user_version = 17", 1)
+			previousSchema := strings.Replace(schema,
+				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'forest-night', 'matte-black'",
+				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og', 'forest-night', 'omarchy'", 1)
+			previousSchema = strings.Replace(previousSchema, "user_version = 19", "user_version = 18", 1)
 			if _, err := database.Exec(previousSchema); err != nil {
 				t.Fatal(err)
 			}
@@ -81,8 +86,8 @@ func TestOmarchyMigrationPreservesExistingSettings(t *testing.T) {
 				ntfy_endpoint = 'https://ntfy.example', ntfy_topic = 'kept-topic', ntfy_api_key = 'kept-key' WHERE id = 1`, savedTheme); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := database.Exec(`UPDATE settings SET theme = 'omarchy' WHERE id = 1`); err == nil {
-				t.Fatal("version 17 unexpectedly accepts the new theme")
+			if _, err := database.Exec(`UPDATE settings SET theme = 'matte-black' WHERE id = 1`); err == nil {
+				t.Fatal("version 18 unexpectedly accepts the new theme")
 			}
 			if err := migrateDatabase(database); err != nil {
 				t.Fatal(err)
@@ -95,12 +100,21 @@ func TestOmarchyMigrationPreservesExistingSettings(t *testing.T) {
 				&theme, &model, &rounds, &defaultTools, &appends, &endpoint, &topic, &key); err != nil {
 				t.Fatal(err)
 			}
-			if theme.String != savedTheme || theme.Valid != (savedTheme != "") || model != "kept-model" || rounds != 9 ||
-				defaultTools != 1 || appends != 1 || endpoint != "https://ntfy.example" || topic != "kept-topic" || key != "kept-key" {
-				t.Fatal("migration changed existing settings")
+			wantTheme := savedTheme
+			if mapped, ok := remapped[savedTheme]; ok {
+				wantTheme = mapped
 			}
-			if _, err := database.Exec(`UPDATE settings SET theme = 'omarchy' WHERE id = 1`); err != nil {
+			if theme.String != wantTheme || theme.Valid != (wantTheme != "") || model != "kept-model" || rounds != 9 ||
+				defaultTools != 1 || appends != 1 || endpoint != "https://ntfy.example" || topic != "kept-topic" || key != "kept-key" {
+				t.Fatalf("migration produced theme %q, want %q (other settings must be preserved)", theme.String, wantTheme)
+			}
+			if _, err := database.Exec(`UPDATE settings SET theme = 'matte-black' WHERE id = 1`); err != nil {
 				t.Fatal(err)
+			}
+			for _, removed := range []string{"og", "omarchy"} {
+				if _, err := database.Exec(`UPDATE settings SET theme = ? WHERE id = 1`, removed); err == nil {
+					t.Fatalf("migrated schema unexpectedly accepts removed theme %q", removed)
+				}
 			}
 			if err := migrateDatabase(database); err != nil {
 				t.Fatalf("repeated migration: %v", err)
@@ -109,9 +123,9 @@ func TestOmarchyMigrationPreservesExistingSettings(t *testing.T) {
 	}
 }
 
-func TestSettingsCanSaveOmarchyAndReturnToExistingTheme(t *testing.T) {
+func TestSettingsCanSaveMatteBlackAndReturnToExistingTheme(t *testing.T) {
 	database := openTestDatabase(t)
-	for _, theme := range []string{"omarchy", "rose-pine", "omarchy"} {
+	for _, theme := range []string{"matte-black", "rose-pine", "matte-black"} {
 		response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
 			"model": {"preview-model"}, "max_tool_rounds": {"16"}, "theme": {theme},
 		})

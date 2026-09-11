@@ -9,9 +9,9 @@ import (
 
 func TestOptionsListsBuiltInThemesInFixedOrder(t *testing.T) {
 	options := Options()
-	wantIDs := []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og", "forest-night", "omarchy"}
-	wantLabels := []string{"Rose Pine Light", "Rose Pine Dark", "Nord", "Tokyo Night", "OG", "Forest Night", "Omarchy"}
-	wantModes := []string{"light", "dark", "dark", "dark", "dark", "dark", "dark"}
+	wantIDs := []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "forest-night", "matte-black"}
+	wantLabels := []string{"Rose Pine Light", "Rose Pine Dark", "Nord", "Tokyo Night", "Forest Night", "Matte Black"}
+	wantModes := []string{"light", "dark", "dark", "dark", "dark", "dark"}
 	if len(options) != len(wantIDs) {
 		t.Fatalf("Options() returned %d themes, want %d", len(options), len(wantIDs))
 	}
@@ -46,6 +46,9 @@ func TestByIDResolvesBuiltInIDsOnly(t *testing.T) {
 	if nord.Label != "Nord" || nord.Mode != "dark" {
 		t.Errorf("ByID(nord) = (%q, %q), want (Nord, dark)", nord.Label, nord.Mode)
 	}
+	if nord.Colors["background"] != "#242933" {
+		t.Errorf("nord background = %q, want #242933", nord.Colors["background"])
+	}
 	rosePineDark, err := ByID("rose-pine-dark")
 	if err != nil {
 		t.Fatalf("ByID(rose-pine-dark) error: %v", err)
@@ -53,18 +56,18 @@ func TestByIDResolvesBuiltInIDsOnly(t *testing.T) {
 	if rosePineDark.Label != "Rose Pine Dark" || rosePineDark.Mode != "dark" {
 		t.Errorf("ByID(rose-pine-dark) = (%q, %q), want (Rose Pine Dark, dark)", rosePineDark.Label, rosePineDark.Mode)
 	}
-	if rosePineDark.Colors["background"] != "#191724" {
-		t.Errorf("rose-pine-dark background = %q, want #191724", rosePineDark.Colors["background"])
+	if rosePineDark.Colors["background"] != "#17151b" {
+		t.Errorf("rose-pine-dark background = %q, want #17151b", rosePineDark.Colors["background"])
 	}
-	og, err := ByID("og")
+	matteBlack, err := ByID("matte-black")
 	if err != nil {
-		t.Fatalf("ByID(og) error: %v", err)
+		t.Fatalf("ByID(matte-black) error: %v", err)
 	}
-	if og.Label != "OG" || og.Mode != "dark" {
-		t.Errorf("ByID(og) = (%q, %q), want (OG, dark)", og.Label, og.Mode)
+	if matteBlack.Label != "Matte Black" || matteBlack.Mode != "dark" {
+		t.Errorf("ByID(matte-black) = (%q, %q), want (Matte Black, dark)", matteBlack.Label, matteBlack.Mode)
 	}
-	if og.Colors["background"] != "#17151b" {
-		t.Errorf("og background = %q, want #17151b", og.Colors["background"])
+	if matteBlack.Colors["background"] != "#090909" {
+		t.Errorf("matte-black background = %q, want #090909", matteBlack.Colors["background"])
 	}
 	forestNight, err := ByID("forest-night")
 	if err != nil {
@@ -85,16 +88,16 @@ func TestByIDResolvesBuiltInIDsOnly(t *testing.T) {
 	if forestNight.Colors["muted"] != "#4a5568" {
 		t.Errorf("forest-night muted = %q, want #4a5568", forestNight.Colors["muted"])
 	}
-	for _, id := range []string{"", "dracula", "../rose-pine", "Rose Pine", "rose-pine/colors.toml"} {
+	for _, id := range []string{"", "dracula", "og", "omarchy", "../rose-pine", "Rose Pine", "rose-pine/colors.toml"} {
 		if _, err := ByID(id); !errors.Is(err, ErrUnknownTheme) {
 			t.Errorf("ByID(%q) error = %v, want ErrUnknownTheme", id, err)
 		}
 	}
 }
 
-func TestDefaultIsOmarchy(t *testing.T) {
-	if Default().ID != "omarchy" {
-		t.Errorf("Default() = %q, want omarchy", Default().ID)
+func TestDefaultIsMatteBlack(t *testing.T) {
+	if Default().ID != "matte-black" {
+		t.Errorf("Default() = %q, want matte-black", Default().ID)
 	}
 }
 
@@ -177,13 +180,13 @@ func TestBuildThemePrefersCanonicalSemanticKeys(t *testing.T) {
 func TestBuiltInThemesMapMutedForReadability(t *testing.T) {
 	wantMuted := map[string]string{
 		"rose-pine":      "#5f5a78",
-		"rose-pine-dark": "#908caa",
-		"nord":           "#c2cbd8",
+		"rose-pine-dark": "#9f9694",
+		"nord":           "#7f8ca3",
 		"tokyo-night":    "#b3bae0",
-		"og":             "#9f9694",
 		"forest-night":   "#4a5568",
+		"matte-black":    "#8a8a8d",
 	}
-	for _, id := range []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "og", "forest-night"} {
+	for _, id := range []string{"rose-pine", "rose-pine-dark", "nord", "tokyo-night", "forest-night", "matte-black"} {
 		theme, err := ByID(id)
 		if err != nil {
 			t.Fatalf("ByID(%s) error: %v", id, err)

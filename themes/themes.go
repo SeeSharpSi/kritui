@@ -1,5 +1,5 @@
 // Package themes provides the built-in color themes. Theme palettes are
-// embedded Omarchy colors.toml files parsed once at startup; only the fixed
+// embedded colors.toml files parsed once at startup; only the fixed
 // built-in IDs can be resolved, so stored settings can never select arbitrary
 // files.
 package themes
@@ -25,7 +25,7 @@ type Theme struct {
 	Label string
 	// Mode is "light" or "dark" and drives the CSS color-scheme property.
 	Mode string
-	// Colors holds the raw Omarchy palette keys mapped to lowercase hex values.
+	// Colors holds the raw palette keys mapped to lowercase hex values.
 	Colors map[string]string
 	// Style is the inline CSS custom property declaration for the page root,
 	// including color-scheme.
@@ -43,9 +43,8 @@ var definitions = []struct {
 	{"rose-pine-dark", "Rose Pine Dark"},
 	{"nord", "Nord"},
 	{"tokyo-night", "Tokyo Night"},
-	{"og", "OG"},
 	{"forest-night", "Forest Night"},
-	{"omarchy", "Omarchy"},
+	{"matte-black", "Matte Black"},
 }
 
 // cssVariables maps each CSS custom property to its canonical palette key and
@@ -70,7 +69,7 @@ var cssVariables = []struct {
 
 var hexColorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
-// parsePalette parses the flat Omarchy colors.toml subset: one
+// parsePalette parses the flat colors.toml subset: one
 // key = "value" pair per line, blank lines, whole-line and trailing comments.
 func parsePalette(content []byte) (map[string]string, error) {
 	palette := make(map[string]string)
@@ -239,7 +238,7 @@ func ByID(id string) (Theme, error) {
 
 // Default returns the theme used when nothing is configured.
 func Default() Theme {
-	theme, err := ByID("omarchy")
+	theme, err := ByID("matte-black")
 	if err != nil {
 		panic("default theme missing")
 	}

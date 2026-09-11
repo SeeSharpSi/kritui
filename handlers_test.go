@@ -2068,12 +2068,12 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		`<select id="theme" name="theme">`,
 		`<option value="rose-pine">Rose Pine Light</option>`,
-		`<option value="omarchy" selected>Omarchy</option>`,
+		`<option value="matte-black" selected>Matte Black</option>`,
 		`<option value="nord">Nord</option>`,
 		`<option value="tokyo-night">Tokyo Night</option>`,
-		`<option value="og">OG</option>`,
+		`<option value="rose-pine-dark">Rose Pine Dark</option>`,
 		`<option value="forest-night">Forest Night</option>`,
-		`data-theme-id="omarchy"`,
+		`data-theme-id="matte-black"`,
 		`data-theme-color="#090909"`,
 		`color-scheme:dark`,
 	)
@@ -2095,8 +2095,8 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 		`<option value="rose-pine">Rose Pine Light</option>`,
 		`<option value="rose-pine-dark">Rose Pine Dark</option>`,
 		`<option value="tokyo-night" selected>Tokyo Night</option>`,
-		`<option value="og">OG</option>`,
 		`<option value="forest-night">Forest Night</option>`,
+		`<option value="matte-black">Matte Black</option>`,
 		`data-theme-id="tokyo-night"`,
 		`data-theme-color="#1a1b26"`,
 		`color-scheme:dark`,
@@ -2126,7 +2126,7 @@ func TestSettingsHandlerStoresTheme(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		`<option value="nord" selected>Nord</option>`,
 		`data-theme-id="nord"`,
-		`data-theme-color="#2e3440"`,
+		`data-theme-color="#242933"`,
 	)
 }
 
@@ -2249,11 +2249,11 @@ func TestHomeHandlerRendersDefaultThemeWhenUnset(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	requireContains(t, response.Body.String(),
-		`data-theme="omarchy"`,
+		`data-theme="matte-black"`,
 		`--color-background:#090909`,
 		`color-scheme:dark`,
 		`name="theme-color" content="#090909"`,
-		`<option value="omarchy" selected>Omarchy</option>`,
+		`<option value="matte-black" selected>Matte Black</option>`,
 	)
 }
 
@@ -5121,15 +5121,18 @@ func TestMigrateDatabaseRebuildsSettingsForOGTheme(t *testing.T) {
 	if _, err := database.Exec(`UPDATE settings SET theme = 'dracula' WHERE id = 1`); err == nil {
 		t.Error("store invalid theme after migration error = nil, want constraint rejection")
 	}
-	if _, err := database.Exec(`UPDATE settings SET theme = 'og' WHERE id = 1`); err != nil {
-		t.Errorf("store og after migration error: %v", err)
+	if _, err := database.Exec(`UPDATE settings SET theme = 'og' WHERE id = 1`); err == nil {
+		t.Error("store removed og theme after migration error = nil, want constraint rejection")
+	}
+	if _, err := database.Exec(`UPDATE settings SET theme = 'rose-pine-dark' WHERE id = 1`); err != nil {
+		t.Errorf("store rose-pine-dark after migration error: %v", err)
 	}
 	stored, err := kritui_db.GetTheme(context.Background(), database)
 	if err != nil {
 		t.Fatalf("get theme after migration: %v", err)
 	}
-	if stored != "og" {
-		t.Errorf("stored theme = %q, want og", stored)
+	if stored != "rose-pine-dark" {
+		t.Errorf("stored theme = %q, want rose-pine-dark", stored)
 	}
 }
 
@@ -5179,8 +5182,8 @@ func TestMigrateDatabaseRebuildsSettingsForForestNightTheme(t *testing.T) {
 	`).Scan(&theme, &model, &maxToolRounds, &ntfyEndpoint, &ntfyTopic); err != nil {
 		t.Fatalf("read settings after migration: %v", err)
 	}
-	if !theme.Valid || theme.String != "og" || model != "kept-model" || maxToolRounds != 7 || ntfyEndpoint != "https://ntfy.example" || ntfyTopic != "topic" {
-		t.Errorf("migrated settings = theme %#v, model %q, rounds %d, endpoint %q, topic %q, want values preserved",
+	if !theme.Valid || theme.String != "rose-pine-dark" || model != "kept-model" || maxToolRounds != 7 || ntfyEndpoint != "https://ntfy.example" || ntfyTopic != "topic" {
+		t.Errorf("migrated settings = theme %#v, model %q, rounds %d, endpoint %q, topic %q, want og remapped to rose-pine-dark",
 			theme, model, maxToolRounds, ntfyEndpoint, ntfyTopic)
 	}
 	if _, err := database.Exec(`UPDATE settings SET theme = 'dracula' WHERE id = 1`); err == nil {
@@ -5195,6 +5198,96 @@ func TestMigrateDatabaseRebuildsSettingsForForestNightTheme(t *testing.T) {
 	}
 	if stored != "forest-night" {
 		t.Errorf("stored theme = %q, want forest-night", stored)
+	}
+}
+
+func TestMigrateDatabaseRenamesThemesToMatteBlack(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		saved     string
+		want      string
+		wantValid bool
+	}{
+		{"preserves rose-pine", "rose-pine", "rose-pine", true},
+		{"preserves nord", "nord", "nord", true},
+		{"preserves forest-night", "forest-night", "forest-night", true},
+		{"remaps og to rose-pine-dark", "og", "rose-pine-dark", true},
+		{"remaps omarchy to matte-black", "omarchy", "matte-black", true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			database, err := sql.Open("sqlite", ":memory:")
+			if err != nil {
+				t.Fatalf("open database: %v", err)
+			}
+			database.SetMaxOpenConns(1)
+			defer database.Close()
+			if _, err := database.Exec(`
+				CREATE TABLE settings (
+					id INTEGER PRIMARY KEY CHECK (id = 1),
+					default_model TEXT,
+					max_tool_rounds INTEGER CHECK (max_tool_rounds IS NULL OR max_tool_rounds BETWEEN 1 AND 100),
+					default_tools_configured INTEGER NOT NULL DEFAULT 0 CHECK (default_tools_configured IN (0, 1)),
+					prompt_appends_configured INTEGER NOT NULL DEFAULT 0 CHECK (prompt_appends_configured IN (0, 1)),
+					ntfy_endpoint TEXT,
+					ntfy_topic TEXT,
+					ntfy_api_key TEXT,
+					theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og', 'forest-night', 'omarchy'))
+				) STRICT;
+				INSERT INTO settings (id, default_model, max_tool_rounds, default_tools_configured, prompt_appends_configured, ntfy_endpoint, ntfy_topic, theme)
+					VALUES (1, 'kept-model', 7, 1, 1, 'https://ntfy.example', 'topic', ?);
+				PRAGMA user_version = 18;
+			`, testCase.saved); err != nil {
+				t.Fatalf("initialize version eighteen database: %v", err)
+			}
+
+			if err := migrateDatabase(database); err != nil {
+				t.Fatalf("migrate database: %v", err)
+			}
+			var version int
+			if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+				t.Fatalf("read schema version: %v", err)
+			}
+			if version != len(databaseMigrations) {
+				t.Fatalf("migrated schema version = %d, want %d", version, len(databaseMigrations))
+			}
+			var theme sql.NullString
+			var model string
+			if err := database.QueryRow(`SELECT theme, default_model FROM settings WHERE id = 1`).Scan(&theme, &model); err != nil {
+				t.Fatalf("read settings after migration: %v", err)
+			}
+			if theme.String != testCase.want || theme.Valid != testCase.wantValid || model != "kept-model" {
+				t.Errorf("migrated settings = theme %#v, model %q, want theme %#v and kept model", theme, model, testCase.want)
+			}
+		})
+	}
+
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	if _, err := database.Exec(`
+		CREATE TABLE settings (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			default_model TEXT,
+			theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og', 'forest-night', 'omarchy'))
+		) STRICT;
+		INSERT INTO settings (id, theme) VALUES (1, 'nord');
+		PRAGMA user_version = 18;
+	`); err != nil {
+		t.Fatalf("initialize version eighteen database: %v", err)
+	}
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	for _, removed := range []string{"og", "omarchy", "dracula"} {
+		if _, err := database.Exec(`UPDATE settings SET theme = ? WHERE id = 1`, removed); err == nil {
+			t.Errorf("store removed theme %q after migration error = nil, want constraint rejection", removed)
+		}
+	}
+	if _, err := database.Exec(`UPDATE settings SET theme = 'matte-black' WHERE id = 1`); err != nil {
+		t.Errorf("store matte-black after migration error: %v", err)
 	}
 }
 

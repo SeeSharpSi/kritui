@@ -1,13 +1,19 @@
-# Nord
+# Nord — higher-contrast variant
 mode = "dark"
 
-accent = "#81a1c1"
-cursor = "#d8dee9"
-foreground = "#d8dee9"
-muted = "#c2cbd8"
-background = "#2e3440"
-selection_foreground = "#d8dee9"
-selection_background = "#4c566a"
+background = "#242933"
+foreground = "#eceff4"
+surface = "#2e3440"
+surface_muted = "#3b4252"
+text = "#eceff4"
+muted = "#7f8ca3"
+selection_foreground = "#eceff4"
+selection_background = "#434c5e"
+border = "#4c566a"
+border_strong = "#6b7a96"
+accent = "#88c0d0"
+on_accent = "#242933"
+cursor = "#eceff4"
 
 color0 = "#3b4252"
 color1 = "#bf616a"
