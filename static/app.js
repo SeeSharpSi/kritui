@@ -14,6 +14,45 @@ function refreshChatSummary() {
     document.body.dispatchEvent(new Event('chat-updated'));
 }
 
+function syncShellCollapse() {
+    const main = document.querySelector('main');
+    if (!main) {
+        return;
+    }
+    const activePane = main.querySelector('#page-panel > .panel-page:not([hidden])') || main.querySelector('#message-list');
+    if (!activePane) {
+        return;
+    }
+    // Expanding the panel lets flexible content (history list) absorb the
+    // freed space, which can clamp scrollTop back to 0. Only engage when the
+    // pane has more than a header of overflow; disengage purely on position
+    // so a clamped pane still reopens at the top.
+    if (activePane.scrollTop <= 8) {
+        main.classList.remove('collapsed');
+    } else if (activePane.scrollHeight - activePane.clientHeight > 104) {
+        main.classList.add('collapsed');
+    }
+}
+
+document.addEventListener('scroll', (event) => {
+    const pane = event.target;
+    if (!pane?.matches?.('#message-list, #settings-page, #history-page')) {
+        return;
+    }
+    if (pane.hidden) {
+        return;
+    }
+    const main = pane.closest?.('main');
+    if (!main) {
+        return;
+    }
+    const activePane = main.querySelector('#page-panel > .panel-page:not([hidden])') || main.querySelector('#message-list');
+    if (pane !== activePane) {
+        return;
+    }
+    syncShellCollapse();
+}, { capture: true, passive: true });
+
 function messageListFor(root) {
     return root?.matches?.('.message-list')
         ? root
@@ -122,6 +161,7 @@ function pinMessageList(messageList, force = false) {
 
     state.forcing ||= force;
     messageList.scrollTop = messageList.scrollHeight;
+    syncShellCollapse();
     if (state.frame) {
         return;
     }
@@ -139,6 +179,7 @@ function pinMessageList(messageList, force = false) {
         }
 
         messageList.scrollTop = messageList.scrollHeight;
+        syncShellCollapse();
         const height = messageList.scrollHeight;
         stableFrames = height === previousHeight && isMessageListAtBottom(messageList)
             ? stableFrames + 1
@@ -559,6 +600,7 @@ function togglePanel(panelID, panelButton) {
         panelButton?.focus();
     }
     syncPanelSendButton();
+    syncShellCollapse();
 }
 
 function showCompletionNetworkError(event, message) {
@@ -589,6 +631,7 @@ function showCompletionNetworkError(event, message) {
 document.addEventListener('DOMContentLoaded', () => {
     scrollMessages(document);
     syncPanelSendButton();
+    syncShellCollapse();
     autoresizeAllMessageInputs(document);
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js');
@@ -842,6 +885,7 @@ document.addEventListener('htmx:after:swap', (event) => {
     }
     syncPanelSendButton();
     autoresizeAllMessageInputs(event.target);
+    syncShellCollapse();
 });
 function applySettingsTheme(root) {
     const settingsPage = root?.matches?.('#settings-page')
@@ -875,6 +919,7 @@ document.addEventListener('htmx:after:settle', (event) => {
             input.disabled = false;
         });
     }
+    syncShellCollapse();
 });
 document.addEventListener('htmx:after:request', (event) => {
     const ctx = event.detail?.ctx;

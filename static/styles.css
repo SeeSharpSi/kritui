@@ -70,18 +70,26 @@ body {
 }
 
 main {
+    --shell-top-space: max(16px, env(safe-area-inset-top));
     width: min(60rem, calc(100% - 2rem));
     height: 100%;
     margin: 0 auto;
-    padding: max(16px, env(safe-area-inset-top)) 0 max(16px, env(safe-area-inset-bottom));
+    padding: var(--shell-top-space) 0 max(16px, env(safe-area-inset-bottom));
+    position: relative;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    transition: padding-top 180ms ease;
+
+    &.collapsed {
+        padding-top: env(safe-area-inset-top, 0px);
+    }
 
     .app-header {
+        flex: 0 0 auto;
+        height: 60px;
         display: flex;
-        flex: 0 0 60px;
         align-items: center;
         gap: 12px;
         min-width: 0;
@@ -89,6 +97,15 @@ main {
         padding: 0 24px;
         margin-bottom: 16px;
         border-bottom: 1px solid var(--color-border);
+        overflow: clip;
+        transition: height 180ms ease, margin-bottom 180ms ease, opacity 180ms ease, border-bottom-color 180ms ease;
+    }
+
+    &.collapsed .app-header {
+        height: 0;
+        margin-bottom: 0;
+        opacity: 0;
+        border-bottom-width: 0;
     }
 
     .brand-mark {
@@ -187,6 +204,10 @@ main {
             }
         }
 
+        &:has(.panel-page:not([hidden])) .message-list {
+            visibility: hidden;
+        }
+
         .message-list {
             --message-viewport-anchor-space: 0px;
             min-height: 0;
@@ -221,6 +242,10 @@ main {
                 display: none;
             }
 
+            &.settings-page {
+                padding-bottom: 0;
+            }
+
             .panel-heading {
                 padding: 0 .25rem 1rem;
                 border-bottom: 1px solid var(--color-border);
@@ -240,7 +265,7 @@ main {
                 display: grid;
                 gap: 1.1rem;
                 width: min(100%, 56rem);
-                margin: 0 auto 1rem;
+                margin: 0 auto;
 
                 .settings-section {
                     min-width: 0;
@@ -1293,6 +1318,8 @@ main {
                 }
 
                 .message-action-buttons {
+                    position: relative;
+                    z-index: 3;
                     display: flex;
                     gap: 6px;
                     padding-top: 6px;
@@ -1574,6 +1601,8 @@ main {
                 width: fit-content;
                 max-width: 100%;
                 justify-self: end;
+                grid-column: 1;
+                grid-row: 1;
                 margin-left: 0;
                 cursor: pointer;
                 color: var(--color-text-muted);
@@ -1610,9 +1639,10 @@ main {
 
             .message-appends-content {
                 grid-column: 1 / -1;
+                grid-row: 2;
                 min-width: 0;
                 width: auto;
-                margin: .35rem 1.1em 0 0;
+                margin: .35rem 0 0;
                 padding: .45rem .6rem;
                 border-right: 2px solid var(--color-border);
                 background: var(--color-surface);
@@ -1620,6 +1650,23 @@ main {
                 text-align: right;
                 white-space: pre-wrap;
                 overflow-wrap: anywhere;
+            }
+
+            @supports selector(::details-content) and (grid-template-columns: subgrid) {
+                grid-column: 1 / -1;
+                grid-template-columns: subgrid;
+
+                &::details-content {
+                    display: grid;
+                    grid-template-columns: subgrid;
+                    grid-column: 1 / -1;
+                    grid-row: 2;
+                    min-width: 0;
+                }
+
+                .message-appends-content {
+                    grid-row: 1;
+                }
             }
 
             .message-append+.message-append {
@@ -1784,6 +1831,13 @@ main {
                 border-color: var(--color-accent);
                 color: var(--color-accent);
                 z-index: 3;
+
+                &:hover,
+                &:focus-visible {
+                    background: color-mix(in srgb, var(--color-surface-muted) 85%, white);
+                    border-color: var(--color-accent);
+                    color: var(--color-accent);
+                }
             }
         }
 
@@ -2171,6 +2225,14 @@ main {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    main {
+        transition: none;
+    }
+
+    main .app-header {
+        transition: none;
+    }
+
     main .chat .message.user .message-images {
         transition: none;
     }
