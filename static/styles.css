@@ -1595,19 +1595,24 @@ main {
             }
 
             >summary {
-                display: flex;
-                align-items: center;
-                min-height: 1.8rem;
+                display: grid;
+                min-width: 44px;
+                height: 26px;
+                padding: 0 10px;
+                margin: 6px 6px 0 0;
+                border: 1px solid var(--color-border);
+                box-sizing: border-box;
+                place-items: center;
                 width: fit-content;
                 max-width: 100%;
                 justify-self: end;
                 grid-column: 1;
                 grid-row: 1;
-                margin-left: 0;
-                cursor: pointer;
+                background: transparent;
                 color: var(--color-text-muted);
-                font-weight: 600;
-                letter-spacing: .01em;
+                cursor: pointer;
+                font: 400 10px/12px var(--font-mono);
+                text-transform: uppercase;
                 list-style: none;
                 user-select: none;
 
@@ -1615,16 +1620,10 @@ main {
                     display: none;
                 }
 
-                &::after {
-                    content: "◂";
-                    display: inline-block;
-                    width: 1.1em;
-                    margin-left: .2em;
-                }
-
                 &:hover,
                 &:focus-visible {
                     color: var(--color-text);
+                    opacity: 1;
                 }
 
                 &:focus-visible {
@@ -1633,8 +1632,8 @@ main {
                 }
             }
 
-            &[open]>summary::after {
-                content: "▾";
+            &[open]>summary {
+                border-color: var(--color-accent);
             }
 
             .message-appends-content {
