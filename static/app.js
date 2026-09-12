@@ -401,13 +401,6 @@ function renderImagePreviews(input) {
     previews.scrollLeft = previews.scrollWidth;
 }
 
-function syncImageInput(input) {
-    const state = imageAttachmentState(input);
-    const transfer = new DataTransfer();
-    state.files.forEach((file) => transfer.items.add(file));
-    input.files = transfer.files;
-}
-
 function announceImageAttachments(input, message) {
     const status = input.closest('form')?.querySelector('#image-paste-status');
     if (status) {
@@ -418,7 +411,7 @@ function announceImageAttachments(input, message) {
 function clearImageAttachments(input) {
     const state = imageAttachmentState(input);
     state.files = [];
-    syncImageInput(input);
+    input.value = '';
     renderImagePreviews(input);
     announceImageAttachments(input, '');
 }
@@ -444,7 +437,6 @@ function addImageAttachments(input, files) {
         }
     });
     state.files.push(...accepted);
-    syncImageInput(input);
     renderImagePreviews(input);
     const result = `${accepted.length} image${accepted.length === 1 ? '' : 's'} added.`
         + (rejected.length ? ` ${rejected.join('; ')}.` : '');
@@ -706,7 +698,6 @@ document.addEventListener('change', (event) => {
         return;
     }
     const selected = Array.from(input.files || []);
-    syncImageInput(input);
     if (selected.length > 0) {
         addImageAttachments(input, selected);
     }
@@ -860,6 +851,24 @@ async function copyMessage(button) {
 }
 
 document.addEventListener('htmx:after:process', (event) => scrollMessages(event.target));
+document.addEventListener('htmx:config:request', (event) => {
+    const source = event.detail?.ctx?.sourceElement;
+    const form = source?.matches?.('#message-form')
+        ? source
+        : source?.closest?.('#message-form');
+    if (!form) {
+        return;
+    }
+    const imageInput = form.querySelector('#image-input');
+    const body = event.detail?.ctx?.request?.body;
+    if (!imageInput || !(body instanceof FormData)) {
+        return;
+    }
+    body.delete('image');
+    imageAttachmentState(imageInput).files.forEach((file) => {
+        body.append('image', file, file.name || 'image');
+    });
+});
 let settingsPageScrollTop = 0;
 let settingsPageScrollPending = false;
 
@@ -1032,7 +1041,11 @@ document.addEventListener('htmx:confirm', (event) => {
 document.addEventListener('click', (event) => {
     const attachButton = event.target.closest('#attach-button');
     if (attachButton) {
-        attachButton.closest('form')?.querySelector('#image-input')?.click();
+        const imageInput = attachButton.closest('form')?.querySelector('#image-input');
+        if (imageInput) {
+            imageInput.value = '';
+            imageInput.click();
+        }
         return;
     }
 
@@ -1068,7 +1081,6 @@ document.addEventListener('click', (event) => {
         const state = input && imageAttachmentStates.get(input);
         if (input && state && Number.isInteger(index) && index >= 0 && index < state.files.length) {
             state.files.splice(index, 1);
-            syncImageInput(input);
             renderImagePreviews(input);
             announceImageAttachments(input, `${state.files.length} image${state.files.length === 1 ? '' : 's'} remaining.`);
             input.closest('form')?.querySelector('#message')?.focus();
