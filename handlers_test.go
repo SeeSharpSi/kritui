@@ -409,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=25`,
-		`/static/hx-sse.js?v=25`,
-		`/static/app.js?v=25`,
-		`/static/styles.css?v=25`,
+		`/static/htmx.min.js?v=26`,
+		`/static/hx-sse.js?v=26`,
+		`/static/app.js?v=26`,
+		`/static/styles.css?v=26`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -761,6 +761,26 @@ func TestMessageHandlerPersistsUploadedImages(t *testing.T) {
 	}
 }
 
+func TestMessageHandlerNormalizesDeclaredJPEGType(t *testing.T) {
+	database := openTestDatabase(t)
+	jpegBytes := testImageBytes(t, "jpeg", 4, 5)
+	body, contentType := multipartImageRequest(t, "", []testUpload{{"photo.jpg", "image/jpg", jpegBytes}})
+	request := httptest.NewRequest(http.MethodPost, "/messages?chat=43", bytes.NewReader(body))
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+	messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d; body = %q", response.Code, response.Body.String())
+	}
+	messages, err := kritui_db.GetMessages(context.Background(), database, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || len(messages[0].Images) != 1 || messages[0].Images[0].MediaType != "image/jpeg" || !bytes.Equal(messages[0].Images[0].Data, jpegBytes) {
+		t.Fatalf("images = %#v", messages)
+	}
+}
+
 func TestMessageHandlerRejectsInvalidImageUploads(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -769,6 +789,7 @@ func TestMessageHandlerRejectsInvalidImageUploads(t *testing.T) {
 		status  int
 	}{
 		{"corrupt", "", []testUpload{{"x.png", "image/png", []byte("bad")}}, 400},
+		{"garbage jpg", "", []testUpload{{"x.jpg", "image/jpg", []byte("bad")}}, 400},
 		{"gif", "", []testUpload{{"x.gif", "image/gif", []byte("GIF89a")}}, 400},
 		{"unknown field", "", []testUpload{{"x.png", "image/png", testImageBytes(t, "png", 1, 1)}}, 400},
 		{"command", "/new", []testUpload{{"x.png", "image/png", testImageBytes(t, "png", 1, 1)}}, 400},

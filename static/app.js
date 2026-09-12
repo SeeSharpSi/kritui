@@ -352,10 +352,22 @@ function settingsClearState(button, pending) {
 }
 
 const imageAttachmentStates = new WeakMap();
-const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const imageTypes = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp']);
 const maxImageCount = 4;
-const maxImageBytes = 5 * 1024 * 1024;
-const maxImageTotalBytes = 16 * 1024 * 1024;
+const maxImageBytes = 20 * 1024 * 1024;
+const maxImageTotalBytes = 80 * 1024 * 1024;
+
+function acceptableImageFile(file) {
+    const type = (file?.type || '').toLowerCase();
+    if (imageTypes.has(type)) {
+        return true;
+    }
+    if (type === '' || type === 'application/octet-stream') {
+        const name = (file?.name || '').toLowerCase();
+        return name.endsWith('.jpg') || name.endsWith('.jpeg');
+    }
+    return false;
+}
 
 function imageAttachmentState(input) {
     let state = imageAttachmentStates.get(input);
@@ -423,7 +435,7 @@ function addImageAttachments(input, files) {
     let totalBytes = state.files.reduce((total, file) => total + file.size, 0);
     files.forEach((file) => {
         const name = file.name || 'Image';
-        if (!imageTypes.has(file.type)) {
+        if (!acceptableImageFile(file)) {
             rejected.push(`${name}: unsupported type`);
         } else if (file.size > maxImageBytes) {
             rejected.push(`${name}: too large`);
@@ -676,12 +688,12 @@ document.addEventListener('paste', (event) => {
         return;
     }
     const items = Array.from(event.clipboardData?.items ?? [])
-        .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+        .filter((item) => item.kind === 'file')
         .map((item) => item.getAsFile())
-        .filter(Boolean);
+        .filter((file) => file && acceptableImageFile(file));
     const files = items.length > 0
         ? items
-        : Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith('image/'));
+        : Array.from(event.clipboardData?.files ?? []).filter((file) => acceptableImageFile(file));
     if (files.length === 0) {
         return;
     }

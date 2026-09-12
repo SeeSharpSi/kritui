@@ -54,9 +54,9 @@ func (e *imageUploadError) Error() string { return e.message }
 
 const (
 	maxMessageBodyBytes    int64 = 1 << 20
-	maxMessagePostBytes    int64 = 20 << 20
-	maxImageBytes          int64 = 5 << 20
-	maxImagesRawBytes      int64 = 16 << 20
+	maxMessagePostBytes    int64 = 84 << 20
+	maxImageBytes          int64 = 20 << 20
+	maxImagesRawBytes      int64 = 80 << 20
 	maxImages                    = 4
 	maxImageDimension            = 8000
 	maxImagePixels               = 40_000_000
