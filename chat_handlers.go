@@ -123,31 +123,33 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			}
 			enabledTools = completion.tools
 		}
-		models, selectedModel := availableModels(r, selectedModel)
+		models, selectedModel := availableModels(r, database, selectedModel)
 		if renderSettings.defaultModel != "" && !slices.Contains(models, renderSettings.defaultModel) {
 			models = append([]string{renderSettings.defaultModel}, models...)
 		}
 
 		var page bytes.Buffer
 		home := templates.HomeData{
-			ChatID:              chat,
-			ChatURL:             chatURL,
-			Messages:            messages,
-			Models:              models,
-			SelectedModel:       selectedModel,
-			DefaultModel:        renderSettings.defaultModel,
-			MaxToolRounds:       renderSettings.maxToolRounds,
-			Tools:               toolRegistry.Names(),
-			EnabledTools:        enabledTools,
-			DefaultTools:        renderSettings.defaultTools,
-			MCPServers:          renderSettings.mcpServers,
-			PromptAppends:       renderSettings.promptAppends,
-			NtfySettings:        renderSettings.ntfySettings,
-			EnabledAppendIDs:    enabledAppendIDs,
-			CompletionRequestID: completion.requestID,
-			CompletionStarted:   completion.started,
-			CommandDefinitions:  commandRegistry.Definitions(),
-			Theme:               renderSettings.theme,
+			ChatID:                   chat,
+			ChatURL:                  chatURL,
+			Messages:                 messages,
+			Models:                   models,
+			SelectedModel:            selectedModel,
+			DefaultModel:             renderSettings.defaultModel,
+			MaxToolRounds:            renderSettings.maxToolRounds,
+			Tools:                    toolRegistry.Names(),
+			EnabledTools:             enabledTools,
+			DefaultTools:             renderSettings.defaultTools,
+			MCPServers:               renderSettings.mcpServers,
+			PromptAppends:            renderSettings.promptAppends,
+			NtfySettings:             renderSettings.ntfySettings,
+			LLMSettings:              renderSettings.llmSettings,
+			LLMEnvironmentConfigured: renderSettings.llmEnvManaged,
+			EnabledAppendIDs:         enabledAppendIDs,
+			CompletionRequestID:      completion.requestID,
+			CompletionStarted:        completion.started,
+			CommandDefinitions:       commandRegistry.Definitions(),
+			Theme:                    renderSettings.theme,
 		}
 		if err := templates.Home(home).Render(r.Context(), &page); err != nil {
 			log.Printf("render page: %v", err)
@@ -168,6 +170,8 @@ type homeRenderSettings struct {
 	defaultTools  []string
 	mcpServers    []kritui_db.MCPServer
 	ntfySettings  kritui_db.NtfySettings
+	llmSettings   kritui_db.LLMSettings
+	llmEnvManaged bool
 	theme         themes.Theme
 }
 
@@ -209,6 +213,11 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 		log.Printf("get ntfy settings: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load ntfy settings: %w", err)
 	}
+	if settings.llmSettings, err = kritui_db.GetLLMSettings(ctx, database); err != nil {
+		log.Printf("get llm settings: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load llm settings: %w", err)
+	}
+	settings.llmEnvManaged = llmEnvironmentConfigured()
 	if settings.theme, err = loadStoredTheme(ctx, database); err != nil {
 		log.Printf("load theme: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load theme: %w", err)
@@ -303,7 +312,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		}
 		render := func(status int, message string) {
 			page.ErrorMessage = message
-			renderSettingsPage(w, r, status, page)
+			renderSettingsPage(w, r, status, page, database)
 		}
 		if _, ok := positiveID(page.ChatID); !ok {
 			render(http.StatusBadRequest, "A valid chat is required.")
@@ -352,6 +361,14 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.NtfySettings = ntfySettings
+		llmSettings, err := kritui_db.GetLLMSettings(r.Context(), database)
+		if err != nil {
+			log.Printf("get llm settings: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.LLMSettings = llmSettings
+		page.LLMEnvironmentConfigured = llmEnvironmentConfigured()
 		theme, err := loadStoredTheme(r.Context(), database)
 		if err != nil {
 			log.Printf("load theme: %v", err)
@@ -392,6 +409,17 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				ntfyAPIKey = strings.TrimSpace(r.FormValue("ntfy_api_key"))
 				clearNtfyAPIKey = r.FormValue("clear_ntfy_api_key") == "1"
 				page.ClearNtfyAPIKey = clearNtfyAPIKey
+			}
+
+			llmEnvManaged := llmEnvironmentConfigured()
+			llmSubmitted := !llmEnvManaged && r.FormValue("llm_form") == "1"
+			llmAPIKey := ""
+			clearLLMAPIKey := false
+			if llmSubmitted {
+				page.LLMSettings.Endpoint = strings.TrimSpace(r.FormValue("llm_endpoint"))
+				llmAPIKey = strings.TrimSpace(r.FormValue("llm_api_key"))
+				clearLLMAPIKey = r.FormValue("clear_llm_api_key") == "1"
+				page.ClearLLMAPIKey = clearLLMAPIKey
 			}
 
 			submittedAppends := page.PromptAppends
@@ -450,7 +478,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					value := actionPage()
 					value.ErrorMessage = "Failed to add MCP server."
 					value.MCPServersOpen = true
-					renderSettingsPage(w, r, http.StatusInternalServerError, value)
+					renderSettingsPage(w, r, http.StatusInternalServerError, value, database)
 					return
 				}
 				renderMCPServerEditor(w, r, http.StatusOK, kritui_db.MCPServer{ID: id, Name: "new server"})
@@ -473,7 +501,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				value.DefaultTools = actionTools
 				value.MCPServers = filtered
 				value.MCPServersOpen = true
-				renderSettingsPage(w, r, http.StatusOK, value)
+				renderSettingsPage(w, r, http.StatusOK, value, database)
 				return
 			}
 
@@ -483,13 +511,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					log.Printf("create prompt append ID: %v", err)
 					value := actionPage()
 					value.ErrorMessage = "Failed to add prompt append."
-					renderSettingsPage(w, r, http.StatusInternalServerError, value)
+					renderSettingsPage(w, r, http.StatusInternalServerError, value, database)
 					return
 				}
 				submittedAppends = append(submittedAppends, kritui_db.PromptAppend{ID: id, Name: "new append"})
 				value := actionPage()
 				value.PromptAppends = submittedAppends
-				renderSettingsPage(w, r, http.StatusOK, value)
+				renderSettingsPage(w, r, http.StatusOK, value, database)
 				return
 			}
 			if removeID := strings.TrimSpace(r.FormValue("remove_append")); removeID != "" {
@@ -505,7 +533,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				}
 				value := actionPage()
 				value.PromptAppends = filtered
-				renderSettingsPage(w, r, http.StatusOK, value)
+				renderSettingsPage(w, r, http.StatusOK, value, database)
 				return
 			}
 
@@ -581,11 +609,38 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				ntfyUpdate = &value
 			}
 
+			var llmUpdate *kritui_db.LLMSettingsUpdate
+			if llmSubmitted {
+				if clearLLMAPIKey && llmAPIKey != "" {
+					render(http.StatusBadRequest, "Choose replacing or clearing model API key, not both.")
+					return
+				}
+				value := kritui_db.LLMSettingsUpdate{Endpoint: page.LLMSettings.Endpoint}
+				switch {
+				case clearLLMAPIKey:
+					value.APIKeyChange = kritui_db.LLMClearAPIKey
+				case llmAPIKey != "":
+					value.APIKeyChange = kritui_db.LLMReplaceAPIKey
+					value.APIKeyValue = llmAPIKey
+				}
+				if err := kritui_db.ValidateLLMSettings(value); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("Model connection settings are invalid: %v.", err))
+					return
+				}
+				if clearLLMAPIKey {
+					page.LLMSettings.APIKeyConfigured = false
+				} else if llmAPIKey != "" {
+					page.LLMSettings.APIKeyConfigured = true
+				}
+				llmUpdate = &value
+			}
+
 			update := kritui_db.SettingsUpdate{
 				Model:         page.SelectedModel,
 				MaxToolRounds: page.MaxToolRounds,
 				DefaultTools:  page.DefaultTools,
 				Ntfy:          ntfyUpdate,
+				LLM:           llmUpdate,
 				Theme:         submittedTheme,
 			}
 			if r.FormValue("append_form") == "1" {
@@ -603,6 +658,10 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				page.MCPServers = mcpServersAfterSave(submittedMCPUpdates)
 				page.ClearMCPAuthorizationIDs = nil
 			}
+			if llmSubmitted {
+				page.ClearLLMAPIKey = false
+				page.LLMEnvironmentConfigured = llmEnvironmentConfigured()
+			}
 			page.Saved = true
 		}
 
@@ -617,7 +676,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					failurePage := page
 					failurePage.Saved = false
 					failurePage.ErrorMessage = "Failed to load chat tools."
-					renderSettingsPage(w, r, http.StatusInternalServerError, failurePage)
+					renderSettingsPage(w, r, http.StatusInternalServerError, failurePage, database)
 					return
 				}
 			}
@@ -645,7 +704,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					failurePage := page
 					failurePage.Saved = false
 					failurePage.ErrorMessage = "Failed to load chat appends."
-					renderSettingsPage(w, r, http.StatusInternalServerError, failurePage)
+					renderSettingsPage(w, r, http.StatusInternalServerError, failurePage, database)
 					return
 				}
 			}
@@ -970,9 +1029,9 @@ func newMCPServerID() (string, error) {
 	return "mcp-" + hex.EncodeToString(value[:]), nil
 }
 
-func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data templates.SettingsPanelData) {
+func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data templates.SettingsPanelData, database *sql.DB) {
 	data.Visible = true
-	data.Models, data.SelectedModel = availableModels(r, data.SelectedModel)
+	data.Models, data.SelectedModel = availableModels(r, database, data.SelectedModel)
 	var page bytes.Buffer
 	if err := templates.SettingsPage(data).Render(r.Context(), &page); err != nil {
 		log.Printf("render settings: %v", err)
@@ -1044,13 +1103,41 @@ func positiveID(value string) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-func availableModels(r *http.Request, selected string) ([]string, string) {
+// llmEnvironmentConfigured reports when both LLM environment values are set.
+func llmEnvironmentConfigured() bool {
+	return strings.TrimSpace(os.Getenv("LLM_KEY")) != "" && strings.TrimSpace(os.Getenv("LLM_ENDPOINT")) != ""
+}
+
+// effectiveLLMConfig loads stored LLM values with field-by-field environment overrides.
+func effectiveLLMConfig(ctx context.Context, database *sql.DB) (kritui_db.LLMConfig, error) {
+	config, err := kritui_db.GetLLMConfig(ctx, database)
+	if err != nil {
+		return kritui_db.LLMConfig{}, err
+	}
+	if endpoint := strings.TrimSpace(os.Getenv("LLM_ENDPOINT")); endpoint != "" {
+		config.Endpoint = endpoint
+	}
+	if apiKey := strings.TrimSpace(os.Getenv("LLM_KEY")); apiKey != "" {
+		config.APIKey = apiKey
+	}
+	return config, nil
+}
+
+func availableModels(r *http.Request, database *sql.DB, selected string) ([]string, string) {
 	selected = strings.TrimSpace(selected)
 	sessionID := ""
 	if id, ok := positiveID(r.URL.Query().Get("chat")); ok {
 		sessionID = strconv.FormatInt(id, 10)
 	}
-	client, err := llm.New(os.Getenv("LLM_KEY"), selected, os.Getenv("LLM_ENDPOINT"), llm.ClientOptions{SessionID: sessionID})
+	config, err := effectiveLLMConfig(r.Context(), database)
+	if err != nil {
+		log.Printf("get LLM config: %v", err)
+		if selected == "" {
+			return nil, ""
+		}
+		return []string{selected}, selected
+	}
+	client, err := llm.New(config.APIKey, selected, config.Endpoint, llm.ClientOptions{SessionID: sessionID})
 	if err != nil {
 		if selected == "" {
 			return nil, ""

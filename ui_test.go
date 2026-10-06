@@ -77,7 +77,7 @@ func TestMatteBlackMigrationPreservesExistingSettings(t *testing.T) {
 			previousSchema := strings.Replace(schema,
 				"'rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'",
 				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og', 'forest-night', 'omarchy'", 1)
-			previousSchema = strings.Replace(previousSchema, "user_version = 21", "user_version = 18", 1)
+			previousSchema = strings.Replace(previousSchema, "user_version = 22", "user_version = 18", 1)
 			if _, err := database.Exec(previousSchema); err != nil {
 				t.Fatal(err)
 			}
@@ -136,7 +136,7 @@ func Test1975MigrationPreservesExistingSettings(t *testing.T) {
 			previousSchema := strings.Replace(schema,
 				"'rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'",
 				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'forest-night', 'matte-black'", 1)
-			previousSchema = strings.Replace(previousSchema, "user_version = 21", "user_version = 19", 1)
+			previousSchema = strings.Replace(previousSchema, "user_version = 22", "user_version = 19", 1)
 			if _, err := database.Exec(previousSchema); err != nil {
 				t.Fatal(err)
 			}
@@ -187,7 +187,7 @@ func TestTokyoNightRemovalRemapsToMatteBlack(t *testing.T) {
 			previousSchema := strings.Replace(schema,
 				"'rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'",
 				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'forest-night', 'matte-black', '1975'", 1)
-			previousSchema = strings.Replace(previousSchema, "user_version = 21", "user_version = 20", 1)
+			previousSchema = strings.Replace(previousSchema, "user_version = 22", "user_version = 20", 1)
 			if _, err := database.Exec(previousSchema); err != nil {
 				t.Fatal(err)
 			}
@@ -262,4 +262,74 @@ func TestHistoryCountExcludesEmptyAllocations(t *testing.T) {
 	response = httptest.NewRecorder()
 	historyHandler(database)(response, httptest.NewRequest(http.MethodGet, "/history?chat="+strconv.FormatInt(empty, 10), nil))
 	requireContains(t, response.Body.String(), "No saved chats yet.", "Browse · 0 chats")
+}
+
+func TestLLMSettingsMigrationPreservesExistingSettings(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	previousSchema := strings.Replace(schema, "    llm_endpoint TEXT,\n    llm_api_key TEXT,\n", "", 1)
+	previousSchema = strings.Replace(previousSchema, "user_version = 22", "user_version = 21", 1)
+	if _, err := database.Exec(previousSchema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`UPDATE settings SET default_model = 'kept-model', max_tool_rounds = 9,
+		default_tools_configured = 1, prompt_appends_configured = 1, theme = 'nord',
+		ntfy_endpoint = 'https://ntfy.example', ntfy_topic = 'kept-topic', ntfy_api_key = 'kept-key' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDatabase(database); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(databaseMigrations) {
+		t.Fatalf("migrated schema version = %d, want %d", version, len(databaseMigrations))
+	}
+	var model, endpoint, topic, key string
+	var theme sql.NullString
+	var rounds, defaultTools, appends int
+	if err := database.QueryRow(`SELECT default_model, max_tool_rounds, default_tools_configured,
+		prompt_appends_configured, theme, ntfy_endpoint, ntfy_topic, ntfy_api_key FROM settings WHERE id = 1`).Scan(
+		&model, &rounds, &defaultTools, &appends, &theme, &endpoint, &topic, &key); err != nil {
+		t.Fatal(err)
+	}
+	if model != "kept-model" || rounds != 9 || defaultTools != 1 || appends != 1 || theme.String != "nord" ||
+		endpoint != "https://ntfy.example" || topic != "kept-topic" || key != "kept-key" {
+		t.Fatalf("migration did not preserve settings: model=%q rounds=%d theme=%q", model, rounds, theme.String)
+	}
+	ctx := context.Background()
+	public, err := kritui_db.GetLLMSettings(ctx, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, err := kritui_db.GetLLMConfig(ctx, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if public.Endpoint != "" || public.APIKeyConfigured || private.Endpoint != "" || private.APIKey != "" {
+		t.Fatalf("migrated LLM settings = %#v / %#v, want empty", public, private)
+	}
+	if err := kritui_db.SaveLLMSettings(ctx, database, kritui_db.LLMSettingsUpdate{
+		Endpoint:     "https://llm.example/v1/responses",
+		APIKeyChange: kritui_db.LLMReplaceAPIKey,
+		APIKeyValue:  "llm-secret",
+	}); err != nil {
+		t.Fatalf("SaveLLMSettings() after migration: %v", err)
+	}
+	private, err = kritui_db.GetLLMConfig(ctx, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if private.Endpoint != "https://llm.example/v1/responses" || private.APIKey != "llm-secret" {
+		t.Fatalf("LLM config after save = %#v, want stored values", private)
+	}
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("repeated migration: %v", err)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"seesharpsi/kritui/themes"
@@ -18,8 +19,8 @@ type settingWriter interface {
 }
 
 // SettingsUpdate describes the desired settings for one atomic save.
-// Nil PromptAppends, MCPServers, or Ntfy values, and an empty Theme, leave
-// those settings untouched.
+// Nil PromptAppends, MCPServers, Ntfy, or LLM values, and an empty Theme,
+// leave those settings untouched.
 type SettingsUpdate struct {
 	Model         string
 	MaxToolRounds int
@@ -27,6 +28,7 @@ type SettingsUpdate struct {
 	PromptAppends []PromptAppend
 	MCPServers    []MCPServerUpdate
 	Ntfy          *NtfySettingsUpdate
+	LLM           *LLMSettingsUpdate
 	Theme         string
 }
 
@@ -69,6 +71,42 @@ type NtfySettingsUpdate struct {
 	APIKeyValue  string
 }
 
+// LLMSettings contains values safe to render in the settings page.
+// APIKeyConfigured reports secret presence without exposing the secret.
+type LLMSettings struct {
+	Endpoint         string
+	APIKeyConfigured bool
+}
+
+// LLMConfig contains credentials needed for model completion.
+// Keep this type out of template and HTTP response data.
+type LLMConfig struct {
+	Endpoint string
+	APIKey   string
+}
+
+// LLMAPIKeyChange selects how SaveLLMSettings treats the stored API key.
+// The zero value preserves the existing secret.
+type LLMAPIKeyChange uint8
+
+const (
+	// LLMKeepAPIKey leaves the stored key untouched.
+	LLMKeepAPIKey LLMAPIKeyChange = iota
+	// LLMReplaceAPIKey stores Update.APIKeyValue, or NULL when it trims empty.
+	LLMReplaceAPIKey
+	// LLMClearAPIKey removes the stored key.
+	LLMClearAPIKey
+)
+
+// LLMSettingsUpdate changes LLM settings. APIKeyChange and APIKeyValue form
+// an exhaustive tri-state decision about the stored secret, so contradictory
+// instructions are unrepresentable.
+type LLMSettingsUpdate struct {
+	Endpoint     string
+	APIKeyChange LLMAPIKeyChange
+	APIKeyValue  string
+}
+
 // SaveSettings stores all submitted settings in one transaction.
 func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error {
 	tx, err := db.BeginTx(ctx, nil)
@@ -98,6 +136,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 	}
 	if update.Ntfy != nil {
 		if err := setNtfySettings(ctx, tx, *update.Ntfy); err != nil {
+			return err
+		}
+	}
+	if update.LLM != nil {
+		if err := setLLMSettings(ctx, tx, *update.LLM); err != nil {
 			return err
 		}
 	}
@@ -252,6 +295,131 @@ func setNtfySettings(ctx context.Context, db settingWriter, update NtfySettingsU
 		default:
 			return fmt.Errorf("set ntfy settings: unknown API key change mode %d", update.APIKeyChange)
 		}
+	}
+	return nil
+}
+
+// GetLLMSettings returns LLM values safe for frontend rendering.
+func GetLLMSettings(ctx context.Context, db *sql.DB) (LLMSettings, error) {
+	var endpoint sql.NullString
+	var apiKeyConfigured bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT llm_endpoint,
+			CASE WHEN llm_api_key IS NOT NULL AND trim(llm_api_key) <> '' THEN 1 ELSE 0 END
+		FROM settings
+		WHERE id = 1
+	`).Scan(&endpoint, &apiKeyConfigured); err != nil {
+		return LLMSettings{}, fmt.Errorf("get llm settings: %w", err)
+	}
+	return LLMSettings{
+		Endpoint:         nullSettingString(endpoint),
+		APIKeyConfigured: apiKeyConfigured,
+	}, nil
+}
+
+// GetLLMConfig returns LLM credentials for backend use.
+func GetLLMConfig(ctx context.Context, db *sql.DB) (LLMConfig, error) {
+	config, err := getLLMConfig(ctx, db)
+	if err != nil {
+		return LLMConfig{}, fmt.Errorf("get llm config: %w", err)
+	}
+	return config, nil
+}
+
+func getLLMConfig(ctx context.Context, db settingReader) (LLMConfig, error) {
+	var endpoint, apiKey sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT llm_endpoint, llm_api_key
+		FROM settings
+		WHERE id = 1
+	`).Scan(&endpoint, &apiKey); err != nil {
+		return LLMConfig{}, err
+	}
+	return LLMConfig{
+		Endpoint: nullSettingString(endpoint),
+		APIKey:   nullSettingString(apiKey),
+	}, nil
+}
+
+// SaveLLMSettings atomically updates LLM endpoint and secret.
+func SaveLLMSettings(ctx context.Context, db *sql.DB, update LLMSettingsUpdate) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin set llm settings: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := setLLMSettings(ctx, tx, update); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set llm settings: %w", err)
+	}
+	return nil
+}
+
+// ValidateLLMSettings checks an LLM endpoint and key update without writes.
+func ValidateLLMSettings(update LLMSettingsUpdate) error {
+	endpoint := strings.TrimSpace(update.Endpoint)
+	if len(endpoint) > 2048 {
+		return fmt.Errorf("set llm settings: endpoint must not exceed 2048 bytes")
+	}
+	if endpoint != "" {
+		parsed, err := url.Parse(endpoint)
+		if err != nil {
+			return fmt.Errorf("set llm settings: parse endpoint: %w", err)
+		}
+		if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("set llm settings: endpoint must be an absolute HTTP or HTTPS URL")
+		}
+		if parsed.Fragment != "" {
+			return fmt.Errorf("set llm settings: endpoint must not contain a fragment")
+		}
+	}
+	switch update.APIKeyChange {
+	case LLMKeepAPIKey:
+	case LLMReplaceAPIKey:
+		if len(strings.TrimSpace(update.APIKeyValue)) > 16384 {
+			return fmt.Errorf("set llm settings: API key must not exceed 16384 bytes")
+		}
+	case LLMClearAPIKey:
+	default:
+		return fmt.Errorf("set llm settings: unknown API key change mode %d", update.APIKeyChange)
+	}
+	return nil
+}
+
+func setLLMSettings(ctx context.Context, db settingWriter, update LLMSettingsUpdate) error {
+	if err := ValidateLLMSettings(update); err != nil {
+		return err
+	}
+	endpoint := strings.TrimSpace(update.Endpoint)
+
+	var endpointValue any
+	if endpoint != "" {
+		endpointValue = endpoint
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_endpoint = ? WHERE id = 1`, endpointValue); err != nil {
+		return fmt.Errorf("set llm endpoint: %w", err)
+	}
+
+	switch update.APIKeyChange {
+	case LLMKeepAPIKey:
+	case LLMReplaceAPIKey:
+		apiKey := strings.TrimSpace(update.APIKeyValue)
+		var value any
+		if apiKey != "" {
+			value = apiKey
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_api_key = ? WHERE id = 1`, value); err != nil {
+			return fmt.Errorf("set llm API key: %w", err)
+		}
+	case LLMClearAPIKey:
+		if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_api_key = NULL WHERE id = 1`); err != nil {
+			return fmt.Errorf("clear llm API key: %w", err)
+		}
+	default:
+		return fmt.Errorf("set llm settings: unknown API key change mode %d", update.APIKeyChange)
 	}
 	return nil
 }

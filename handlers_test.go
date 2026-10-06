@@ -409,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=26`,
-		`/static/hx-sse.js?v=26`,
-		`/static/app.js?v=26`,
-		`/static/styles.css?v=26`,
+		`/static/htmx.min.js?v=27`,
+		`/static/hx-sse.js?v=27`,
+		`/static/app.js?v=27`,
+		`/static/styles.css?v=27`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -6119,4 +6119,309 @@ func assertMigratedDatabase(t *testing.T, database *sql.DB) {
 	if model != "migrated-model" {
 		t.Errorf("migrated setting = %q, want migrated-model", model)
 	}
+}
+
+func TestSettingsHandlerRendersLLMConnectionWithoutSecret(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_KEY", "")
+	t.Setenv("LLM_ENDPOINT", "")
+	t.Setenv("LLM_MODEL", "")
+
+	response := httptest.NewRecorder()
+	settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(),
+		`id="llm-settings"`,
+		`name="llm_form" value="1"`,
+		`name="llm_endpoint"`,
+		`id="llm-api-key"`,
+		`type="password"`,
+		`id="default-model"`,
+		`type="text"`,
+	)
+	requireNotContains(t, response.Body.String(), `name="llm_api_key" value=`)
+}
+
+func TestSettingsHandlerRendersStoredLLMEndpointWithoutSecret(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_KEY", "")
+	t.Setenv("LLM_ENDPOINT", "")
+	t.Setenv("LLM_MODEL", "")
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer provider.Close()
+	const apiKey = "stored-llm-secret"
+	endpoint := provider.URL + "/v1/responses"
+	if err := kritui_db.SaveLLMSettings(context.Background(), database, kritui_db.LLMSettingsUpdate{
+		Endpoint:     endpoint,
+		APIKeyChange: kritui_db.LLMReplaceAPIKey,
+		APIKeyValue:  apiKey,
+	}); err != nil {
+		t.Fatalf("seed LLM settings: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(),
+		`id="llm-settings"`,
+		`name="llm_endpoint" value="`+endpoint+`"`,
+		"Clear stored key",
+		`name="clear_llm_api_key" value="1" hidden`,
+	)
+	requireNotContains(t, response.Body.String(), apiKey, `name="llm_api_key" value=`)
+}
+
+func TestSettingsHandlerStoresPreservesAndClearsLLMSecret(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_KEY", "")
+	t.Setenv("LLM_ENDPOINT", "")
+	handler := settingsHandler(database, newTestToolRegistry(t))
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer provider.Close()
+	endpoint := provider.URL + "/v1/responses"
+	const apiKey = "stored-llm-secret"
+
+	response := postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+		"llm_form":        {"1"},
+		"llm_endpoint":    {endpoint},
+		"llm_api_key":     {apiKey},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("save status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "Settings saved.", "Clear stored key", `name="llm_endpoint" value="`+endpoint+`"`)
+	requireNotContains(t, response.Body.String(), apiKey, `name="llm_api_key" value=`)
+	config, err := kritui_db.GetLLMConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get LLM config: %v", err)
+	}
+	if config.Endpoint != endpoint || config.APIKey != apiKey {
+		t.Errorf("stored LLM config = %#v, want submitted endpoint and key", config)
+	}
+
+	response = postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+		"llm_form":        {"1"},
+		"llm_endpoint":    {endpoint},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("preserve status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireNotContains(t, response.Body.String(), apiKey)
+	config, err = kritui_db.GetLLMConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get LLM config after preserve: %v", err)
+	}
+	if config.Endpoint != endpoint || config.APIKey != apiKey {
+		t.Errorf("config after preserve = %#v, want endpoint and preserved key", config)
+	}
+
+	response = postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":             {"saved-model"},
+		"max_tool_rounds":   {"16"},
+		"llm_form":          {"1"},
+		"llm_endpoint":      {endpoint},
+		"clear_llm_api_key": {"1"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireNotContains(t, response.Body.String(), apiKey)
+	if strings.Contains(response.Body.String(), `name="clear_llm_api_key"`) {
+		t.Error("clear response reports configured API key")
+	}
+	config, err = kritui_db.GetLLMConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get LLM config after clear: %v", err)
+	}
+	if config.APIKey != "" || config.Endpoint != endpoint {
+		t.Errorf("config after clear = %#v, want endpoint and empty key", config)
+	}
+}
+
+func TestSettingsHandlerHidesLLMWhenEnvironmentConfigured(t *testing.T) {
+	database := openTestDatabase(t)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer provider.Close()
+	const storedKey = "stored-llm-secret"
+	storedEndpoint := provider.URL + "/stored"
+	if err := kritui_db.SaveLLMSettings(context.Background(), database, kritui_db.LLMSettingsUpdate{
+		Endpoint:     storedEndpoint,
+		APIKeyChange: kritui_db.LLMReplaceAPIKey,
+		APIKeyValue:  storedKey,
+	}); err != nil {
+		t.Fatalf("seed LLM settings: %v", err)
+	}
+	t.Setenv("LLM_KEY", "env-llm-secret")
+	t.Setenv("LLM_ENDPOINT", provider.URL+"/env")
+
+	response := httptest.NewRecorder()
+	settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireNotContains(t, response.Body.String(), `id="llm-settings"`, `name="llm_form"`, `name="llm_endpoint"`, storedEndpoint, storedKey, "env-llm-secret")
+
+	forged := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+		"llm_form":        {"1"},
+		"llm_endpoint":    {"https://forged.example/v1"},
+		"llm_api_key":     {"forged-secret"},
+	})
+	if forged.Code != http.StatusOK {
+		t.Fatalf("forged status = %d, want %d; body = %q", forged.Code, http.StatusOK, forged.Body.String())
+	}
+	requireNotContains(t, forged.Body.String(), "forged-secret", storedKey)
+	config, err := kritui_db.GetLLMConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get LLM config after forged save: %v", err)
+	}
+	if config.Endpoint != storedEndpoint || config.APIKey != storedKey {
+		t.Errorf("stored LLM config after forged save = %#v, want unchanged seed", config)
+	}
+}
+
+func TestSettingsHandlerPartialEnvironmentKeepsControls(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_KEY", "")
+	t.Setenv("LLM_ENDPOINT", "")
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer provider.Close()
+	t.Setenv("LLM_ENDPOINT", provider.URL+"/partial")
+
+	response := httptest.NewRecorder()
+	settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), `id="llm-settings"`, `name="llm_endpoint"`)
+}
+
+func TestEffectiveLLMConfigPrefersEnvironmentFieldByField(t *testing.T) {
+	database := openTestDatabase(t)
+	if err := kritui_db.SaveLLMSettings(context.Background(), database, kritui_db.LLMSettingsUpdate{
+		Endpoint:     "https://stored.example/v1/responses",
+		APIKeyChange: kritui_db.LLMReplaceAPIKey,
+		APIKeyValue:  "stored-key",
+	}); err != nil {
+		t.Fatalf("seed LLM settings: %v", err)
+	}
+
+	t.Setenv("LLM_ENDPOINT", "https://env.example/v1/responses")
+	t.Setenv("LLM_KEY", "")
+	config, err := effectiveLLMConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("effectiveLLMConfig() error: %v", err)
+	}
+	if config.Endpoint != "https://env.example/v1/responses" || config.APIKey != "stored-key" {
+		t.Errorf("endpoint override = %#v, want env endpoint and stored key", config)
+	}
+
+	t.Setenv("LLM_ENDPOINT", "")
+	t.Setenv("LLM_KEY", "env-key")
+	config, err = effectiveLLMConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("effectiveLLMConfig() error: %v", err)
+	}
+	if config.Endpoint != "https://stored.example/v1/responses" || config.APIKey != "env-key" {
+		t.Errorf("key override = %#v, want stored endpoint and env key", config)
+	}
+}
+
+func TestSettingsHandlerRejectsInvalidLLMEndpointWithoutSecret(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_KEY", "")
+	t.Setenv("LLM_ENDPOINT", "")
+	const secret = "submitted-llm-secret"
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":           {"saved-model"},
+		"max_tool_rounds": {"16"},
+		"llm_form":        {"1"},
+		"llm_endpoint":    {"https://llm.example/v1#fragment"},
+		"llm_api_key":     {secret},
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "Model connection settings are invalid")
+	requireNotContains(t, response.Body.String(), secret)
+	config, err := kritui_db.GetLLMConfig(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get LLM config: %v", err)
+	}
+	if config.Endpoint != "" || config.APIKey != "" {
+		t.Errorf("stored LLM config after rejection = %#v, want empty", config)
+	}
+}
+
+func TestMessageCompletionUsesStoredLLMCredentials(t *testing.T) {
+	database := openTestDatabase(t)
+	t.Setenv("LLM_KEY", "")
+	t.Setenv("LLM_ENDPOINT", "")
+	const storedKey = "stored-llm-secret"
+	authorizations := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"Stored credential answer."},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	if err := kritui_db.SaveLLMSettings(context.Background(), database, kritui_db.LLMSettingsUpdate{
+		Endpoint:     server.URL,
+		APIKeyChange: kritui_db.LLMReplaceAPIKey,
+		APIKeyValue:  storedKey,
+	}); err != nil {
+		t.Fatalf("seed LLM settings: %v", err)
+	}
+
+	toolCalls := newToolCallStore()
+	insertAcceptedUser(t, database, 1, "Hello stored credentials.")
+	response := completeForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), toolCalls,
+		"/messages/complete?chat=1", url.Values{
+			"model":   {"selected-model"},
+			"request": {newToolCallRequest(t, toolCalls, 1)},
+		})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "Stored credential answer.")
+	select {
+	case authorization := <-authorizations:
+		if authorization != "Bearer "+storedKey {
+			t.Errorf("Authorization = %q, want Bearer stored key", authorization)
+		}
+	default:
+		t.Error("provider received no completion request")
+	}
+}
+
+func TestStaticSaveCleanupClearsLLMSecretInput(t *testing.T) {
+	script, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app script: %v", err)
+	}
+	requireContains(t, string(script), "#llm-api-key")
 }

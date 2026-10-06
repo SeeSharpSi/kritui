@@ -134,9 +134,12 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 		if !ok {
 			return
 		}
-		if len(images) > 0 && modelKnownUnsupported(r.Context(), request.model, strconv.FormatInt(request.chatID, 10)) {
-			renderMessageError(w, r, http.StatusBadRequest, "Selected model does not support images.")
-			return
+		if len(images) > 0 {
+			effectiveConfig, configErr := effectiveLLMConfig(r.Context(), database)
+			if configErr == nil && modelKnownUnsupported(r.Context(), effectiveConfig, request.model, strconv.FormatInt(request.chatID, 10)) {
+				renderMessageError(w, r, http.StatusBadRequest, "Selected model does not support images.")
+				return
+			}
 		}
 		requestID, err := toolCalls.create(request.chatID, request.model, request.toolNames)
 		if err != nil {
@@ -359,13 +362,19 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 		return
 	}
 	conversationMessages := messagesWithPromptAppendTexts(messages)
+	effectiveConfig, err := effectiveLLMConfig(ctx, database)
+	if err != nil {
+		log.Printf("get LLM config: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load model settings.", request.model, selectedTools))
+		return
+	}
 	preferredEndpoint, err := kritui_db.GetModelEndpointType(ctx, database, request.model)
 	if err != nil {
 		log.Printf("get model endpoint type: %v", err)
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load model settings.", request.model, selectedTools))
 		return
 	}
-	client, err := llm.New(os.Getenv("LLM_KEY"), request.model, os.Getenv("LLM_ENDPOINT"), llm.ClientOptions{
+	client, err := llm.New(effectiveConfig.APIKey, request.model, effectiveConfig.Endpoint, llm.ClientOptions{
 		SessionID:         strconv.FormatInt(request.chatID, 10),
 		PreferredEndpoint: preferredEndpoint,
 		EndpointSelected: func(endpointType llm.EndpointType) {
@@ -889,8 +898,8 @@ func hasImages(messages []llm.Message) bool {
 	return false
 }
 
-func modelKnownUnsupported(ctx context.Context, model, sessionID string) bool {
-	client, err := llm.New(os.Getenv("LLM_KEY"), model, os.Getenv("LLM_ENDPOINT"), llm.ClientOptions{SessionID: sessionID})
+func modelKnownUnsupported(ctx context.Context, config kritui_db.LLMConfig, model, sessionID string) bool {
+	client, err := llm.New(config.APIKey, model, config.Endpoint, llm.ClientOptions{SessionID: sessionID})
 	if err != nil {
 		return false
 	}

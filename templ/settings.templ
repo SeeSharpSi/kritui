@@ -23,6 +23,9 @@ type SettingsPanelData struct {
 	PromptAppends               []kritui_db.PromptAppend
 	NtfySettings                kritui_db.NtfySettings
 	ClearNtfyAPIKey             bool
+	LLMSettings                 kritui_db.LLMSettings
+	LLMEnvironmentConfigured    bool
+	ClearLLMAPIKey              bool
 	Saved                       bool
 	Visible                     bool
 	ErrorMessage                string
@@ -106,24 +109,80 @@ templ SettingsPage(data SettingsPanelData) {
 			if data.ErrorMessage != "" {
 				<p class="settings-status settings-error" role="alert">{ data.ErrorMessage }</p>
 			}
+			if !data.LLMEnvironmentConfigured {
+				<section id="llm-settings" class="settings-section" aria-labelledby="llm-settings-heading">
+					<header class="settings-section-heading">
+					<h2 id="llm-settings-heading">Model connection</h2>
+						<p>Stored on server. Environment values take precedence when set.</p>
+					</header>
+					<input type="hidden" name="llm_form" value="1"/>
+					<div class="settings-fields">
+						<div class="settings-field">
+							<div class="settings-field-copy">
+								<label for="llm-endpoint">Endpoint</label>
+								<p class="settings-help">Full endpoint URL, for example https://api.example.com/v1/responses.</p>
+							</div>
+							<div class="settings-control">
+								<input id="llm-endpoint" type="url" name="llm_endpoint" value={ data.LLMSettings.Endpoint } maxlength="2048" placeholder="https://api.example.com/v1/responses"/>
+							</div>
+						</div>
+						<div class="settings-field">
+							<div class="settings-field-copy">
+								<label for="llm-api-key">API key</label>
+								<p class="settings-help">Stored on server. Never shown here. Blank preserves existing key.</p>
+							</div>
+							<div class="settings-control settings-control-column">
+								<input
+									id="llm-api-key"
+									type="password"
+									name="llm_api_key"
+									autocomplete="new-password"
+									maxlength="16384"
+									hx-preserve="true"
+									if data.ClearLLMAPIKey {
+										disabled
+									}
+								/>
+								if data.LLMSettings.APIKeyConfigured {
+									<input id="clear-llm-api-key" type="checkbox" name="clear_llm_api_key" value="1" hidden if data.ClearLLMAPIKey { checked }/>
+									<button class="settings-clear-key" type="button" data-settings-clear-open if data.ClearLLMAPIKey { hidden }>Clear stored key</button>
+									<p class="settings-clear-pending" data-settings-clear-pending role="status" if !data.ClearLLMAPIKey { hidden }>API key will be removed when settings are saved. <button type="button" data-settings-clear-undo>Undo</button></p>
+								}
+							</div>
+						</div>
+					</div>
+					<dialog class="settings-dialog" data-settings-clear-dialog aria-labelledby="llm-clear-title">
+						<h2 id="llm-clear-title">Clear stored API key?</h2>
+						<p>This removes saved model provider credentials when you save settings.</p>
+						<div class="settings-dialog-actions">
+							<button type="button" data-settings-clear-cancel>Cancel</button>
+							<button class="settings-dialog-danger" type="button" data-settings-clear-confirm>Clear key</button>
+						</div>
+					</dialog>
+				</section>
+			}
 			<section class="settings-section" aria-labelledby="chat-defaults-heading">
 				<header class="settings-section-heading">
 				<h2 id="chat-defaults-heading">Chat defaults</h2>
 					<p>Starting point for every new conversation.</p>
 				</header>
 				<div class="settings-fields">
-					<div class="settings-field">
-						<div class="settings-field-copy">
-							<label for="default-model">Default model</label>
-							<p class="settings-help">Preselected for each new chat.</p>
-						</div>
-						<div class="settings-control">
-							<select id="default-model" name="model" required>
-								for _, model := range data.Models {
-								<option value={ model } if model == data.SelectedModel { selected }>{ model }</option>
+						<div class="settings-field">
+							<div class="settings-field-copy">
+								<label for="default-model">Default model</label>
+								<p class="settings-help">Preselected for each new chat.</p>
+							</div>
+							<div class="settings-control">
+								if len(data.Models) == 0 {
+									<input id="default-model" type="text" name="model" value={ data.SelectedModel } placeholder="Provider model ID" required/>
+								} else {
+									<select id="default-model" name="model" required>
+										for _, model := range data.Models {
+											<option value={ model } if model == data.SelectedModel { selected }>{ model }</option>
+										}
+									</select>
 								}
-							</select>
-						</div>
+							</div>
 					</div>
 					<div class="settings-field">
 						<div class="settings-field-copy">

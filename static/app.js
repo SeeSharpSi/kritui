@@ -333,12 +333,13 @@ function syncPanelSendButton() {
 }
 
 function settingsClearState(button, pending) {
-    const form = button.closest('.settings-main-form');
-    const apiKey = form?.querySelector('#ntfy-api-key');
-    const clearKey = form?.querySelector('#clear-ntfy-api-key');
-    const openButton = form?.querySelector('[data-settings-clear-open]');
-    const pendingMessage = form?.querySelector('[data-settings-clear-pending]');
-    if (!form || !apiKey || !clearKey || !openButton || !pendingMessage) {
+    const section = button.closest('.settings-section');
+    const scope = section || button.closest('.settings-main-form');
+    const apiKey = scope?.querySelector('input[type="password"]');
+    const clearKey = scope?.querySelector('input[type="checkbox"][name^="clear_"]');
+    const openButton = scope?.querySelector('[data-settings-clear-open]');
+    const pendingMessage = scope?.querySelector('[data-settings-clear-pending]');
+    if (!scope || !apiKey || !clearKey || !openButton || !pendingMessage) {
         return;
     }
 
@@ -957,7 +958,7 @@ document.addEventListener('htmx:after:settle', (event) => {
     autoresizeAllMessageInputs(event.target);
     const settingsPage = document.querySelector('#settings-page');
     if (event.detail?.task?.target?.matches?.('#settings-page') && settingsPage?.querySelector('[data-settings-saved]')) {
-        const secretInputs = settingsPage.querySelectorAll('#ntfy-api-key, input[name^="mcp_authorization_"]');
+        const secretInputs = settingsPage.querySelectorAll('#ntfy-api-key, #llm-api-key, input[name^="mcp_authorization_"]');
         secretInputs.forEach((input) => {
             input.value = '';
             input.disabled = false;

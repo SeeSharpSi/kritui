@@ -435,6 +435,23 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateSettingsThemeMatteBlack,
 	migrateSettingsTheme1975,
 	migrateSettingsThemeRemoveTokyoNight,
+	func(ctx context.Context, tx *sql.Tx) error {
+		var tableCount int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM sqlite_master
+			WHERE type = 'table' AND name = 'settings'
+		`).Scan(&tableCount); err != nil {
+			return fmt.Errorf("inspect settings table: %w", err)
+		}
+		if tableCount == 0 {
+			return nil
+		}
+		if err := addColumnIfMissing(ctx, tx, "settings", "llm_endpoint", `TEXT`); err != nil {
+			return err
+		}
+		return addColumnIfMissing(ctx, tx, "settings", "llm_api_key", `TEXT`)
+	},
 }
 
 // rebuildSettingsThemeConstraint rebuilds the settings table so its theme

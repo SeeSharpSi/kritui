@@ -12,24 +12,26 @@ import (
 // HomeData groups every input the chat page renders. Field names replace a
 // sixteen-parameter positional list so same-typed values cannot transpose.
 type HomeData struct {
-	ChatID              string
-	ChatURL             string
-	Messages            []llm.Message
-	Models              []string
-	SelectedModel       string
-	DefaultModel        string
-	MaxToolRounds       int
-	Tools               []string
-	EnabledTools        []string
-	DefaultTools        []string
-	MCPServers          []kritui_db.MCPServer
-	PromptAppends       []kritui_db.PromptAppend
-	NtfySettings        kritui_db.NtfySettings
-	EnabledAppendIDs    []string
-	CompletionRequestID string
-	CompletionStarted   bool
-	CommandDefinitions  []commands.Definition
-	Theme               themes.Theme
+	ChatID                   string
+	ChatURL                  string
+	Messages                 []llm.Message
+	Models                   []string
+	SelectedModel            string
+	DefaultModel             string
+	MaxToolRounds            int
+	Tools                    []string
+	EnabledTools             []string
+	DefaultTools             []string
+	MCPServers               []kritui_db.MCPServer
+	PromptAppends            []kritui_db.PromptAppend
+	NtfySettings             kritui_db.NtfySettings
+	LLMSettings              kritui_db.LLMSettings
+	LLMEnvironmentConfigured bool
+	EnabledAppendIDs         []string
+	CompletionRequestID      string
+	CompletionStarted        bool
+	CommandDefinitions       []commands.Definition
+	Theme                    themes.Theme
 }
 
 templ Home(data HomeData) {
@@ -68,17 +70,19 @@ templ Home(data HomeData) {
 					}
 					<div id="page-panel">
 						@SettingsPage(SettingsPanelData{
-							ChatID:        data.ChatID,
-							Models:        data.Models,
-							SelectedModel: data.DefaultModel,
-							MaxToolRounds: data.MaxToolRounds,
-							ToolNames:     data.Tools,
-							DefaultTools:  data.DefaultTools,
-							MCPServers:    data.MCPServers,
-							PromptAppends: data.PromptAppends,
-							NtfySettings:  data.NtfySettings,
-							Themes:        themes.Options(),
-							SelectedTheme: data.Theme,
+							ChatID:                   data.ChatID,
+							Models:                   data.Models,
+							SelectedModel:            data.DefaultModel,
+							MaxToolRounds:            data.MaxToolRounds,
+							ToolNames:                data.Tools,
+							DefaultTools:             data.DefaultTools,
+							MCPServers:               data.MCPServers,
+							PromptAppends:            data.PromptAppends,
+							NtfySettings:             data.NtfySettings,
+							LLMSettings:              data.LLMSettings,
+							LLMEnvironmentConfigured: data.LLMEnvironmentConfigured,
+							Themes:                   themes.Options(),
+							SelectedTheme:            data.Theme,
 						})
 						@HistoryPage(data.ChatID)
 					</div>

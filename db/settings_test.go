@@ -3,6 +3,7 @@ package kritui_db
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -705,4 +706,173 @@ func toSortedPairs(tokens map[string]string) []string {
 	}
 	slices.Sort(pairs)
 	return pairs
+}
+
+func TestSaveLLMSettingsPersistsEndpointAndKey(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	const endpoint = "https://llm.example/v1/responses"
+	const apiKey = "llm-secret"
+
+	if err := SaveLLMSettings(ctx, database, LLMSettingsUpdate{
+		Endpoint:     endpoint,
+		APIKeyChange: LLMReplaceAPIKey,
+		APIKeyValue:  apiKey,
+	}); err != nil {
+		t.Fatalf("SaveLLMSettings() error: %v", err)
+	}
+
+	public, err := GetLLMSettings(ctx, database)
+	if err != nil {
+		t.Fatalf("GetLLMSettings() error: %v", err)
+	}
+	if public.Endpoint != endpoint || !public.APIKeyConfigured {
+		t.Errorf("public LLM settings = %#v, want endpoint and configured state", public)
+	}
+
+	private, err := GetLLMConfig(ctx, database)
+	if err != nil {
+		t.Fatalf("GetLLMConfig() error: %v", err)
+	}
+	if private.Endpoint != endpoint || private.APIKey != apiKey {
+		t.Errorf("private LLM config = %#v, want stored endpoint and key", private)
+	}
+}
+
+func TestSaveLLMSettingsKeepClearAndEmptyEndpoint(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	const apiKey = "llm-secret"
+	if err := SaveLLMSettings(ctx, database, LLMSettingsUpdate{
+		Endpoint:     "https://llm.example/v1/responses",
+		APIKeyChange: LLMReplaceAPIKey,
+		APIKeyValue:  apiKey,
+	}); err != nil {
+		t.Fatalf("seed SaveLLMSettings() error: %v", err)
+	}
+
+	if err := SaveLLMSettings(ctx, database, LLMSettingsUpdate{
+		Endpoint: "https://llm.example/v1/chat/completions",
+	}); err != nil {
+		t.Fatalf("SaveLLMSettings() endpoint update error: %v", err)
+	}
+	private, err := GetLLMConfig(ctx, database)
+	if err != nil {
+		t.Fatalf("GetLLMConfig() after endpoint update: %v", err)
+	}
+	if private.Endpoint != "https://llm.example/v1/chat/completions" || private.APIKey != apiKey {
+		t.Errorf("config after endpoint update = %#v, want new endpoint and preserved key", private)
+	}
+
+	if err := SaveLLMSettings(ctx, database, LLMSettingsUpdate{
+		Endpoint:     private.Endpoint,
+		APIKeyChange: LLMClearAPIKey,
+	}); err != nil {
+		t.Fatalf("SaveLLMSettings() clear error: %v", err)
+	}
+	public, err := GetLLMSettings(ctx, database)
+	if err != nil {
+		t.Fatalf("GetLLMSettings() after clear: %v", err)
+	}
+	if public.APIKeyConfigured {
+		t.Error("public API key state = configured after clear, want unset")
+	}
+	if private, err := GetLLMConfig(ctx, database); err != nil {
+		t.Fatalf("GetLLMConfig() after clear: %v", err)
+	} else if private.APIKey != "" {
+		t.Errorf("API key after clear = %q, want empty", private.APIKey)
+	}
+
+}
+
+func TestSaveLLMSettingsEmptyEndpointPreservesKey(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	const apiKey = "llm-secret"
+	if err := SaveLLMSettings(ctx, database, LLMSettingsUpdate{
+		Endpoint:     "https://llm.example/v1/responses",
+		APIKeyChange: LLMReplaceAPIKey,
+		APIKeyValue:  apiKey,
+	}); err != nil {
+		t.Fatalf("seed SaveLLMSettings() error: %v", err)
+	}
+
+	if err := SaveLLMSettings(ctx, database, LLMSettingsUpdate{Endpoint: ""}); err != nil {
+		t.Fatalf("SaveLLMSettings() empty endpoint error: %v", err)
+	}
+	public, err := GetLLMSettings(ctx, database)
+	if err != nil {
+		t.Fatalf("GetLLMSettings() error: %v", err)
+	}
+	private, err := GetLLMConfig(ctx, database)
+	if err != nil {
+		t.Fatalf("GetLLMConfig() error: %v", err)
+	}
+	if public.Endpoint != "" || private.Endpoint != "" {
+		t.Errorf("endpoint after empty save = %q / %q, want empty", public.Endpoint, private.Endpoint)
+	}
+	if !public.APIKeyConfigured || private.APIKey != apiKey {
+		t.Errorf("key after empty endpoint save = %#v / %#v, want preserved key", public, private)
+	}
+	var endpointNull bool
+	if err := database.QueryRow(`SELECT llm_endpoint IS NULL FROM settings WHERE id = 1`).Scan(&endpointNull); err != nil {
+		t.Fatalf("inspect empty endpoint null: %v", err)
+	}
+	if !endpointNull {
+		t.Error("empty llm_endpoint is not NULL")
+	}
+}
+
+func TestValidateLLMSettingsRejectsInvalidValues(t *testing.T) {
+	longEndpoint := "https://llm.example/" + strings.Repeat("x", 2048)
+	longKey := strings.Repeat("k", 16385)
+	tests := []struct {
+		name   string
+		update LLMSettingsUpdate
+	}{
+		{"ftp scheme", LLMSettingsUpdate{Endpoint: "ftp://llm.example/v1"}},
+		{"relative", LLMSettingsUpdate{Endpoint: "api.example/v1/responses"}},
+		{"no host", LLMSettingsUpdate{Endpoint: "https:///v1/responses"}},
+		{"fragment", LLMSettingsUpdate{Endpoint: "https://llm.example/v1#section"}},
+		{"long endpoint", LLMSettingsUpdate{Endpoint: longEndpoint}},
+		{"long key", LLMSettingsUpdate{Endpoint: "https://llm.example/v1", APIKeyChange: LLMReplaceAPIKey, APIKeyValue: longKey}},
+		{"unknown mode", LLMSettingsUpdate{Endpoint: "https://llm.example/v1", APIKeyChange: LLMAPIKeyChange(99)}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := ValidateLLMSettings(test.update); err == nil {
+				t.Errorf("ValidateLLMSettings(%#v) error = nil, want error", test.update)
+			}
+			database := openMessagesTestDatabase(t, "")
+			if err := SaveLLMSettings(context.Background(), database, test.update); err == nil {
+				t.Errorf("SaveLLMSettings(%#v) error = nil, want error", test.update)
+			}
+		})
+	}
+}
+
+func TestSaveSettingsWithNilLLMPreservesExistingConfig(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	if err := SaveLLMSettings(ctx, database, LLMSettingsUpdate{
+		Endpoint:     "https://llm.example/v1/responses",
+		APIKeyChange: LLMReplaceAPIKey,
+		APIKeyValue:  "llm-secret",
+	}); err != nil {
+		t.Fatalf("seed LLM settings: %v", err)
+	}
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "model",
+		MaxToolRounds: 4,
+		DefaultTools:  []string{"webfetch"},
+	}); err != nil {
+		t.Fatalf("SaveSettings() error: %v", err)
+	}
+	got, err := GetLLMConfig(ctx, database)
+	if err != nil {
+		t.Fatalf("GetLLMConfig() error: %v", err)
+	}
+	if got.Endpoint != "https://llm.example/v1/responses" || got.APIKey != "llm-secret" {
+		t.Errorf("LLM config after nil save = %#v, want preserved config", got)
+	}
 }

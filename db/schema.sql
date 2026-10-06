@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS settings (
     ntfy_endpoint TEXT,
     ntfy_topic TEXT,
     ntfy_api_key TEXT,
+    llm_endpoint TEXT,
+    llm_api_key TEXT,
     theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'))
 ) STRICT;
 
@@ -157,4 +159,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 21;
+PRAGMA user_version = 22;
