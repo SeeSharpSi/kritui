@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/themes"
 )
 
@@ -19,17 +20,18 @@ type settingWriter interface {
 }
 
 // SettingsUpdate describes the desired settings for one atomic save.
-// Nil PromptAppends, MCPServers, Ntfy, or LLM values, and an empty Theme,
-// leave those settings untouched.
+// Nil PromptAppends, MCPServers, Ntfy, LLM, or ToolResultElision values, and
+// an empty Theme, leave those settings untouched.
 type SettingsUpdate struct {
-	Model         string
-	MaxToolRounds int
-	DefaultTools  []string
-	PromptAppends []PromptAppend
-	MCPServers    []MCPServerUpdate
-	Ntfy          *NtfySettingsUpdate
-	LLM           *LLMSettingsUpdate
-	Theme         string
+	Model             string
+	MaxToolRounds     int
+	DefaultTools      []string
+	PromptAppends     []PromptAppend
+	MCPServers        []MCPServerUpdate
+	Ntfy              *NtfySettingsUpdate
+	LLM               *LLMSettingsUpdate
+	ToolResultElision *llm.ToolResultElisionConfig
+	Theme             string
 }
 
 // NtfySettings contains values safe to render in the settings page.
@@ -144,6 +146,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 			return err
 		}
 	}
+	if update.ToolResultElision != nil {
+		if err := setToolResultElision(ctx, tx, *update.ToolResultElision); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(update.Theme) != "" {
 		if err := setTheme(ctx, tx, update.Theme); err != nil {
 			return err
@@ -151,6 +158,72 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit set settings: %w", err)
+	}
+	return nil
+}
+
+// GetToolResultElision returns the stored tool-result elision configuration.
+func GetToolResultElision(ctx context.Context, db *sql.DB) (llm.ToolResultElisionConfig, error) {
+	var mode string
+	var userTurns, tokenBudget sql.NullInt64
+	var summaryModel sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT tool_result_elision_mode, tool_result_elision_user_turns,
+			tool_result_elision_token_budget, tool_result_elision_summary_model
+		FROM settings
+		WHERE id = 1
+	`).Scan(&mode, &userTurns, &tokenBudget, &summaryModel); err != nil {
+		return llm.ToolResultElisionConfig{}, fmt.Errorf("get tool result elision: %w", err)
+	}
+
+	config := llm.ToolResultElisionConfig{Mode: llm.ToolResultElisionMode(mode)}
+	switch config.Mode {
+	case llm.ToolResultElisionLastUserTurns:
+		if userTurns.Valid {
+			config.UserTurns = int(userTurns.Int64)
+		}
+	case llm.ToolResultElisionBudget:
+		if tokenBudget.Valid {
+			config.TokenBudget = int(tokenBudget.Int64)
+		}
+	case llm.ToolResultElisionSummarize:
+		if summaryModel.Valid {
+			config.SummaryModel = strings.TrimSpace(summaryModel.String)
+		}
+	}
+	if err := config.Validate(); err != nil {
+		return llm.ToolResultElisionConfig{}, fmt.Errorf("get tool result elision: %w", err)
+	}
+	return config, nil
+}
+
+func setToolResultElision(ctx context.Context, db settingWriter, config llm.ToolResultElisionConfig) error {
+	if config.Mode == "" {
+		config.Mode = llm.ToolResultElisionNone
+	}
+	config.SummaryModel = strings.TrimSpace(config.SummaryModel)
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("set tool result elision: %w", err)
+	}
+
+	var userTurns, tokenBudget, summaryModel any
+	switch config.Mode {
+	case llm.ToolResultElisionLastUserTurns:
+		userTurns = config.UserTurns
+	case llm.ToolResultElisionBudget:
+		tokenBudget = config.TokenBudget
+	case llm.ToolResultElisionSummarize:
+		summaryModel = config.SummaryModel
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE settings
+		SET tool_result_elision_mode = ?,
+			tool_result_elision_user_turns = ?,
+			tool_result_elision_token_budget = ?,
+			tool_result_elision_summary_model = ?
+		WHERE id = 1
+	`, string(config.Mode), userTurns, tokenBudget, summaryModel); err != nil {
+		return fmt.Errorf("set tool result elision: %w", err)
 	}
 	return nil
 }

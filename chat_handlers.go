@@ -137,6 +137,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			SelectedModel:            selectedModel,
 			DefaultModel:             renderSettings.defaultModel,
 			MaxToolRounds:            renderSettings.maxToolRounds,
+			ToolResultElision:        renderSettings.toolResultElision,
 			Tools:                    toolRegistry.Names(),
 			EnabledTools:             enabledTools,
 			DefaultTools:             renderSettings.defaultTools,
@@ -164,15 +165,16 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 // homeRenderSettings gathers the configuration values the chat page renders.
 // Prompt appends and default tools may arrive preloaded from chat allocation.
 type homeRenderSettings struct {
-	promptAppends []kritui_db.PromptAppend
-	defaultModel  string
-	maxToolRounds int
-	defaultTools  []string
-	mcpServers    []kritui_db.MCPServer
-	ntfySettings  kritui_db.NtfySettings
-	llmSettings   kritui_db.LLMSettings
-	llmEnvManaged bool
-	theme         themes.Theme
+	promptAppends     []kritui_db.PromptAppend
+	defaultModel      string
+	maxToolRounds     int
+	toolResultElision llm.ToolResultElisionConfig
+	defaultTools      []string
+	mcpServers        []kritui_db.MCPServer
+	ntfySettings      kritui_db.NtfySettings
+	llmSettings       kritui_db.LLMSettings
+	llmEnvManaged     bool
+	theme             themes.Theme
 }
 
 // loadHomeRenderSettings fetches every not-yet-loaded settings value in the
@@ -198,6 +200,10 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 	if settings.maxToolRounds, err = kritui_db.GetMaxToolRounds(ctx, database, llm.DefaultMaxToolCallRounds); err != nil {
 		log.Printf("get max tool rounds: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load max tool rounds: %w", err)
+	}
+	if settings.toolResultElision, err = kritui_db.GetToolResultElision(ctx, database); err != nil {
+		log.Printf("get tool result elision: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load tool result elision: %w", err)
 	}
 	if !defaultToolsLoaded {
 		if settings.defaultTools, err = kritui_db.GetDefaultEnabledTools(ctx, database, nil); err != nil {
@@ -333,6 +339,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.MaxToolRounds = maxToolRounds
+		toolResultElision, err := kritui_db.GetToolResultElision(r.Context(), database)
+		if err != nil {
+			log.Printf("get tool result elision: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.ToolResultElision = toolResultElision
 		defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 		if err != nil {
 			log.Printf("get default tools: %v", err)
@@ -385,6 +398,14 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				}
 				render(http.StatusBadRequest, "Invalid settings form.")
 				return
+			}
+
+			toolResultElisionSubmitted := r.FormValue("tool_result_elision_form") == "1"
+			if _, ok := r.Form["tool_result_elision_mode"]; ok {
+				toolResultElisionSubmitted = true
+			}
+			if toolResultElisionSubmitted {
+				page.ToolResultElision = toolResultElisionFromForm(r)
 			}
 
 			submittedModel := strings.TrimSpace(r.FormValue("model"))
@@ -559,6 +580,14 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				render(http.StatusBadRequest, "Tool selection is invalid.")
 				return
 			}
+			var toolResultElisionUpdate *llm.ToolResultElisionConfig
+			if toolResultElisionSubmitted {
+				if err := page.ToolResultElision.Validate(); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("Tool-result elision settings are invalid: %v.", err))
+					return
+				}
+				toolResultElisionUpdate = &page.ToolResultElision
+			}
 			if r.FormValue("append_form") == "1" {
 				if err := kritui_db.ValidatePromptAppends(submittedAppends); err != nil {
 					render(http.StatusBadRequest, fmt.Sprintf("Prompt append settings are invalid: %v.", err))
@@ -636,12 +665,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			}
 
 			update := kritui_db.SettingsUpdate{
-				Model:         page.SelectedModel,
-				MaxToolRounds: page.MaxToolRounds,
-				DefaultTools:  page.DefaultTools,
-				Ntfy:          ntfyUpdate,
-				LLM:           llmUpdate,
-				Theme:         submittedTheme,
+				Model:             page.SelectedModel,
+				MaxToolRounds:     page.MaxToolRounds,
+				DefaultTools:      page.DefaultTools,
+				Ntfy:              ntfyUpdate,
+				LLM:               llmUpdate,
+				ToolResultElision: toolResultElisionUpdate,
+				Theme:             submittedTheme,
 			}
 			if r.FormValue("append_form") == "1" {
 				update.PromptAppends = submittedAppends
@@ -1050,6 +1080,24 @@ func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write(page.Bytes())
+}
+
+func toolResultElisionFromForm(r *http.Request) llm.ToolResultElisionConfig {
+	config := llm.ToolResultElisionConfig{
+		Mode: llm.ToolResultElisionMode(strings.TrimSpace(r.FormValue("tool_result_elision_mode"))),
+	}
+	if config.Mode == "" {
+		config.Mode = llm.ToolResultElisionNone
+	}
+	switch config.Mode {
+	case llm.ToolResultElisionLastUserTurns:
+		config.UserTurns, _ = strconv.Atoi(strings.TrimSpace(r.FormValue("tool_result_elision_user_turns")))
+	case llm.ToolResultElisionBudget:
+		config.TokenBudget, _ = strconv.Atoi(strings.TrimSpace(r.FormValue("tool_result_elision_token_budget")))
+	case llm.ToolResultElisionSummarize:
+		config.SummaryModel = strings.TrimSpace(r.FormValue("tool_result_elision_summary_model"))
+	}
+	return config
 }
 
 func renderMCPServerEditor(w http.ResponseWriter, r *http.Request, status int, server kritui_db.MCPServer) {

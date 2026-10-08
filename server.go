@@ -452,6 +452,38 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 		}
 		return addColumnIfMissing(ctx, tx, "settings", "llm_api_key", `TEXT`)
 	},
+	func(ctx context.Context, tx *sql.Tx) error {
+		var tableCount int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM sqlite_master
+			WHERE type = 'table' AND name = 'settings'
+		`).Scan(&tableCount); err != nil {
+			return fmt.Errorf("inspect settings table: %w", err)
+		}
+		if tableCount == 0 {
+			return nil
+		}
+		if err := addColumnIfMissing(ctx, tx, "settings", "tool_result_elision_mode", `TEXT NOT NULL DEFAULT 'none' CHECK (
+			tool_result_elision_mode IN ('none', 'current_turn', 'last_user_turns', 'tool_result_budget', 'summarize')
+		)`); err != nil {
+			return err
+		}
+		if err := addColumnIfMissing(ctx, tx, "settings", "tool_result_elision_user_turns", `INTEGER CHECK (
+			tool_result_elision_user_turns IS NULL OR tool_result_elision_user_turns BETWEEN 1 AND 1000
+		)`); err != nil {
+			return err
+		}
+		if err := addColumnIfMissing(ctx, tx, "settings", "tool_result_elision_token_budget", `INTEGER CHECK (
+			tool_result_elision_token_budget IS NULL OR tool_result_elision_token_budget BETWEEN 1 AND 10000000
+		)`); err != nil {
+			return err
+		}
+		return addColumnIfMissing(ctx, tx, "settings", "tool_result_elision_summary_model", `TEXT CHECK (
+			tool_result_elision_summary_model IS NULL OR
+			(trim(tool_result_elision_summary_model) <> '' AND length(CAST(tool_result_elision_summary_model AS BLOB)) <= 512)
+		)`)
+	},
 }
 
 // rebuildSettingsThemeConstraint rebuilds the settings table so its theme

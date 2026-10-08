@@ -77,8 +77,10 @@ func TestMatteBlackMigrationPreservesExistingSettings(t *testing.T) {
 			previousSchema := strings.Replace(schema,
 				"'rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'",
 				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'og', 'forest-night', 'omarchy'", 1)
-			previousSchema = strings.Replace(previousSchema, "user_version = 22", "user_version = 18", 1)
 			if _, err := database.Exec(previousSchema); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(`PRAGMA user_version = 18`); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := database.Exec(`UPDATE settings SET theme = NULLIF(?, ''), default_model = 'kept-model', max_tool_rounds = 9,
@@ -136,8 +138,10 @@ func Test1975MigrationPreservesExistingSettings(t *testing.T) {
 			previousSchema := strings.Replace(schema,
 				"'rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'",
 				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'forest-night', 'matte-black'", 1)
-			previousSchema = strings.Replace(previousSchema, "user_version = 22", "user_version = 19", 1)
 			if _, err := database.Exec(previousSchema); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(`PRAGMA user_version = 19`); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := database.Exec(`UPDATE settings SET theme = NULLIF(?, ''), default_model = 'kept-model', max_tool_rounds = 9,
@@ -187,8 +191,10 @@ func TestTokyoNightRemovalRemapsToMatteBlack(t *testing.T) {
 			previousSchema := strings.Replace(schema,
 				"'rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'",
 				"'rose-pine', 'rose-pine-dark', 'nord', 'tokyo-night', 'forest-night', 'matte-black', '1975'", 1)
-			previousSchema = strings.Replace(previousSchema, "user_version = 22", "user_version = 20", 1)
 			if _, err := database.Exec(previousSchema); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(`PRAGMA user_version = 20`); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := database.Exec(`UPDATE settings SET theme = NULLIF(?, ''), default_model = 'kept-model', max_tool_rounds = 9,
@@ -272,8 +278,10 @@ func TestLLMSettingsMigrationPreservesExistingSettings(t *testing.T) {
 	defer database.Close()
 	database.SetMaxOpenConns(1)
 	previousSchema := strings.Replace(schema, "    llm_endpoint TEXT,\n    llm_api_key TEXT,\n", "", 1)
-	previousSchema = strings.Replace(previousSchema, "user_version = 22", "user_version = 21", 1)
 	if _, err := database.Exec(previousSchema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`PRAGMA user_version = 21`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Exec(`UPDATE settings SET default_model = 'kept-model', max_tool_rounds = 9,

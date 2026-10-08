@@ -31,12 +31,15 @@ func (e *MaxToolRoundsError) Error() string {
 // Conversation retains message history and executes tool calls requested by
 // the model. A Conversation must not be used concurrently.
 type Conversation struct {
-	client           *Client
-	registry         *tools.Registry
-	maxToolRounds    int
-	toolCallLogger   *log.Logger
-	toolCallObserver func(ToolCall, bool, string)
-	messages         []Message
+	client            *Client
+	registry          *tools.Registry
+	maxToolRounds     int
+	toolCallLogger    *log.Logger
+	toolCallObserver  func(ToolCall, bool, string)
+	messages          []Message
+	toolResultElision ToolResultElisionConfig
+	summarizer        *Client
+	summaryCache      map[int]string
 }
 
 // SetToolCallLogger configures logging for tool names, arguments, and results.
@@ -93,6 +96,28 @@ func (c *Conversation) SetMaxToolRounds(rounds int) {
 	}
 }
 
+// SetToolResultElision configures request-only tool-result shaping. The
+// conversation's canonical message history is never modified by elision.
+func (c *Conversation) SetToolResultElision(config ToolResultElisionConfig, summarizer *Client) error {
+	if c == nil {
+		return errors.New("llm: conversation is required")
+	}
+	if err := config.Validate(); err != nil {
+		return err
+	}
+	if config.Mode == "" {
+		config.Mode = ToolResultElisionNone
+	}
+	config.SummaryModel = strings.TrimSpace(config.SummaryModel)
+	if config.Mode == ToolResultElisionSummarize && summarizer == nil {
+		return errors.New("llm: tool-result summarizer client is required")
+	}
+	c.toolResultElision = config
+	c.summarizer = summarizer
+	c.summaryCache = nil
+	return nil
+}
+
 // Messages returns a copy of the conversation history.
 func (c *Conversation) Messages() []Message {
 	if c == nil {
@@ -129,7 +154,15 @@ func (c *Conversation) Complete(ctx context.Context) error {
 
 	toolRounds := 0
 	for {
-		completion, err := c.client.complete(ctx, c.messages, definitions)
+		requestMessages := c.messages
+		if c.toolResultElision.Mode != "" && c.toolResultElision.Mode != ToolResultElisionNone {
+			var err error
+			requestMessages, err = c.shapeToolResults(ctx)
+			if err != nil {
+				return err
+			}
+		}
+		completion, err := c.client.complete(ctx, requestMessages, definitions)
 		if err != nil {
 			return err
 		}

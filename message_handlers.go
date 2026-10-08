@@ -445,7 +445,42 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load settings.", request.model, selectedTools))
 		return
 	}
+	toolResultElision, err := kritui_db.GetToolResultElision(ctx, database)
+	if err != nil {
+		log.Printf("get tool result elision: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load settings.", request.model, selectedTools))
+		return
+	}
+	var summarizer *llm.Client
+	if toolResultElision.Mode == llm.ToolResultElisionSummarize {
+		summaryModel := toolResultElision.SummaryModel
+		summaryEndpoint, err := kritui_db.GetModelEndpointType(ctx, database, summaryModel)
+		if err != nil {
+			log.Printf("get summary model endpoint type: %v", err)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load model settings.", request.model, selectedTools))
+			return
+		}
+		summarizer, err = llm.New(effectiveConfig.APIKey, summaryModel, effectiveConfig.Endpoint, llm.ClientOptions{
+			SessionID:         strconv.FormatInt(request.chatID, 10),
+			PreferredEndpoint: summaryEndpoint,
+			EndpointSelected: func(endpointType llm.EndpointType) {
+				if err := kritui_db.SetModelEndpointType(ctx, database, summaryModel, endpointType); err != nil {
+					log.Printf("store summary model endpoint type: %v", err)
+				}
+			},
+		})
+		if err != nil {
+			log.Printf("configure summary model: %v", err)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure summary model.", request.model, selectedTools))
+			return
+		}
+	}
 	conversation.SetMaxToolRounds(maxToolRounds)
+	if err := conversation.SetToolResultElision(toolResultElision, summarizer); err != nil {
+		log.Printf("configure tool result elision: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure conversation.", request.model, selectedTools))
+		return
+	}
 	conversation.SetToolCallLogger(toolCallLogger)
 	conversation.SetToolCallObserver(tracker.observe)
 	completionContext := ctx

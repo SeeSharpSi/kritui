@@ -19,6 +19,7 @@ type HomeData struct {
 	SelectedModel            string
 	DefaultModel             string
 	MaxToolRounds            int
+	ToolResultElision        llm.ToolResultElisionConfig
 	Tools                    []string
 	EnabledTools             []string
 	DefaultTools             []string
@@ -74,6 +75,7 @@ templ Home(data HomeData) {
 							Models:                   data.Models,
 							SelectedModel:            data.DefaultModel,
 							MaxToolRounds:            data.MaxToolRounds,
+							ToolResultElision:        data.ToolResultElision,
 							ToolNames:                data.Tools,
 							DefaultTools:             data.DefaultTools,
 							MCPServers:               data.MCPServers,

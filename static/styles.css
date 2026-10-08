@@ -348,6 +348,10 @@ main {
                     }
                 }
 
+                .settings-field[data-tool-elision-mode][hidden] {
+                    display: none;
+                }
+
                 .settings-field-copy {
                     padding-top: .15rem;
 

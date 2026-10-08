@@ -352,6 +352,26 @@ function settingsClearState(button, pending) {
     pendingMessage.hidden = !pending;
 }
 
+function syncToolResultElisionControls(root = document) {
+    const forms = [];
+    if (root?.matches?.('.settings-main-form')) {
+        forms.push(root);
+    }
+    root?.querySelectorAll?.('.settings-main-form').forEach((form) => forms.push(form));
+
+    forms.forEach((form) => {
+        const mode = form.querySelector('#tool-result-elision-mode')?.value || 'none';
+        form.querySelectorAll('[data-tool-elision-mode]').forEach((row) => {
+            const active = row.dataset.toolElisionMode === mode;
+            row.hidden = !active;
+            row.querySelectorAll('input, select, textarea').forEach((control) => {
+                control.disabled = !active;
+                control.required = active;
+            });
+        });
+    });
+}
+
 const imageAttachmentStates = new WeakMap();
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp']);
 const maxImageCount = 4;
@@ -645,6 +665,7 @@ document.addEventListener('DOMContentLoaded', () => {
     scrollMessages(document);
     syncPanelSendButton();
     syncShellCollapse();
+    syncToolResultElisionControls(document);
     autoresizeAllMessageInputs(document);
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js');
@@ -707,12 +728,22 @@ document.addEventListener('paste', (event) => {
 
 document.addEventListener('change', (event) => {
     const input = event.target;
+    if (input.matches?.('#tool-result-elision-mode')) {
+        syncToolResultElisionControls(input.closest('form'));
+        return;
+    }
     if (!input.matches?.('#image-input')) {
         return;
     }
     const selected = Array.from(input.files || []);
     if (selected.length > 0) {
         addImageAttachments(input, selected);
+    }
+});
+
+document.addEventListener('reset', (event) => {
+    if (event.target.matches?.('.settings-main-form')) {
+        queueMicrotask(() => syncToolResultElisionControls(event.target));
     }
 });
 
@@ -863,7 +894,10 @@ async function copyMessage(button) {
     }, 1600));
 }
 
-document.addEventListener('htmx:after:process', (event) => scrollMessages(event.target));
+document.addEventListener('htmx:after:process', (event) => {
+    scrollMessages(event.target);
+    syncToolResultElisionControls(event.target);
+});
 document.addEventListener('htmx:config:request', (event) => {
     const source = event.detail?.ctx?.sourceElement;
     const form = source?.matches?.('#message-form')
@@ -929,6 +963,7 @@ document.addEventListener('htmx:after:swap', (event) => {
         }
     }
     syncPanelSendButton();
+    syncToolResultElisionControls(event.target);
     autoresizeAllMessageInputs(event.target);
     syncShellCollapse();
 });
@@ -955,6 +990,7 @@ function applySettingsTheme(root) {
 document.addEventListener('htmx:after:settle', (event) => {
     restoreMessageScroll(event.detail?.task?.target);
     applySettingsTheme(event.detail?.task?.target);
+    syncToolResultElisionControls(event.target);
     autoresizeAllMessageInputs(event.target);
     const settingsPage = document.querySelector('#settings-page');
     if (event.detail?.task?.target?.matches?.('#settings-page') && settingsPage?.querySelector('[data-settings-saved]')) {

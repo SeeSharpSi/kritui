@@ -11,7 +11,16 @@ CREATE TABLE IF NOT EXISTS settings (
     ntfy_api_key TEXT,
     llm_endpoint TEXT,
     llm_api_key TEXT,
-    theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975'))
+    theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975')),
+    tool_result_elision_mode TEXT NOT NULL DEFAULT 'none'
+        CHECK (tool_result_elision_mode IN ('none', 'current_turn', 'last_user_turns', 'tool_result_budget', 'summarize')),
+    tool_result_elision_user_turns INTEGER
+        CHECK (tool_result_elision_user_turns IS NULL OR tool_result_elision_user_turns BETWEEN 1 AND 1000),
+    tool_result_elision_token_budget INTEGER
+        CHECK (tool_result_elision_token_budget IS NULL OR tool_result_elision_token_budget BETWEEN 1 AND 10000000),
+    tool_result_elision_summary_model TEXT
+        CHECK (tool_result_elision_summary_model IS NULL OR
+            (trim(tool_result_elision_summary_model) <> '' AND length(CAST(tool_result_elision_summary_model AS BLOB)) <= 512))
 ) STRICT;
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -159,4 +168,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 22;
+PRAGMA user_version = 23;

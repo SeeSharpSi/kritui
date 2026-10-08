@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	kritui_db "seesharpsi/kritui/db"
+	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/themes"
 )
 
@@ -15,6 +16,7 @@ type SettingsPanelData struct {
 	Models                      []string
 	SelectedModel               string
 	MaxToolRounds               int
+	ToolResultElision           llm.ToolResultElisionConfig
 	ToolNames                   []string
 	DefaultTools                []string
 	MCPServers                  []kritui_db.MCPServer
@@ -76,6 +78,20 @@ templ MCPServerEditor(server kritui_db.MCPServer, enabledByDefault bool, clearAu
 }
 
 templ SettingsPage(data SettingsPanelData) {
+	{{
+	mode := string(data.ToolResultElision.Mode)
+	if mode == "" {
+		mode = string(llm.ToolResultElisionNone)
+	}
+	userTurns := data.ToolResultElision.UserTurns
+	if mode != string(llm.ToolResultElisionLastUserTurns) && (userTurns < 1 || userTurns > llm.MaxElisionUserTurns) {
+		userTurns = 3
+	}
+	tokenBudget := data.ToolResultElision.TokenBudget
+	if mode != string(llm.ToolResultElisionBudget) && (tokenBudget < 1 || tokenBudget > llm.MaxElisionTokenBudget) {
+		tokenBudget = 4096
+	}
+	}}
 	<section
 		id="settings-page"
 		class="panel-page settings-page"
@@ -103,6 +119,7 @@ templ SettingsPage(data SettingsPanelData) {
 			<input type="hidden" name="append_form" value="1"/>
 			<input type="hidden" name="mcp_form" value="1"/>
 			<input type="hidden" name="ntfy_form" value="1"/>
+			<input type="hidden" name="tool_result_elision_form" value="1"/>
 			if data.Saved {
 				<p class="settings-status" role="status" data-settings-saved>Settings saved.</p>
 			}
@@ -191,6 +208,53 @@ templ SettingsPage(data SettingsPanelData) {
 						</div>
 						<div class="settings-control">
 							<input id="max-tool-rounds" type="number" name="max_tool_rounds" value={ strconv.Itoa(data.MaxToolRounds) } min="1" max="100" required/>
+						</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="tool-result-elision-mode">Tool-result elision</label>
+							<p class="settings-help">Controls tool results sent to the model for every chat. Full outputs remain stored.</p>
+						</div>
+						<div class="settings-control">
+							<select id="tool-result-elision-mode" name="tool_result_elision_mode">
+								<option value="none" if mode == string(llm.ToolResultElisionNone) { selected }>None</option>
+								<option value="current_turn" if mode == string(llm.ToolResultElisionCurrentTurn) { selected }>Current turn only</option>
+								<option value="last_user_turns" if mode == string(llm.ToolResultElisionLastUserTurns) { selected }>Last X user turns</option>
+								<option value="tool_result_budget" if mode == string(llm.ToolResultElisionBudget) { selected }>Tool-result budget</option>
+								<option value="summarize" if mode == string(llm.ToolResultElisionSummarize) { selected }>Summarize older results</option>
+							</select>
+						</div>
+					</div>
+					<div class="settings-field" data-tool-elision-mode="last_user_turns" if mode != string(llm.ToolResultElisionLastUserTurns) { hidden }>
+						<div class="settings-field-copy">
+							<label for="tool-result-elision-user-turns">User turns to keep</label>
+							<p class="settings-help">Keep results from the latest user turns, including the current turn.</p>
+						</div>
+						<div class="settings-control">
+							<input id="tool-result-elision-user-turns" type="number" name="tool_result_elision_user_turns" value={ strconv.Itoa(userTurns) } min="1" max="1000" if mode != string(llm.ToolResultElisionLastUserTurns) { disabled } if mode == string(llm.ToolResultElisionLastUserTurns) { required }/>
+						</div>
+					</div>
+					<div class="settings-field" data-tool-elision-mode="tool_result_budget" if mode != string(llm.ToolResultElisionBudget) { hidden }>
+						<div class="settings-field-copy">
+							<label for="tool-result-elision-token-budget">Token budget</label>
+							<p class="settings-help">Elide oldest consumed results first. Tokens are estimated as UTF-8 bytes divided by four, rounded up. Fresh results and omission markers can exceed this budget.</p>
+						</div>
+						<div class="settings-control">
+							<input id="tool-result-elision-token-budget" type="number" name="tool_result_elision_token_budget" value={ strconv.Itoa(tokenBudget) } min="1" max="10000000" if mode != string(llm.ToolResultElisionBudget) { disabled } if mode == string(llm.ToolResultElisionBudget) { required }/>
+						</div>
+					</div>
+					<div class="settings-field" data-tool-elision-mode="summarize" if mode != string(llm.ToolResultElisionSummarize) { hidden }>
+						<div class="settings-field-copy">
+							<label for="tool-result-elision-summary-model">Summary model</label>
+							<p class="settings-help">Summarize earlier turns with this model. Adds separate model requests. Enter a provider model ID or choose a suggestion.</p>
+						</div>
+						<div class="settings-control">
+							<input id="tool-result-elision-summary-model" type="text" name="tool_result_elision_summary_model" list="tool-result-elision-summary-model-options" value={ data.ToolResultElision.SummaryModel } maxlength="512" placeholder="Provider model ID" if mode != string(llm.ToolResultElisionSummarize) { disabled } if mode == string(llm.ToolResultElisionSummarize) { required }/>
+							<datalist id="tool-result-elision-summary-model-options">
+								for _, model := range data.Models {
+									<option value={ model }></option>
+								}
+							</datalist>
 						</div>
 					</div>
 					<div class="settings-field">
