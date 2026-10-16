@@ -41,8 +41,9 @@ const (
 )
 
 type endpointCandidate struct {
-	typeName EndpointType
-	url      string
+	typeName     EndpointType
+	url          string
+	alternateURL string
 }
 
 var endpointDefinitions = []struct {
@@ -248,6 +249,7 @@ type Client struct {
 	endpointMu          sync.RWMutex
 	preferredEndpoint   EndpointType
 	selectedEndpoint    EndpointType
+	selectedURL         string
 }
 
 // ClientOptions configures provider request deadlines and response limits.
@@ -270,8 +272,9 @@ type ClientOptions struct {
 }
 
 // New creates a client. Endpoint must be a full Responses, Messages, or Chat
-// Completions URL. Recognized suffixes enable HTTP-500 fallback through sibling
-// protocol URLs; custom paths retain their previous Chat Completions behavior.
+// Completions URL. Recognized suffixes enable fallback through sibling protocol
+// URLs on HTTP 500 or an explicit structured unsupported-protocol HTTP 400;
+// custom paths retain their previous Chat Completions behavior.
 func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, error) {
 	if len(options) > 1 {
 		return nil, errors.New("llm: at most one client options value is allowed")
@@ -377,27 +380,34 @@ func (c *Client) complete(ctx context.Context, messages []Message, definitions [
 
 	endpoints := c.orderedEndpoints()
 	for index, endpoint := range endpoints {
-		var message Message
-		var err error
-		switch endpoint.typeName {
-		case EndpointResponses:
-			message, err = c.completeResponse(ctx, endpoint, messages, definitions)
-		case EndpointMessages:
-			message, err = c.completeMessages(ctx, endpoint, messages, definitions)
-		case EndpointChatCompletions:
-			message, err = c.completeChat(ctx, endpoint, messages, definitions)
-		default:
-			return Message{}, fmt.Errorf("llm: unsupported endpoint type %q", endpoint.typeName)
+		candidate := endpoint
+		message, err := c.completeEndpoint(ctx, candidate, messages, definitions)
+		if endpoint.typeName == EndpointMessages && endpoint.alternateURL != "" && isHTTP404Or405(err) {
+			candidate.url, candidate.alternateURL = candidate.alternateURL, candidate.url
+			message, err = c.completeEndpoint(ctx, candidate, messages, definitions)
 		}
 		if err == nil {
-			c.rememberEndpoint(endpoint.typeName)
+			c.rememberEndpoint(candidate)
 			return message, nil
 		}
-		if index == len(endpoints)-1 || !isHTTP500(err) {
+		if index == len(endpoints)-1 || !canFallback(err) {
 			return Message{}, err
 		}
 	}
 	return Message{}, errors.New("llm: no completion endpoints are configured")
+}
+
+func (c *Client) completeEndpoint(ctx context.Context, endpoint endpointCandidate, messages []Message, definitions []tools.Definition) (Message, error) {
+	switch endpoint.typeName {
+	case EndpointResponses:
+		return c.completeResponse(ctx, endpoint, messages, definitions)
+	case EndpointMessages:
+		return c.completeMessages(ctx, endpoint, messages, definitions)
+	case EndpointChatCompletions:
+		return c.completeChat(ctx, endpoint, messages, definitions)
+	default:
+		return Message{}, fmt.Errorf("llm: unsupported endpoint type %q", endpoint.typeName)
+	}
 }
 
 func (c *Client) Models(ctx context.Context) ([]string, error) {
@@ -588,9 +598,34 @@ func configureEndpoints(parsedEndpoint *url.URL, configuredURL string) ([]endpoi
 		if definition.typeName == configuredType {
 			value = configuredURL
 		}
-		endpoints = append(endpoints, endpointCandidate{typeName: definition.typeName, url: value})
+		candidate := endpointCandidate{typeName: definition.typeName, url: value}
+		if definition.typeName == EndpointMessages {
+			alternateURL, err := alternateMessagesURL(value)
+			if err == nil {
+				candidate.alternateURL = alternateURL
+			}
+		}
+		endpoints = append(endpoints, candidate)
 	}
 	return endpoints, configuredType, modelsURL.String()
+}
+
+func alternateMessagesURL(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	switch {
+	case strings.HasSuffix(path, "/chat/messages"):
+		parsed.Path = strings.TrimSuffix(path, "/chat/messages") + "/messages"
+	case strings.HasSuffix(path, "/messages"):
+		parsed.Path = strings.TrimSuffix(path, "/messages") + "/chat/messages"
+	default:
+		return "", nil
+	}
+	parsed.RawPath = ""
+	return parsed.String(), nil
 }
 
 func validEndpointType(endpointType EndpointType) bool {
@@ -605,6 +640,7 @@ func validEndpointType(endpointType EndpointType) bool {
 func (c *Client) orderedEndpoints() []endpointCandidate {
 	c.endpointMu.RLock()
 	start := c.selectedEndpoint
+	selectedURL := c.selectedURL
 	preferred := c.preferredEndpoint
 	c.endpointMu.RUnlock()
 	if start == "" {
@@ -626,7 +662,11 @@ func (c *Client) orderedEndpoints() []endpointCandidate {
 		typeName := endpointDefinitions[(startIndex+offset)%len(endpointDefinitions)].typeName
 		for _, endpoint := range c.endpoints {
 			if endpoint.typeName == typeName {
-				ordered = append(ordered, endpoint)
+				candidate := endpoint
+				if typeName == start && selectedURL != "" && selectedURL == candidate.alternateURL {
+					candidate.url, candidate.alternateURL = candidate.alternateURL, candidate.url
+				}
+				ordered = append(ordered, candidate)
 				break
 			}
 		}
@@ -643,23 +683,73 @@ func (c *Client) hasEndpoint(endpointType EndpointType) bool {
 	return false
 }
 
-func (c *Client) rememberEndpoint(endpointType EndpointType) {
+func (c *Client) rememberEndpoint(endpoint endpointCandidate) {
 	c.endpointMu.Lock()
-	c.selectedEndpoint = endpointType
-	changed := c.preferredEndpoint != endpointType
+	c.selectedEndpoint = endpoint.typeName
+	c.selectedURL = endpoint.url
+	changed := c.preferredEndpoint != endpoint.typeName
 	if changed {
-		c.preferredEndpoint = endpointType
+		c.preferredEndpoint = endpoint.typeName
 	}
 	callback := c.endpointSelected
 	c.endpointMu.Unlock()
 	if changed && callback != nil {
-		callback(endpointType)
+		callback(endpoint.typeName)
 	}
 }
 
 func isHTTP500(err error) bool {
 	var apiError *APIError
 	return errors.As(err, &apiError) && apiError.StatusCode == http.StatusInternalServerError
+}
+
+func isHTTP404Or405(err error) bool {
+	var apiError *APIError
+	return errors.As(err, &apiError) && (apiError.StatusCode == http.StatusNotFound || apiError.StatusCode == http.StatusMethodNotAllowed)
+}
+
+func canFallback(err error) bool {
+	if isHTTP500(err) {
+		return true
+	}
+	var apiError *APIError
+	if !errors.As(err, &apiError) {
+		return false
+	}
+	return apiError.StatusCode == http.StatusBadRequest && isUnsupportedProtocolError(apiError.Body)
+}
+
+func isUnsupportedProtocolError(body string) bool {
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal([]byte(body), &envelope) != nil || envelope == nil {
+		return false
+	}
+	fields := []map[string]json.RawMessage{envelope}
+	if rawError, ok := envelope["error"]; ok {
+		var errorEnvelope map[string]json.RawMessage
+		if json.Unmarshal(rawError, &errorEnvelope) == nil && errorEnvelope != nil {
+			fields = append(fields, errorEnvelope)
+		}
+	}
+	for _, object := range fields {
+		for _, key := range []string{"code", "type", "name"} {
+			var identifier string
+			if json.Unmarshal(object[key], &identifier) == nil && isUnsupportedProtocolIdentifier(identifier) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isUnsupportedProtocolIdentifier(identifier string) bool {
+	normalized := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(strings.TrimSpace(identifier)))
+	switch normalized {
+	case "modelprotocolunsupported", "unsupportedprotocol", "protocolnotsupported":
+		return true
+	default:
+		return false
+	}
 }
 
 func defaultHTTPClient() *http.Client {
