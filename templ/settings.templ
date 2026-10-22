@@ -414,6 +414,13 @@ templ SettingsPage(data SettingsPanelData) {
 				<button class="settings-save" type="submit">Save all</button>
 			</div>
 		</form>
+		<form class="settings-logout" action="/logout" method="post">
+			<div class="settings-logout-copy">
+				<strong>Account</strong>
+				<span>Sign out of this browser.</span>
+			</div>
+			<button class="settings-logout-button" type="submit">Log out</button>
+		</form>
 	</section>
 }
 

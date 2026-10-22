@@ -59,7 +59,10 @@ func TestChatSummaryTracksVisibleHistory(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/chats/999/summary", nil))
-	requireContains(t, response.Body.String(), "New chat", "0 messages")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("missing summary status = %d, want %d; body = %q", response.Code, http.StatusNotFound, response.Body.String())
+	}
+	requireNotContains(t, response.Body.String(), "New chat", "0 messages", "&lt;script&gt;title&lt;/script&gt;")
 }
 
 func TestMatteBlackMigrationPreservesExistingSettings(t *testing.T) {
@@ -233,6 +236,7 @@ func TestTokyoNightRemovalRemapsToMatteBlack(t *testing.T) {
 
 func TestSettingsCanSaveMatteBlackAndReturnToExistingTheme(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	for _, theme := range []string{"matte-black", "rose-pine", "matte-black"} {
 		response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
 			"model": {"preview-model"}, "max_tool_rounds": {"16"}, "theme": {theme},

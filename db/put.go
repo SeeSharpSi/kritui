@@ -39,13 +39,17 @@ type UndoResult struct {
 // AllocateChat reserves a unique chat ID, stores options enabled by default
 // for new chats, and removes abandoned empty chats.
 func AllocateChat(ctx context.Context, db *sql.DB, tools, appendIDs []string) (int64, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin chat allocation: %w", err)
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin chat allocation: %w", err)
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `INSERT INTO chats DEFAULT VALUES`)
+	result, err := tx.ExecContext(ctx, `INSERT INTO chats (user_id) VALUES (?)`, userID)
 	if err != nil {
 		return 0, fmt.Errorf("allocate chat: %w", err)
 	}
@@ -59,14 +63,15 @@ func AllocateChat(ctx context.Context, db *sql.DB, tools, appendIDs []string) (i
 
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM chats
-		WHERE id <> ?
+		WHERE user_id = ?
+			AND id <> ?
 			AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')
 			AND NOT EXISTS (
 				SELECT 1
 				FROM messages
 				WHERE messages.chat_id = chats.id
 			)
-	`, id); err != nil {
+	`, userID, id); err != nil {
 		return 0, fmt.Errorf("remove abandoned chats: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -76,15 +81,29 @@ func AllocateChat(ctx context.Context, db *sql.DB, tools, appendIDs []string) (i
 }
 
 // UpsertChat inserts or updates a chat and atomically replaces its options.
-// Existing non-empty titles are preserved.
+// Existing non-empty titles are preserved. A chat owned by another account is
+// rejected rather than adopted.
 func UpsertChat(ctx context.Context, db databaseExecutor, chatID int64, title string, tools, appendIDs []string) error {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("upsert chat: %w", err)
+	}
 	return executeAtomically(ctx, db, func(executor databaseExecutor) error {
-		if _, err := executor.ExecContext(ctx, `
-			INSERT INTO chats (id, title) VALUES (?, ?)
+		result, err := executor.ExecContext(ctx, `
+			INSERT INTO chats (id, user_id, title) VALUES (?, ?, ?)
 			ON CONFLICT (id) DO UPDATE SET
 				title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END
-		`, chatID, title); err != nil {
+			WHERE chats.user_id = excluded.user_id
+		`, chatID, userID, title)
+		if err != nil {
 			return fmt.Errorf("upsert chat: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("upsert chat rows affected: %w", err)
+		}
+		if affected == 0 {
+			return ErrChatNotFound
 		}
 		return replaceChatOptions(ctx, executor, chatID, tools, appendIDs)
 	})
@@ -134,6 +153,9 @@ func InsertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 }
 
 func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, position int, message llm.Message) (int64, error) {
+	if err := requireChatOwned(ctx, db, chatID); err != nil {
+		return 0, err
+	}
 	if len(message.ToolCalls) > 0 && message.Role != "assistant" {
 		return 0, fmt.Errorf("store message tool calls: only assistant messages may contain tool calls")
 	}
@@ -230,10 +252,14 @@ func ReplaceUserMessage(ctx context.Context, db databaseExecutor, chatID, messag
 	if len(message.Images) > 0 {
 		return fmt.Errorf("replace user message: image replacement is unsupported")
 	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("replace user message: %w", err)
+	}
 
 	return executeAtomically(ctx, db, func(executor databaseExecutor) error {
 		// First write reserves the SQLite writer lock before locating the target.
-		result, err := executor.ExecContext(ctx, `UPDATE chats SET id = id WHERE id = ?`, chatID)
+		result, err := executor.ExecContext(ctx, `UPDATE chats SET id = id WHERE id = ? AND user_id = ?`, chatID, userID)
 		if err != nil {
 			return fmt.Errorf("reserve chat for message edit: %w", err)
 		}
@@ -381,6 +407,9 @@ func RedoLatestTurn(ctx context.Context, db *sql.DB, chatID int64) ([]llm.Messag
 
 // DiscardUndoneMessages permanently removes a chat's hidden redo history.
 func DiscardUndoneMessages(ctx context.Context, db databaseExecutor, chatID int64) error {
+	if err := requireChatOwned(ctx, db, chatID); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM messages WHERE chat_id = ? AND undo_sequence IS NOT NULL`, chatID); err != nil {
 		return fmt.Errorf("discard undone messages: %w", err)
 	}
@@ -388,7 +417,11 @@ func DiscardUndoneMessages(ctx context.Context, db databaseExecutor, chatID int6
 }
 
 func reserveChat(ctx context.Context, db databaseExecutor, chatID int64) error {
-	result, err := db.ExecContext(ctx, `UPDATE chats SET id = id WHERE id = ?`, chatID)
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve chat history: %w", err)
+	}
+	result, err := db.ExecContext(ctx, `UPDATE chats SET id = id WHERE id = ? AND user_id = ?`, chatID, userID)
 	if err != nil {
 		return fmt.Errorf("reserve chat history: %w", err)
 	}
@@ -433,6 +466,10 @@ func AppendCompletion(ctx context.Context, db *sql.DB, chatID int64, expected Me
 	if expected.chatID != chatID {
 		return ErrConversationConflict
 	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("append completion: %w", err)
+	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -441,7 +478,7 @@ func AppendCompletion(ctx context.Context, db *sql.DB, chatID int64, expected Me
 	defer tx.Rollback()
 
 	// First write reserves the SQLite writer lock before history validation.
-	result, err := tx.ExecContext(ctx, `UPDATE chats SET id = id WHERE id = ?`, chatID)
+	result, err := tx.ExecContext(ctx, `UPDATE chats SET id = id WHERE id = ? AND user_id = ?`, chatID, userID)
 	if err != nil {
 		return fmt.Errorf("reserve chat for completion: %w", err)
 	}

@@ -16,12 +16,16 @@ func GetModelEndpointType(ctx context.Context, db *sql.DB, model string) (llm.En
 	if model == "" {
 		return "", fmt.Errorf("get model endpoint type: model is required")
 	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get model endpoint type: %w", err)
+	}
 	var storedType string
-	err := db.QueryRowContext(ctx, `
+	err = db.QueryRowContext(ctx, `
 		SELECT endpoint_type
 		FROM model_endpoint_preferences
-		WHERE model = ?
-	`, model).Scan(&storedType)
+		WHERE user_id = ? AND model = ?
+	`, userID, model).Scan(&storedType)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -44,11 +48,15 @@ func SetModelEndpointType(ctx context.Context, db *sql.DB, model string, endpoin
 	if !validModelEndpointType(endpointType) {
 		return fmt.Errorf("set model endpoint type: unsupported type %q", endpointType)
 	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set model endpoint type: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO model_endpoint_preferences (model, endpoint_type)
-		VALUES (?, ?)
-		ON CONFLICT(model) DO UPDATE SET endpoint_type = excluded.endpoint_type
-	`, model, endpointType); err != nil {
+		INSERT INTO model_endpoint_preferences (user_id, model, endpoint_type)
+		VALUES (?, ?, ?)
+		ON CONFLICT(user_id, model) DO UPDATE SET endpoint_type = excluded.endpoint_type
+	`, userID, model, endpointType); err != nil {
 		return fmt.Errorf("set model endpoint type: %w", err)
 	}
 	return nil

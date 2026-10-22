@@ -1,7 +1,33 @@
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
+    password_hash TEXT NOT NULL DEFAULT '',
+    disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique
+    ON users (username COLLATE NOCASE)
+    WHERE username <> '';
+
+-- ID 1 owns data created before multi-user persistence. It stays disabled with
+-- an empty hash until a Skrittle signup claims it and sets the first password.
+INSERT OR IGNORE INTO users (id, username, password_hash, disabled)
+VALUES (1, 'Skrittle', '', 1);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY CHECK (token_hash <> ''),
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id);
+
 CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+    id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     default_model TEXT,
     max_tool_rounds INTEGER CHECK (max_tool_rounds IS NULL OR max_tool_rounds BETWEEN 1 AND 100),
     default_tools_configured INTEGER NOT NULL DEFAULT 0 CHECK (default_tools_configured IN (0, 1)),
@@ -26,37 +52,67 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT OR IGNORE INTO settings (id) VALUES (1);
 
 CREATE TABLE IF NOT EXISTS default_tools (
-    position INTEGER PRIMARY KEY CHECK (position >= 0),
-    name TEXT NOT NULL CHECK (name <> '')
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    name TEXT NOT NULL CHECK (name <> ''),
+    PRIMARY KEY (user_id, position)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS prompt_appends (
-    id TEXT PRIMARY KEY CHECK (id <> ''),
-    position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+    id TEXT NOT NULL CHECK (id <> ''),
+    position INTEGER NOT NULL CHECK (position >= 0),
     name TEXT NOT NULL CHECK (name <> ''),
     text TEXT NOT NULL CHECK (text <> ''),
-    enabled_by_default INTEGER NOT NULL DEFAULT 0 CHECK (enabled_by_default IN (0, 1))
+    enabled_by_default INTEGER NOT NULL DEFAULT 0 CHECK (enabled_by_default IN (0, 1)),
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, position)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS mcp_servers (
-    id TEXT PRIMARY KEY CHECK (id <> ''),
-    position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+    id TEXT NOT NULL CHECK (id <> ''),
+    position INTEGER NOT NULL CHECK (position >= 0),
     name TEXT NOT NULL CHECK (name <> ''),
     url TEXT NOT NULL CHECK (url <> ''),
-    authorization_token TEXT
+    authorization_token TEXT,
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, position)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS model_endpoint_preferences (
-    model TEXT PRIMARY KEY CHECK (trim(model) <> ''),
-    endpoint_type TEXT NOT NULL CHECK (endpoint_type IN ('responses', 'messages', 'chat_completions'))
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+    model TEXT NOT NULL CHECK (trim(model) <> ''),
+    endpoint_type TEXT NOT NULL CHECK (endpoint_type IN ('responses', 'messages', 'chat_completions')),
+    PRIMARY KEY (user_id, model)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 ) STRICT;
+
+CREATE INDEX IF NOT EXISTS chats_user_updated_idx
+    ON chats (user_id, updated_at DESC, id DESC);
+
+-- Trusted raw inserts that predate user accounts belong to the legacy owner.
+-- Application paths always write an explicit user_id.
+CREATE TRIGGER IF NOT EXISTS chats_assign_legacy_owner
+AFTER INSERT ON chats
+WHEN NEW.user_id IS NULL
+BEGIN
+    UPDATE chats SET user_id = 1 WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS chats_validate_user_update
+BEFORE UPDATE OF user_id ON chats
+WHEN NEW.user_id IS NULL OR NOT EXISTS (SELECT 1 FROM users WHERE id = NEW.user_id)
+BEGIN
+    SELECT RAISE(ABORT, 'chats.user_id must reference an existing user');
+END;
 
 CREATE TABLE IF NOT EXISTS chat_tools (
     chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
@@ -168,4 +224,4 @@ BEGIN
     WHERE id = OLD.chat_id;
 END;
 
-PRAGMA user_version = 23;
+PRAGMA user_version = 25;

@@ -164,6 +164,10 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 
 // GetToolResultElision returns the stored tool-result elision configuration.
 func GetToolResultElision(ctx context.Context, db *sql.DB) (llm.ToolResultElisionConfig, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return llm.ToolResultElisionConfig{}, fmt.Errorf("get tool result elision: %w", err)
+	}
 	var mode string
 	var userTurns, tokenBudget sql.NullInt64
 	var summaryModel sql.NullString
@@ -171,8 +175,8 @@ func GetToolResultElision(ctx context.Context, db *sql.DB) (llm.ToolResultElisio
 		SELECT tool_result_elision_mode, tool_result_elision_user_turns,
 			tool_result_elision_token_budget, tool_result_elision_summary_model
 		FROM settings
-		WHERE id = 1
-	`).Scan(&mode, &userTurns, &tokenBudget, &summaryModel); err != nil {
+		WHERE id = ?
+	`, userID).Scan(&mode, &userTurns, &tokenBudget, &summaryModel); err != nil {
 		return llm.ToolResultElisionConfig{}, fmt.Errorf("get tool result elision: %w", err)
 	}
 
@@ -198,6 +202,10 @@ func GetToolResultElision(ctx context.Context, db *sql.DB) (llm.ToolResultElisio
 }
 
 func setToolResultElision(ctx context.Context, db settingWriter, config llm.ToolResultElisionConfig) error {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set tool result elision: %w", err)
+	}
 	if config.Mode == "" {
 		config.Mode = llm.ToolResultElisionNone
 	}
@@ -221,8 +229,8 @@ func setToolResultElision(ctx context.Context, db settingWriter, config llm.Tool
 			tool_result_elision_user_turns = ?,
 			tool_result_elision_token_budget = ?,
 			tool_result_elision_summary_model = ?
-		WHERE id = 1
-	`, string(config.Mode), userTurns, tokenBudget, summaryModel); err != nil {
+		WHERE id = ?
+	`, string(config.Mode), userTurns, tokenBudget, summaryModel, userID); err != nil {
 		return fmt.Errorf("set tool result elision: %w", err)
 	}
 	return nil
@@ -230,8 +238,12 @@ func setToolResultElision(ctx context.Context, db settingWriter, config llm.Tool
 
 // GetTheme returns the stored theme slug or an empty string when unconfigured.
 func GetTheme(ctx context.Context, db *sql.DB) (string, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get theme: %w", err)
+	}
 	var theme sql.NullString
-	if err := db.QueryRowContext(ctx, `SELECT theme FROM settings WHERE id = 1`).Scan(&theme); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT theme FROM settings WHERE id = ?`, userID).Scan(&theme); err != nil {
 		return "", fmt.Errorf("get theme: %w", err)
 	}
 	if !theme.Valid {
@@ -248,7 +260,11 @@ func setTheme(ctx context.Context, db settingWriter, theme string) error {
 	if _, err := themes.ByID(theme); err != nil {
 		return fmt.Errorf("set theme: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE settings SET theme = ? WHERE id = 1`, theme); err != nil {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set theme: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET theme = ? WHERE id = ?`, theme, userID); err != nil {
 		return fmt.Errorf("set theme: %w", err)
 	}
 	return nil
@@ -256,14 +272,18 @@ func setTheme(ctx context.Context, db settingWriter, theme string) error {
 
 // GetNtfySettings returns notification values safe for frontend rendering.
 func GetNtfySettings(ctx context.Context, db *sql.DB) (NtfySettings, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return NtfySettings{}, fmt.Errorf("get ntfy settings: %w", err)
+	}
 	var endpoint, topic sql.NullString
 	var apiKeyConfigured bool
 	if err := db.QueryRowContext(ctx, `
 		SELECT ntfy_endpoint, ntfy_topic,
 			CASE WHEN ntfy_api_key IS NOT NULL AND trim(ntfy_api_key) <> '' THEN 1 ELSE 0 END
 		FROM settings
-		WHERE id = 1
-	`).Scan(&endpoint, &topic, &apiKeyConfigured); err != nil {
+		WHERE id = ?
+	`, userID).Scan(&endpoint, &topic, &apiKeyConfigured); err != nil {
 		return NtfySettings{}, fmt.Errorf("get ntfy settings: %w", err)
 	}
 	return NtfySettings{
@@ -287,12 +307,16 @@ type settingReader interface {
 }
 
 func getNtfyPublishConfig(ctx context.Context, db settingReader) (NtfyPublishConfig, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return NtfyPublishConfig{}, err
+	}
 	var endpoint, topic, apiKey sql.NullString
 	if err := db.QueryRowContext(ctx, `
 		SELECT ntfy_endpoint, ntfy_topic, ntfy_api_key
 		FROM settings
-		WHERE id = 1
-	`).Scan(&endpoint, &topic, &apiKey); err != nil {
+		WHERE id = ?
+	`, userID).Scan(&endpoint, &topic, &apiKey); err != nil {
 		return NtfyPublishConfig{}, err
 	}
 	return NtfyPublishConfig{
@@ -327,6 +351,10 @@ func SaveNtfySettings(ctx context.Context, db *sql.DB, update NtfySettingsUpdate
 }
 
 func setNtfySettings(ctx context.Context, db settingWriter, update NtfySettingsUpdate) error {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set ntfy settings: %w", err)
+	}
 	endpoint := strings.TrimSpace(update.Endpoint)
 	topic := strings.TrimSpace(update.Topic)
 	if (endpoint == "") != (topic == "") {
@@ -337,16 +365,16 @@ func setNtfySettings(ctx context.Context, db settingWriter, update NtfySettingsU
 		if _, err := db.ExecContext(ctx, `
 			UPDATE settings
 			SET ntfy_endpoint = NULL, ntfy_topic = NULL, ntfy_api_key = NULL
-			WHERE id = 1
-		`); err != nil {
+			WHERE id = ?
+		`, userID); err != nil {
 			return fmt.Errorf("clear ntfy settings: %w", err)
 		}
 	} else {
 		if _, err := db.ExecContext(ctx, `
 			UPDATE settings
 			SET ntfy_endpoint = ?, ntfy_topic = ?
-			WHERE id = 1
-		`, endpoint, topic); err != nil {
+			WHERE id = ?
+		`, endpoint, topic, userID); err != nil {
 			return fmt.Errorf("set ntfy destination: %w", err)
 		}
 
@@ -358,11 +386,11 @@ func setNtfySettings(ctx context.Context, db settingWriter, update NtfySettingsU
 			if apiKey != "" {
 				value = apiKey
 			}
-			if _, err := db.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = ? WHERE id = 1`, value); err != nil {
+			if _, err := db.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = ? WHERE id = ?`, value, userID); err != nil {
 				return fmt.Errorf("set ntfy API key: %w", err)
 			}
 		case NtfyClearAPIKey:
-			if _, err := db.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = NULL WHERE id = 1`); err != nil {
+			if _, err := db.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = NULL WHERE id = ?`, userID); err != nil {
 				return fmt.Errorf("clear ntfy API key: %w", err)
 			}
 		default:
@@ -374,14 +402,18 @@ func setNtfySettings(ctx context.Context, db settingWriter, update NtfySettingsU
 
 // GetLLMSettings returns LLM values safe for frontend rendering.
 func GetLLMSettings(ctx context.Context, db *sql.DB) (LLMSettings, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return LLMSettings{}, fmt.Errorf("get llm settings: %w", err)
+	}
 	var endpoint sql.NullString
 	var apiKeyConfigured bool
 	if err := db.QueryRowContext(ctx, `
 		SELECT llm_endpoint,
 			CASE WHEN llm_api_key IS NOT NULL AND trim(llm_api_key) <> '' THEN 1 ELSE 0 END
 		FROM settings
-		WHERE id = 1
-	`).Scan(&endpoint, &apiKeyConfigured); err != nil {
+		WHERE id = ?
+	`, userID).Scan(&endpoint, &apiKeyConfigured); err != nil {
 		return LLMSettings{}, fmt.Errorf("get llm settings: %w", err)
 	}
 	return LLMSettings{
@@ -400,12 +432,16 @@ func GetLLMConfig(ctx context.Context, db *sql.DB) (LLMConfig, error) {
 }
 
 func getLLMConfig(ctx context.Context, db settingReader) (LLMConfig, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return LLMConfig{}, err
+	}
 	var endpoint, apiKey sql.NullString
 	if err := db.QueryRowContext(ctx, `
 		SELECT llm_endpoint, llm_api_key
 		FROM settings
-		WHERE id = 1
-	`).Scan(&endpoint, &apiKey); err != nil {
+		WHERE id = ?
+	`, userID).Scan(&endpoint, &apiKey); err != nil {
 		return LLMConfig{}, err
 	}
 	return LLMConfig{
@@ -466,13 +502,17 @@ func setLLMSettings(ctx context.Context, db settingWriter, update LLMSettingsUpd
 	if err := ValidateLLMSettings(update); err != nil {
 		return err
 	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set llm settings: %w", err)
+	}
 	endpoint := strings.TrimSpace(update.Endpoint)
 
 	var endpointValue any
 	if endpoint != "" {
 		endpointValue = endpoint
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_endpoint = ? WHERE id = 1`, endpointValue); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_endpoint = ? WHERE id = ?`, endpointValue, userID); err != nil {
 		return fmt.Errorf("set llm endpoint: %w", err)
 	}
 
@@ -484,11 +524,11 @@ func setLLMSettings(ctx context.Context, db settingWriter, update LLMSettingsUpd
 		if apiKey != "" {
 			value = apiKey
 		}
-		if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_api_key = ? WHERE id = 1`, value); err != nil {
+		if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_api_key = ? WHERE id = ?`, value, userID); err != nil {
 			return fmt.Errorf("set llm API key: %w", err)
 		}
 	case LLMClearAPIKey:
-		if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_api_key = NULL WHERE id = 1`); err != nil {
+		if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_api_key = NULL WHERE id = ?`, userID); err != nil {
 			return fmt.Errorf("clear llm API key: %w", err)
 		}
 	default:
@@ -499,8 +539,12 @@ func setLLMSettings(ctx context.Context, db settingWriter, update LLMSettingsUpd
 
 // GetDefaultModel returns the stored default model or fallback when unset.
 func GetDefaultModel(ctx context.Context, db *sql.DB, fallback string) (string, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get default model: %w", err)
+	}
 	var model sql.NullString
-	if err := db.QueryRowContext(ctx, `SELECT default_model FROM settings WHERE id = 1`).Scan(&model); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT default_model FROM settings WHERE id = ?`, userID).Scan(&model); err != nil {
 		return "", fmt.Errorf("get default model: %w", err)
 	}
 	if !model.Valid {
@@ -515,10 +559,14 @@ func EnsureDefaultModel(ctx context.Context, db *sql.DB, model string) error {
 	if model == "" {
 		return nil
 	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("ensure default model: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `
 		UPDATE settings SET default_model = ?
-		WHERE id = 1 AND default_model IS NULL
-	`, model); err != nil {
+		WHERE id = ? AND default_model IS NULL
+	`, model, userID); err != nil {
 		return fmt.Errorf("ensure default model: %w", err)
 	}
 	return nil
@@ -529,7 +577,11 @@ func setDefaultModel(ctx context.Context, db settingWriter, model string) error 
 	if model == "" {
 		return fmt.Errorf("set default model: model is required")
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE settings SET default_model = ? WHERE id = 1`, model); err != nil {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set default model: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET default_model = ? WHERE id = ?`, model, userID); err != nil {
 		return fmt.Errorf("set default model: %w", err)
 	}
 	return nil
@@ -538,8 +590,12 @@ func setDefaultModel(ctx context.Context, db settingWriter, model string) error 
 // GetMaxToolRounds returns the stored maximum consecutive tool-call rounds or
 // fallback when unset.
 func GetMaxToolRounds(ctx context.Context, db *sql.DB, fallback int) (int, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("get max tool rounds: %w", err)
+	}
 	var rounds sql.NullInt64
-	if err := db.QueryRowContext(ctx, `SELECT max_tool_rounds FROM settings WHERE id = 1`).Scan(&rounds); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT max_tool_rounds FROM settings WHERE id = ?`, userID).Scan(&rounds); err != nil {
 		return 0, fmt.Errorf("get max tool rounds: %w", err)
 	}
 	if !rounds.Valid {
@@ -552,7 +608,11 @@ func setMaxToolRounds(ctx context.Context, db settingWriter, rounds int) error {
 	if err := validateMaxToolRounds(rounds); err != nil {
 		return err
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE settings SET max_tool_rounds = ? WHERE id = 1`, rounds); err != nil {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set max tool rounds: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET max_tool_rounds = ? WHERE id = ?`, rounds, userID); err != nil {
 		return fmt.Errorf("set max tool rounds: %w", err)
 	}
 	return nil
@@ -568,15 +628,19 @@ func validateMaxToolRounds(rounds int) error {
 // GetDefaultEnabledTools returns tools enabled by default or fallback when the
 // collection has never been configured.
 func GetDefaultEnabledTools(ctx context.Context, db *sql.DB, fallback []string) ([]string, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get default enabled tools state: %w", err)
+	}
 	var configured bool
-	if err := db.QueryRowContext(ctx, `SELECT default_tools_configured FROM settings WHERE id = 1`).Scan(&configured); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT default_tools_configured FROM settings WHERE id = ?`, userID).Scan(&configured); err != nil {
 		return nil, fmt.Errorf("get default enabled tools state: %w", err)
 	}
 	if !configured {
 		return fallback, nil
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT name FROM default_tools ORDER BY position`)
+	rows, err := db.QueryContext(ctx, `SELECT name FROM default_tools WHERE user_id = ? ORDER BY position`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get default enabled tools: %w", err)
 	}
@@ -596,15 +660,19 @@ func GetDefaultEnabledTools(ctx context.Context, db *sql.DB, fallback []string) 
 }
 
 func setDefaultEnabledTools(ctx context.Context, db settingWriter, names []string) error {
-	if _, err := db.ExecContext(ctx, `DELETE FROM default_tools`); err != nil {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set default enabled tools: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM default_tools WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("clear default enabled tools: %w", err)
 	}
 	for position, name := range names {
-		if _, err := db.ExecContext(ctx, `INSERT INTO default_tools (position, name) VALUES (?, ?)`, position, name); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO default_tools (user_id, position, name) VALUES (?, ?, ?)`, userID, position, name); err != nil {
 			return fmt.Errorf("store default enabled tool %d: %w", position, err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE settings SET default_tools_configured = 1 WHERE id = 1`); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET default_tools_configured = 1 WHERE id = ?`, userID); err != nil {
 		return fmt.Errorf("mark default enabled tools configured: %w", err)
 	}
 	return nil

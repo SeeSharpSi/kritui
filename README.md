@@ -1,19 +1,22 @@
 # Kritui
 
-Server-rendered LLM chat UI built with Go, templ, htmx, and SQLite. It sends conversation history to OpenAI-compatible Responses, Anthropic Messages, or Chat Completions endpoints and persists chats in `data.db`.
+Server-rendered, multiuser LLM chat UI built with Go, templ, htmx, and SQLite. It sends conversation history to OpenAI-compatible Responses, Anthropic Messages, or Chat Completions endpoints and persists chats in `data.db`.
 
 ## Run
 
-Requires Go 1.25.3. Environment LLM values are optional. To configure the LLM connection with the shell:
+Requires Go 1.25.3. Environment LLM values are optional. Copy the example environment file and load it:
 
 ```sh
 cp .env.example .env
 set -a; . ./.env; set +a
+export KRITUI_SECURE_COOKIES=false
 ```
 
-When `LLM_KEY` and `LLM_ENDPOINT` are both set they override SQLite and model-connection controls are hidden; otherwise enter the endpoint and key in Settings.
+The server reads environment variables directly and does not load `.env` itself. When `LLM_KEY` and `LLM_ENDPOINT` are both set they override account settings and model-connection controls are hidden; otherwise sign in and enter the endpoint and key in Settings. `LLM_MODEL` remains a deployment-wide override or fallback.
 
-`LLM_ENDPOINT` must be a full `/responses`, `/chat/messages`, or `/chat/completions` URL. Kritui starts with that protocol for an unknown model. On HTTP 500, it tries the remaining protocols and stores the successful per-model preference in SQLite. `SEARXNG_URL` configures the server used by the optional `websearch` tool. The SearXNG instance must have the JSON response format enabled.
+`LLM_ENDPOINT` must be a full `/responses`, `/chat/messages`, or `/chat/completions` URL. Kritui starts with that protocol for an unknown model. On HTTP 500, it tries the remaining protocols and stores the successful per-model preference for the account. `SEARXNG_URL` configures the server used by the optional `websearch` tool. The SearXNG instance must have the JSON response format enabled.
+
+`KRITUI_SECURE_COOKIES=false` is only for direct local HTTP. Keep it set while launching or browsing at `http://localhost:8080`; use the default `true` whenever the app is served through HTTPS, including a TLS-terminating reverse proxy.
 
 Generate templates and start the server:
 
@@ -22,21 +25,32 @@ go run github.com/a-h/templ/cmd/templ@v0.3.1020 generate
 go run .
 ```
 
-Open <http://localhost:8080>.
+Open <http://localhost:8080> and sign in or create an account.
+
+## Accounts
+
+Username and password login and open signup are available at `/login` and `/signup`. Each account has its own chats, history, images, undo state, settings, stored secrets, MCP servers and tokens, prompt appends, default tools, theme, and model protocol preferences. New accounts start from built-in defaults and never inherit another account's data or secrets. Completions, SSE streams, and private tool results are isolated per account.
+
+On an existing database, legacy data stays attached to the Skrittle account (ID 1). Use the normal signup form once with the username Skrittle to set its password and claim the existing data. Usernames are case-insensitive. If Skrittle already has a password, sign in with it instead. Signing up with any other username creates a separate new account with built-in defaults; it does not receive the legacy data. There are no email flows, password reset, or account recovery yet. Multiple sessions may be active; logout revokes only the current session.
+
+PWA assets remain public before login, and the manifest keeps its identity, start URL, and scope at `/`. Login and signup pages share the manifest and mobile web-app metadata, and installed apps keep their session across relaunches. The service worker does not cache private pages or API responses. Mobile installation requires HTTPS, except for the browser localhost exception.
 
 ## Docker
 
 Configure the LLM connection in `.env`, then build and run the image:
 
-```sh
+```bash
 docker build --tag kritui:latest .
 docker run --rm \
   --name kritui \
   --publish 8080:8080 \
   --env-file .env \
+  --env KRITUI_SECURE_COOKIES=false \
   --volume kritui-data:/data \
   kritui:latest
 ```
+
+Keep `--env KRITUI_SECURE_COOKIES=false` for direct `http://localhost:8080`; omit it, or set `KRITUI_SECURE_COOKIES=true` in `.env`, when the app is served through HTTPS or a TLS-terminating reverse proxy. Open the app and create an account. On an existing database, sign up as Skrittle once to claim the legacy data as described above.
 
 The named volume persists the SQLite database. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`. It also includes isolated Git runtime files required by the optional Git tool capability.
 
@@ -76,13 +90,13 @@ docker builder prune --filter "until=24h"
 
 ## Development
 
-With [Air](https://github.com/air-verse/air) installed and `.env` configured:
+With [Air](https://github.com/air-verse/air) installed, copy `.env.example` to `.env` and run:
 
 ```sh
 air
 ```
 
-Air regenerates templates, rebuilds on Go, templ, or CSS changes, and serves its proxy at <http://localhost:7331>.
+Air sources `.env` with shell syntax before launching the app, so comments and shell-quoted values work. Set `KRITUI_SECURE_COOKIES=false` in `.env` for Air's local HTTP proxy at <http://localhost:7331>. Create an account through the normal signup form. On an existing database, sign up as Skrittle once or sign in with its current password. Air regenerates templates, rebuilds on Go, templ, or CSS changes, and serves its proxy at <http://localhost:7331>.
 
 ## Verify
 
@@ -94,6 +108,7 @@ go vet ./...
 ## Structure
 
 - `server.go`, `*_handlers.go`, `tool_stream.go`: HTTP server, chat flow, and persistence wiring
+- `auth.go`, `auth_handlers.go`, `password.go`: accounts, sessions, and password hashing
 - `templ/`, `static/`: server-rendered components and embedded browser assets
 - `llm/`: non-streaming API client and tool-capable conversation loop
 - `commands/`: slash-command registry and built-ins

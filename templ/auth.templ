@@ -1,0 +1,119 @@
+package templates
+
+import (
+	"net/url"
+
+	"seesharpsi/kritui/themes"
+)
+
+// AuthPageData groups the inputs for the sign-in and sign-up screen. The
+// username is echoed back after a failed submission; the password never is.
+type AuthPageData struct {
+	Signup   bool
+	Username string
+	Error    string
+	Next     string
+}
+
+templ AuthPage(data AuthPageData) {
+	{{
+	pageTitle := "Sign in · Kritui"
+	heading := "Sign in"
+	intro := "Continue with your Kritui account."
+	submitLabel := "Sign in"
+	formAction := "/login"
+	passwordAutocomplete := "current-password"
+	if data.Signup {
+		pageTitle = "Create account · Kritui"
+		heading = "Create account"
+		intro = "Choose a username and password for this Kritui instance."
+		submitLabel = "Create account"
+		formAction = "/signup"
+		passwordAutocomplete = "new-password"
+	}
+	loginHref := "/login"
+	signupHref := "/signup"
+	if data.Next != "" {
+		escapedNext := url.QueryEscape(data.Next)
+		loginHref += "?next=" + escapedNext
+		signupHref += "?next=" + escapedNext
+	}
+	}}
+	@Layout(pageTitle, themes.Default()) {
+		<main class="auth-main">
+			<header class="app-header">
+				<span class="brand-mark" aria-hidden="true">
+					<svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 5a5 5 0 0 0 0 10Z" fill="currentColor"></path></svg>
+				</span>
+				<span class="brand-name">Kritui</span>
+				<span class="brand-section">Account</span>
+				<div class="app-context">
+					<span>{ heading }</span>
+				</div>
+			</header>
+			<div class="auth-layout">
+				<section class="auth-card" aria-labelledby="auth-heading">
+					<header class="auth-card-header">
+						<p class="eyebrow">Kritui account</p>
+						<h1 id="auth-heading">{ heading }</h1>
+						<p>{ intro }</p>
+					</header>
+					<form class="auth-form" action={ formAction } method="post">
+						if data.Next != "" {
+							<input type="hidden" name="next" value={ data.Next }/>
+						}
+						if data.Error != "" {
+							<p class="auth-error" role="alert">{ data.Error }</p>
+						}
+						<div class="auth-field">
+							<label for="auth-username">Username</label>
+							<input
+								id="auth-username"
+								type="text"
+								name="username"
+								value={ data.Username }
+								autocomplete="username"
+								autocapitalize="none"
+								autocorrect="off"
+								spellcheck="false"
+								minlength="3"
+								maxlength="32"
+								pattern={ `[A-Za-z0-9_][A-Za-z0-9_.\-]{2,31}` }
+								title="3-32 characters. Start with a letter, number, or underscore; then use letters, numbers, underscore, dot, or hyphen."
+								required
+							/>
+							if data.Signup {
+								<p class="auth-help">3-32 characters. Start with a letter, number, or underscore; then use letters, numbers, underscore, dot, or hyphen.</p>
+							}
+						</div>
+						<div class="auth-field">
+							<label for="auth-password">Password</label>
+							<input
+								id="auth-password"
+								type="password"
+								name="password"
+								autocomplete={ passwordAutocomplete }
+								maxlength="1024"
+								if data.Signup {
+									minlength="12"
+								}
+								required
+							/>
+							if data.Signup {
+								<p class="auth-help">Use at least 12 characters.</p>
+							}
+						</div>
+						<button class="auth-submit" type="submit">{ submitLabel }</button>
+					</form>
+					<p class="auth-switch">
+						if data.Signup {
+							Already have an account? <a href={ loginHref }>Sign in</a>
+						} else {
+							New to Kritui? <a href={ signupHref }>Create account</a>
+						}
+					</p>
+				</section>
+			</div>
+		</main>
+	}
+}

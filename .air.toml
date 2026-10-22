@@ -4,7 +4,7 @@ tmp_dir = "tmp"
 [build]
 cmd = "go run github.com/a-h/templ/cmd/templ@v0.3.1020 generate && go build -o ./tmp/kritui ."
 bin = "./tmp/kritui"
-full_bin = "env $(xargs < .env) ./tmp/kritui"
+full_bin = "sh -c 'set -ae; . ./.env; exec ./tmp/kritui'"
 include_ext = ["go", "templ", "css"]
 exclude_dir = ["tmp"]
 exclude_regex = [".*_templ\\.go$"]

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/templ"
 )
@@ -24,7 +25,15 @@ const (
 	toolCallCloseEvent          = "close"
 )
 
-var errChatCompletionActive = errors.New("chat completion already active")
+var (
+	errChatCompletionActive = errors.New("chat completion already active")
+	errInvalidToolCallOwner = errors.New("invalid tool-call owner")
+)
+
+// legacyToolCallOwner is the reserved owner account used by direct handler
+// tests and maintenance helpers that call the owner-agnostic store wrappers.
+// Production request handlers always pass the authenticated database user.
+const legacyToolCallOwner int64 = kritui_db.LegacyOwnerID
 
 type toolCallTracker struct {
 	mu        sync.RWMutex
@@ -101,6 +110,7 @@ func (t *toolCallTracker) close() {
 }
 
 type toolCallTrackerEntry struct {
+	owner   int64
 	tracker *toolCallTracker
 	chatID  int64
 	model   string
@@ -134,20 +144,31 @@ func newToolCallStore() *toolCallStore {
 	}
 }
 
-// liveEntryFor returns the unfinished entry blocking a new completion for the
-// chat, if any. Finished entries retained for replay never block.
-func (s *toolCallStore) liveEntryFor(chatID int64) (string, *toolCallTrackerEntry) {
+// liveEntryFor returns the unfinished entry for owner's chat, if any. Finished
+// entries retained for replay never block. Owner is part of every lookup so a
+// request ID from one account can never observe another account's tracker.
+func (s *toolCallStore) liveEntryFor(owner, chatID int64) (string, *toolCallTrackerEntry) {
 	for id, entry := range s.entries {
-		if entry.chatID == chatID && !entry.tracker.isFinished() {
+		if entry.owner == owner && entry.chatID == chatID && !entry.tracker.isFinished() {
 			return id, entry
 		}
 	}
 	return "", nil
 }
 
+// create is the trusted-owner wrapper retained for direct tests and
+// maintenance helpers. Production handlers use createForUser.
 func (s *toolCallStore) create(chatID int64, model string, tools []string) (string, error) {
+	return s.createForUser(legacyToolCallOwner, chatID, model, tools)
+}
+
+func (s *toolCallStore) createForUser(owner, chatID int64, model string, tools []string) (string, error) {
+	if owner <= 0 {
+		return "", errInvalidToolCallOwner
+	}
+
 	s.mu.Lock()
-	if _, existing := s.liveEntryFor(chatID); existing != nil {
+	if _, existing := s.liveEntryFor(owner, chatID); existing != nil {
 		s.mu.Unlock()
 		return "", errChatCompletionActive
 	}
@@ -160,6 +181,7 @@ func (s *toolCallStore) create(chatID int64, model string, tools []string) (stri
 	id := hex.EncodeToString(token[:])
 
 	entry := &toolCallTrackerEntry{
+		owner:   owner,
 		tracker: newToolCallTracker(),
 		chatID:  chatID,
 		model:   model,
@@ -173,12 +195,22 @@ func (s *toolCallStore) create(chatID int64, model string, tools []string) (stri
 	return id, nil
 }
 
+// claim is the trusted-owner wrapper retained for direct tests and maintenance
+// helpers. Production handlers use claimForUser.
 func (s *toolCallStore) claim(id string, chatID int64, model string, tools []string) (*toolCallTracker, bool) {
+	return s.claimForUser(legacyToolCallOwner, id, chatID, model, tools)
+}
+
+func (s *toolCallStore) claimForUser(owner int64, id string, chatID int64, model string, tools []string) (*toolCallTracker, bool) {
+	if owner <= 0 {
+		return nil, false
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	entry, ok := s.entries[id]
-	if !ok || entry.started || entry.chatID != chatID {
+	if !ok || entry.owner != owner || entry.started || entry.chatID != chatID {
 		return nil, false
 	}
 	entry.started = true
@@ -189,11 +221,17 @@ func (s *toolCallStore) claim(id string, chatID int64, model string, tools []str
 	return entry.tracker, true
 }
 
+// active is the trusted-owner wrapper retained for direct tests and
+// maintenance helpers. Production handlers use activeForUser.
 func (s *toolCallStore) active(chatID int64) (activeCompletion, bool) {
+	return s.activeForUser(legacyToolCallOwner, chatID)
+}
+
+func (s *toolCallStore) activeForUser(owner, chatID int64) (activeCompletion, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	id, entry := s.liveEntryFor(chatID)
+	id, entry := s.liveEntryFor(owner, chatID)
 	if entry == nil {
 		return activeCompletion{}, false
 	}
@@ -205,12 +243,18 @@ func (s *toolCallStore) active(chatID int64) (activeCompletion, bool) {
 	}, true
 }
 
+// get is the trusted-owner wrapper retained for direct tests and maintenance
+// helpers. Production handlers use getForUser.
 func (s *toolCallStore) get(id string) (*toolCallTracker, bool) {
+	return s.getForUser(legacyToolCallOwner, id)
+}
+
+func (s *toolCallStore) getForUser(owner int64, id string) (*toolCallTracker, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	entry, ok := s.entries[id]
-	if !ok {
+	if !ok || entry.owner != owner {
 		return nil, false
 	}
 	return entry.tracker, true
@@ -273,10 +317,10 @@ func messageToolStreamHandlerWithHeartbeat(toolCalls *toolCallStore, heartbeatIn
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Accel-Buffering", "no")
 		requestID := r.URL.Query().Get("request")
-		tracker, ok := toolCalls.get(requestID)
+		tracker, ok := toolCalls.getForUser(kritui_db.UserID(r.Context()), requestID)
 		if !ok {
 			if err := writeServerSentEvent(w, toolCallCloseEvent, ""); err == nil {
 				flusher.Flush()

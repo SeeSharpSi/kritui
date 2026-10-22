@@ -409,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=28`,
-		`/static/hx-sse.js?v=28`,
-		`/static/app.js?v=28`,
-		`/static/styles.css?v=28`,
+		`/static/htmx.min.js?v=29`,
+		`/static/hx-sse.js?v=29`,
+		`/static/app.js?v=29`,
+		`/static/styles.css?v=29`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -436,6 +436,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 
 func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
@@ -450,6 +451,7 @@ func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 
 func TestHomeHandlerRendersCommandAutocomplete(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
 
@@ -498,6 +500,7 @@ func TestHomeHandlerRendersCommandAutocomplete(t *testing.T) {
 
 func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (7, 'Loaded lazily')`); err != nil {
 		t.Fatalf("insert chat: %v", err)
 	}
@@ -567,6 +570,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 
 func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			t.Errorf("path = %q, want /v1/models", r.URL.Path)
@@ -593,6 +597,7 @@ func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 
 func TestHomeHandlerUsesStoredDefaultModel(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 1)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	seedDefaultModel(t, database, "stored-default")
@@ -663,6 +668,7 @@ func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
 
 func TestHomeHandlerRendersPromptAppends(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	response := httptest.NewRecorder()
 
 	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, httptest.NewRequest(http.MethodGet, "/?chat=8", nil))
@@ -681,6 +687,7 @@ func TestHomeHandlerRendersPromptAppends(t *testing.T) {
 
 func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 3)
 	t.Setenv("LLM_MODEL", "test-model")
 
 	toolCalls := newToolCallStore()
@@ -714,6 +721,8 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 
 func TestMessageHandlerPersistsUploadedImages(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 41)
+	seedCurrentChat(t, database, 42)
 	toolCalls := newToolCallStore()
 	pngBytes := testImageBytes(t, "png", 2, 3)
 	jpegBytes := testImageBytes(t, "jpeg", 4, 5)
@@ -763,6 +772,7 @@ func TestMessageHandlerPersistsUploadedImages(t *testing.T) {
 
 func TestMessageHandlerNormalizesDeclaredJPEGType(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 43)
 	jpegBytes := testImageBytes(t, "jpeg", 4, 5)
 	body, contentType := multipartImageRequest(t, "", []testUpload{{"photo.jpg", "image/jpg", jpegBytes}})
 	request := httptest.NewRequest(http.MethodPost, "/messages?chat=43", bytes.NewReader(body))
@@ -823,6 +833,7 @@ func TestMessageHandlerModelImageCapability(t *testing.T) {
 	for _, unsupported := range []bool{true, false} {
 		t.Run(fmt.Sprint(unsupported), func(t *testing.T) {
 			db := openTestDatabase(t)
+			seedCurrentChat(t, db, 61)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if unsupported {
@@ -1085,6 +1096,7 @@ func TestMessageHandlerRejectsInvalidSlashCommands(t *testing.T) {
 
 func TestMessageHandlerRequiresSlashAsFirstCharacter(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 3)
 	toolCalls := newToolCallStore()
 	response := postForm(t,
 		messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls),
@@ -1129,6 +1141,7 @@ func TestMessageRetryHandlerIgnoresUndoneUserMessage(t *testing.T) {
 
 func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 3)
 	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore()), "/messages?chat=3", url.Values{
 		"message": {"Hello"},
 		"model":   {"selected-model"},
@@ -1179,6 +1192,7 @@ func TestMessageHandlerAppliesAndPersistsPromptAppends(t *testing.T) {
 
 func TestMessageHandlerRejectsUnknownPromptAppend(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 3)
 	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore()), "/messages?chat=3", url.Values{
 		"message": {"Hello"},
 		"model":   {"selected-model"},
@@ -1277,6 +1291,7 @@ func TestMessagesWithPromptAppendTextsExpandsCopyForCompletion(t *testing.T) {
 
 func TestChatTitleNormalizationPreservesMessageContent(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 3)
 	firstLine := strings.Repeat("界", maxChatTitleRunes+1)
 	message := "\n  " + firstLine + "  \nsecond line\n"
 	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore()), "/messages?chat=3", url.Values{
@@ -1552,6 +1567,7 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 
 func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	if _, err := database.Exec(`
 		INSERT INTO chats (id, title, updated_at) VALUES
 			(1, 'Oldest', '2026-01-01T00:00:00.000Z'),
@@ -1565,7 +1581,8 @@ func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 			WHEN 1 THEN '2026-01-01T00:00:00.000Z'
 			WHEN 2 THEN '2026-01-02T00:00:00.000Z'
 			WHEN 3 THEN '2026-01-03T00:00:00.000Z'
-		END;
+		END
+		WHERE id IN (1, 2, 3);
 	`); err != nil {
 		t.Fatalf("insert chats: %v", err)
 	}
@@ -1595,6 +1612,7 @@ func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 
 func TestHistoryHandlerRefreshesCurrentTitlesAndOrdering(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 1)
 	loadHistory := func() string {
 		response := httptest.NewRecorder()
 		historyHandler(database)(response, httptest.NewRequest(http.MethodGet, "/history?chat=1", nil))
@@ -1623,6 +1641,7 @@ func TestHistoryHandlerRefreshesCurrentTitlesAndOrdering(t *testing.T) {
 
 func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	request := httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil)
 	response := httptest.NewRecorder()
 
@@ -1665,6 +1684,7 @@ func TestSettingsHandlerRendersSettingsPage(t *testing.T) {
 
 func TestSettingsHandlerStoresDefaultModelAndMaxToolRounds(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{"model": {"saved-model"}, "max_tool_rounds": {"32"}})
@@ -1691,6 +1711,7 @@ func TestSettingsHandlerStoresDefaultModelAndMaxToolRounds(t *testing.T) {
 
 func TestSettingsHandlerRejectsInvalidMaxToolRounds(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	for _, value := range []string{"0", "101", "abc", ""} {
@@ -1705,6 +1726,7 @@ func TestSettingsHandlerRejectsInvalidMaxToolRounds(t *testing.T) {
 
 func TestSettingsHandlerStoresDefaultTools(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -1731,6 +1753,7 @@ func TestSettingsHandlerStoresDefaultTools(t *testing.T) {
 
 func TestSettingsHandlerStoresPromptAppends(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -1759,6 +1782,7 @@ func TestSettingsHandlerStoresPromptAppends(t *testing.T) {
 
 func TestSettingsHandlerClearsDefaultPromptAppend(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	seedPromptAppends(t, database, []kritui_db.PromptAppend{{
@@ -1792,6 +1816,7 @@ func TestSettingsHandlerClearsDefaultPromptAppend(t *testing.T) {
 
 func TestSettingsHandlerRejectsUnknownDefaultPromptAppend(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -1812,6 +1837,7 @@ func TestSettingsHandlerRejectsUnknownDefaultPromptAppend(t *testing.T) {
 
 func TestSettingsHandlerStoresLargePromptAppend(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	largeText := strings.Repeat("x", 16*1024)
@@ -1839,6 +1865,7 @@ func TestSettingsHandlerStoresLargePromptAppend(t *testing.T) {
 
 func TestSettingsHandlerRejectsMalformedAppendIDOnAdd(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	seeded := []kritui_db.PromptAppend{{ID: "existing", Name: "Existing", Text: "Keep it."}}
@@ -1879,6 +1906,7 @@ func TestSettingsHandlerRejectsMalformedAppendIDOnAdd(t *testing.T) {
 
 func TestSettingsHandlerRejectsMalformedRemoveAppendID(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	seeded := []kritui_db.PromptAppend{{ID: "existing", Name: "Existing", Text: "Keep it."}}
@@ -1919,6 +1947,7 @@ func TestSettingsHandlerRejectsMalformedRemoveAppendID(t *testing.T) {
 
 func TestSettingsHandlerRefreshesAppendPickerAfterHTMXSave(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	form := url.Values{
@@ -2008,6 +2037,7 @@ func TestSettingsHandlerAppendActionsIgnoreInvalidUnrelatedSettings(t *testing.T
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			database := openTestDatabase(t)
+			seedCurrentChat(t, database, 8)
 			response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", test.action)
 
 			if response.Code != http.StatusOK {
@@ -2034,6 +2064,7 @@ func TestSettingsHandlerAppendActionsIgnoreInvalidUnrelatedSettings(t *testing.T
 
 func TestSettingsHandlerAppendActionPreservesPendingAPIKeyClear(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	if err := kritui_db.SaveNtfySettings(context.Background(), database, kritui_db.NtfySettingsUpdate{
 		Endpoint:     "https://ntfy.example",
 		Topic:        "kritui",
@@ -2078,6 +2109,7 @@ func TestSettingsHandlerAppendActionPreservesPendingAPIKeyClear(t *testing.T) {
 
 func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	request := httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil)
 	response := httptest.NewRecorder()
 
@@ -2127,6 +2159,7 @@ func TestSettingsHandlerRendersThemeOptions(t *testing.T) {
 
 func TestSettingsHandlerStoresTheme(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -2154,6 +2187,7 @@ func TestSettingsHandlerStoresTheme(t *testing.T) {
 
 func TestSettingsHandlerStoresForestNightTheme(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -2182,6 +2216,7 @@ func TestSettingsHandlerStoresForestNightTheme(t *testing.T) {
 
 func TestSettingsHandlerStores1975Theme(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -2210,6 +2245,7 @@ func TestSettingsHandlerStores1975Theme(t *testing.T) {
 
 func TestSettingsHandlerRejectsUnknownTheme(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -2233,6 +2269,7 @@ func TestSettingsHandlerRejectsUnknownTheme(t *testing.T) {
 
 func TestSettingsHandlerAppendActionPreservesTheme(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -2261,6 +2298,7 @@ func TestSettingsHandlerAppendActionPreservesTheme(t *testing.T) {
 
 func TestHomeHandlerRendersStoredTheme(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	if err := kritui_db.SaveSettings(context.Background(), database, kritui_db.SettingsUpdate{
 		Model:         "model",
@@ -2289,6 +2327,7 @@ func TestHomeHandlerRendersStoredTheme(t *testing.T) {
 
 func TestHomeHandlerRendersDefaultThemeWhenUnset(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
 	response := httptest.NewRecorder()
@@ -2309,6 +2348,7 @@ func TestHomeHandlerRendersDefaultThemeWhenUnset(t *testing.T) {
 
 func TestSettingsHandlerReportsPromptAppendValidationError(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -2328,6 +2368,7 @@ func TestSettingsHandlerReportsPromptAppendValidationError(t *testing.T) {
 
 func TestSettingsHandlerReportsPromptAppendFormError(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -2347,6 +2388,7 @@ func TestSettingsHandlerReportsPromptAppendFormError(t *testing.T) {
 
 func TestSettingsHandlerStoresEmptyDefaultTools(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	seedDefaultEnabledTools(t, database, []string{"webfetch"})
@@ -2370,6 +2412,7 @@ func TestSettingsHandlerStoresEmptyDefaultTools(t *testing.T) {
 
 func TestSettingsHandlerPreservesPromptAppendsWithoutAppendForm(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	appends := []kritui_db.PromptAppend{{ID: "custom", Name: "Custom", Text: "Use custom instruction."}}
@@ -2393,6 +2436,7 @@ func TestSettingsHandlerPreservesPromptAppendsWithoutAppendForm(t *testing.T) {
 
 func TestSettingsHandlerRejectsInvalidDefaultTools(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
@@ -2416,6 +2460,7 @@ func TestSettingsHandlerRejectsInvalidDefaultTools(t *testing.T) {
 
 func TestSettingsHandlerRendersNtfyDestinationWithoutSecret(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	apiKey := "secret-token"
 	if err := kritui_db.SaveNtfySettings(context.Background(), database, kritui_db.NtfySettingsUpdate{
 		Endpoint:     "https://ntfy.example",
@@ -2449,6 +2494,7 @@ func TestSettingsHandlerRendersNtfyDestinationWithoutSecret(t *testing.T) {
 
 func TestSettingsHandlerStoresAndPreservesNtfySecret(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	handler := settingsHandler(database, newTestToolRegistry(t))
 	apiKey := "secret-token"
 
@@ -2532,6 +2578,7 @@ func TestSettingsHandlerStoresAndPreservesNtfySecret(t *testing.T) {
 
 func TestSettingsHandlerRejectsInvalidNtfyValuesWithoutSecret(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	secret := "secret-token"
 	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
 		"model":           {"saved-model"},
@@ -2676,6 +2723,7 @@ func TestHomeHandlerAllocatesChatWithoutDefaultPromptAppendsWhenUnset(t *testing
 
 func TestSettingsHandlerStoresPreservesAndClearsMCPSecret(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_MODEL", "env-model")
 	t.Setenv("LLM_ENDPOINT", "")
 	handler := settingsHandler(database, newTestToolRegistry(t))
@@ -2759,6 +2807,7 @@ func TestSettingsHandlerStoresPreservesAndClearsMCPSecret(t *testing.T) {
 
 func TestSettingsHandlerMCPAddRendersOnlyNewEditor(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	const (
 		serverID = "mcp-0123456789abcdef"
 		token    = "secret-token"
@@ -2826,6 +2875,7 @@ func TestSettingsHandlerMCPAddRendersOnlyNewEditor(t *testing.T) {
 
 func TestSettingsHandlerHTMXSaveEmitsToolPickerWithMCPCapability(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	const (
 		serverID   = "mcp-0123456789abcdef"
 		capability = "mcp_server_0123456789abcdef"
@@ -3156,6 +3206,7 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 
 func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 1)
 	t.Setenv("LLM_MODEL", "default-model")
 	form := url.Values{"message": {"Hello"}, "model": {"selected-model"}, "tool": {"webfetch"}}
 	toolCalls := newToolCallStore()
@@ -3369,6 +3420,7 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 
 	t.Run("settings validation", func(t *testing.T) {
 		database := openTestDatabase(t)
+		seedCurrentChat(t, database, 1)
 		t.Setenv("LLM_MODEL", "test-model")
 		t.Setenv("LLM_ENDPOINT", "")
 		request := httptest.NewRequest(http.MethodPost, "/settings?chat=1", strings.NewReader("%"))
@@ -3443,19 +3495,21 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 			"model":   {"test-model"},
 		})
 
-		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `<article class="message" role="alert">`, "Failed to store message.")
+		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `<article class="message" role="alert">`, "Failed to load settings.")
 	})
 
 	t.Run("completion storage", func(t *testing.T) {
 		database := openTestDatabase(t)
 		database.Close()
 		toolCalls := newToolCallStore()
-		response := completeForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), toolCalls, "/messages/complete?chat=1", url.Values{
+		requestID := newToolCallRequest(t, toolCalls, 1)
+		defer toolCalls.delete(requestID)
+		response := postForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), "/messages/complete?chat=1", url.Values{
 			"model":   {"test-model"},
-			"request": {newToolCallRequest(t, toolCalls, 1)},
+			"request": {requestID},
 		})
 
-		requireHTMLErrorResponse(t, response, http.StatusOK, `class="message completion-error"`, "Failed to load conversation.")
+		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `<article class="message" role="alert">`, "Failed to load settings.")
 	})
 
 	t.Run("retry storage", func(t *testing.T) {
@@ -3465,12 +3519,13 @@ func TestHTMXErrorsReturnTargetAppropriateHTML(t *testing.T) {
 			"model": {"test-model"},
 		})
 
-		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `class="message completion-error"`, "Failed to prepare retry.")
+		requireHTMLErrorResponse(t, response, http.StatusInternalServerError, `<article class="message" role="alert">`, "Failed to load settings.")
 	})
 }
 
 func TestMessageHandlerUsesStoredDefaultWhenModelIsMissing(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 1)
 	seedDefaultModel(t, database, "stored-default")
 	toolCalls := newToolCallStore()
 	response := postForm(t, messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls), "/messages?chat=1", url.Values{"message": {"Hello"}})
@@ -3483,6 +3538,8 @@ func TestMessageHandlerUsesStoredDefaultWhenModelIsMissing(t *testing.T) {
 
 func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 1)
+	seedCurrentChat(t, database, 2)
 	registry := newTestToolRegistry(t)
 	toolCalls := newToolCallStore()
 	handler := messageHandler(database, registry, newTestCommandRegistry(t, database), toolCalls)
@@ -3707,8 +3764,8 @@ func TestMessageToolStreamHandlerPushesToolCallState(t *testing.T) {
 	if contentType := response.Header().Get("Content-Type"); contentType != "text/event-stream" {
 		t.Errorf("Content-Type = %q, want %q", contentType, "text/event-stream")
 	}
-	if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "no-cache" {
-		t.Errorf("Cache-Control = %q, want %q", cacheControl, "no-cache")
+	if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "no-store" {
+		t.Errorf("Cache-Control = %q, want %q", cacheControl, "no-store")
 	}
 
 	body := response.Body.String()
@@ -4001,6 +4058,7 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 
 func TestMessageCompletionHandlerExpandsStoredPromptAppendsExactlyOnce(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 3)
 	firstAppend := kritui_db.PromptAppend{ID: "append-one", Name: "First", Text: "First append text."}
 	secondAppend := kritui_db.PromptAppend{ID: "append-two", Name: "Second", Text: "Second append text."}
 	seedPromptAppends(t, database, []kritui_db.PromptAppend{firstAppend, secondAppend})
@@ -6123,6 +6181,7 @@ func assertMigratedDatabase(t *testing.T, database *sql.DB) {
 
 func TestSettingsHandlerRendersLLMConnectionWithoutSecret(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_KEY", "")
 	t.Setenv("LLM_ENDPOINT", "")
 	t.Setenv("LLM_MODEL", "")
@@ -6146,6 +6205,7 @@ func TestSettingsHandlerRendersLLMConnectionWithoutSecret(t *testing.T) {
 
 func TestSettingsHandlerRendersStoredLLMEndpointWithoutSecret(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_KEY", "")
 	t.Setenv("LLM_ENDPOINT", "")
 	t.Setenv("LLM_MODEL", "")
@@ -6180,6 +6240,7 @@ func TestSettingsHandlerRendersStoredLLMEndpointWithoutSecret(t *testing.T) {
 
 func TestSettingsHandlerStoresPreservesAndClearsLLMSecret(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_KEY", "")
 	t.Setenv("LLM_ENDPOINT", "")
 	handler := settingsHandler(database, newTestToolRegistry(t))
@@ -6254,6 +6315,7 @@ func TestSettingsHandlerStoresPreservesAndClearsLLMSecret(t *testing.T) {
 
 func TestSettingsHandlerHidesLLMWhenEnvironmentConfigured(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[]}`))
@@ -6300,6 +6362,7 @@ func TestSettingsHandlerHidesLLMWhenEnvironmentConfigured(t *testing.T) {
 
 func TestSettingsHandlerPartialEnvironmentKeepsControls(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_KEY", "")
 	t.Setenv("LLM_ENDPOINT", "")
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -6350,6 +6413,7 @@ func TestEffectiveLLMConfigPrefersEnvironmentFieldByField(t *testing.T) {
 
 func TestSettingsHandlerRejectsInvalidLLMEndpointWithoutSecret(t *testing.T) {
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	t.Setenv("LLM_KEY", "")
 	t.Setenv("LLM_ENDPOINT", "")
 	const secret = "submitted-llm-secret"

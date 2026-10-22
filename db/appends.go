@@ -62,8 +62,12 @@ type rowQueryer interface {
 // GetPromptAppends returns stored presets, or built-in presets when none have
 // been configured.
 func GetPromptAppends(ctx context.Context, db rowQueryer) ([]PromptAppend, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get prompt append state: %w", err)
+	}
 	var configured bool
-	if err := db.QueryRowContext(ctx, `SELECT prompt_appends_configured FROM settings WHERE id = 1`).Scan(&configured); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT prompt_appends_configured FROM settings WHERE id = ?`, userID).Scan(&configured); err != nil {
 		return nil, fmt.Errorf("get prompt append state: %w", err)
 	}
 	if !configured {
@@ -73,8 +77,9 @@ func GetPromptAppends(ctx context.Context, db rowQueryer) ([]PromptAppend, error
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, name, text, enabled_by_default
 		FROM prompt_appends
+		WHERE user_id = ?
 		ORDER BY position
-	`)
+	`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get prompt appends: %w", err)
 	}
@@ -99,30 +104,37 @@ func GetPromptAppends(ctx context.Context, db rowQueryer) ([]PromptAppend, error
 
 // setPromptAppends writes definitions and prunes removed chat selections.
 func setPromptAppends(ctx context.Context, db settingWriter, values []PromptAppend) error {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set prompt appends: %w", err)
+	}
 	normalized, err := normalizePromptAppends(values)
 	if err != nil {
 		return fmt.Errorf("set prompt appends: %w", err)
 	}
 
-	if _, err := db.ExecContext(ctx, `DELETE FROM prompt_appends`); err != nil {
+	if _, err := db.ExecContext(ctx, `DELETE FROM prompt_appends WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("clear prompt appends: %w", err)
 	}
 	for position, value := range normalized {
 		if _, err := db.ExecContext(ctx, `
-			INSERT INTO prompt_appends (id, position, name, text, enabled_by_default)
-			VALUES (?, ?, ?, ?, ?)
-		`, value.ID, position, value.Name, value.Text, value.EnabledByDefault); err != nil {
+			INSERT INTO prompt_appends (user_id, id, position, name, text, enabled_by_default)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, userID, value.ID, position, value.Name, value.Text, value.EnabledByDefault); err != nil {
 			return fmt.Errorf("store prompt append %q: %w", value.ID, err)
 		}
 	}
 
 	if _, err := db.ExecContext(ctx, `
 		DELETE FROM chat_prompt_appends
-		WHERE prompt_append_id NOT IN (SELECT id FROM prompt_appends)
-	`); err != nil {
+		WHERE chat_id IN (SELECT id FROM chats WHERE user_id = ?)
+			AND prompt_append_id NOT IN (
+				SELECT id FROM prompt_appends WHERE user_id = ?
+			)
+	`, userID, userID); err != nil {
 		return fmt.Errorf("prune chat prompt appends: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE settings SET prompt_appends_configured = 1 WHERE id = 1`); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET prompt_appends_configured = 1 WHERE id = ?`, userID); err != nil {
 		return fmt.Errorf("mark prompt appends configured: %w", err)
 	}
 	return nil

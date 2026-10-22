@@ -115,6 +115,16 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 				renderMessageError(w, r, http.StatusBadRequest, "A valid chat is required.")
 				return
 			}
+			owned, err := requireOwnedChat(r.Context(), database, chatID)
+			if err != nil {
+				log.Printf("check command chat ownership: %v", err)
+				renderMessageError(w, r, http.StatusInternalServerError, "Failed to execute command.")
+				return
+			}
+			if !owned {
+				renderMessageError(w, r, http.StatusNotFound, "Chat not found.")
+				return
+			}
 			result, err := commandRegistry.Execute(r.Context(), parsedCommand, chatID)
 			if err != nil {
 				renderCommandError(w, r, parsedCommand.Name, err)
@@ -141,7 +151,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 				return
 			}
 		}
-		requestID, err := toolCalls.create(request.chatID, request.model, request.toolNames)
+		requestID, err := toolCalls.createForUser(kritui_db.UserID(r.Context()), request.chatID, request.model, request.toolNames)
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
 				renderMessageError(w, r, http.StatusConflict, "A response is already in progress.")
@@ -215,7 +225,7 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			return
 		}
 
-		requestID, err := toolCalls.create(request.chatID, request.model, request.toolNames)
+		requestID, err := toolCalls.createForUser(kritui_db.UserID(r.Context()), request.chatID, request.model, request.toolNames)
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
 				renderMessageEditError(w, r, http.StatusConflict, messageID, "A response is already in progress.")
@@ -328,13 +338,15 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 
 		requestID := strings.TrimSpace(r.FormValue("request"))
 		selectedTools := request.toolNames
-		tracker, ok := toolCalls.claim(requestID, request.chatID, request.model, selectedTools)
+		userID := kritui_db.UserID(r.Context())
+		tracker, ok := toolCalls.claimForUser(userID, requestID, request.chatID, request.model, selectedTools)
 		if !ok {
 			renderMessageError(w, r, http.StatusBadRequest, "This completion request is no longer valid.")
 			return
 		}
 		clientTimezone := r.FormValue("client_timezone")
-		go runMessageCompletion(context.Background(), database, request, requestID, tracker, toolCalls, toolCallLogger, clientTimezone)
+		completionContext := kritui_db.WithUser(context.WithoutCancel(r.Context()), userID)
+		go runMessageCompletion(completionContext, database, request, requestID, tracker, toolCalls, toolCallLogger, clientTimezone)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -514,12 +526,12 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 		}
 		return
 	}
-	scheduleNtfyCompletion(database, request.chatID)
+	scheduleNtfyCompletion(ctx, database, request.chatID)
 	terminal = renderCompletionFragment(ctx, templates.CompletedMessage(request.chat, completedMessages...))
 }
 
-func scheduleNtfyCompletion(database *sql.DB, chatID int64) {
-	config, err := kritui_db.GetNtfyPublishConfig(context.Background(), database)
+func scheduleNtfyCompletion(ctx context.Context, database *sql.DB, chatID int64) {
+	config, err := kritui_db.GetNtfyPublishConfig(ctx, database)
 	if err != nil {
 		log.Printf("get ntfy publish config: %v", err)
 		return
@@ -527,11 +539,11 @@ func scheduleNtfyCompletion(database *sql.DB, chatID int64) {
 	if strings.TrimSpace(config.Endpoint) == "" || strings.TrimSpace(config.Topic) == "" {
 		return
 	}
-	go sendNtfyCompletion(config, chatID)
+	go sendNtfyCompletion(context.WithoutCancel(ctx), config, chatID)
 }
 
-func sendNtfyCompletion(config kritui_db.NtfyPublishConfig, chatID int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func sendNtfyCompletion(parent context.Context, config kritui_db.NtfyPublishConfig, chatID int64) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 	defer cancel()
 	if err := (ntfy.Client{}).Publish(ctx, ntfy.Config{
 		Endpoint: config.Endpoint,
@@ -568,12 +580,13 @@ func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *
 
 		var role string
 		err := database.QueryRowContext(r.Context(), `
-			SELECT role
+			SELECT messages.role
 			FROM messages
-			WHERE chat_id = ? AND undo_sequence IS NULL
-			ORDER BY position DESC
+			JOIN chats ON chats.id = messages.chat_id
+			WHERE messages.chat_id = ? AND chats.user_id = ? AND messages.undo_sequence IS NULL
+			ORDER BY messages.position DESC
 			LIMIT 1
-		`, request.chatID).Scan(&role)
+		`, request.chatID, kritui_db.UserID(r.Context())).Scan(&role)
 		if err == sql.ErrNoRows {
 			renderMessageError(w, r, http.StatusConflict, "No message is waiting for completion.")
 			return
@@ -588,7 +601,7 @@ func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *
 			return
 		}
 
-		requestID, err := toolCalls.create(request.chatID, request.model, request.toolNames)
+		requestID, err := toolCalls.createForUser(kritui_db.UserID(r.Context()), request.chatID, request.model, request.toolNames)
 		if err != nil {
 			if errors.Is(err, errChatCompletionActive) {
 				renderCompletionError(w, r, http.StatusConflict, request.chat, "A response is already in progress.", request.model, request.toolNames)
@@ -632,9 +645,18 @@ func parseMessageRequest(w http.ResponseWriter, r *http.Request, database *sql.D
 }
 
 func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Registry, chat string, chatID int64, renderError func(int, string)) (messageRequest, bool) {
+	owned, err := requireOwnedChat(r.Context(), database, chatID)
+	if err != nil {
+		log.Printf("check message chat ownership: %v", err)
+		renderError(http.StatusInternalServerError, "Failed to load settings.")
+		return messageRequest{}, false
+	}
+	if !owned {
+		renderError(http.StatusNotFound, "Chat not found.")
+		return messageRequest{}, false
+	}
 	model := strings.TrimSpace(r.FormValue("model"))
 	if model == "" {
-		var err error
 		model, err = kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
 		if err != nil {
 			log.Printf("get default model: %v", err)
@@ -729,10 +751,11 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 
 	var position int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(position) + 1, 0)
+		SELECT COALESCE(MAX(messages.position) + 1, 0)
 		FROM messages
-		WHERE chat_id = ?
-	`, chatID).Scan(&position); err != nil {
+		JOIN chats ON chats.id = messages.chat_id
+		WHERE messages.chat_id = ? AND chats.user_id = ?
+	`, chatID, kritui_db.UserID(ctx)).Scan(&position); err != nil {
 		return persistedUserMessage{}, fmt.Errorf("get user message position: %w", err)
 	}
 	id, err := kritui_db.InsertMessage(ctx, tx, chatID, position, llm.Message{

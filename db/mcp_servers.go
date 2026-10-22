@@ -76,12 +76,17 @@ type mcpServerStore interface {
 // GetMCPServers returns configured servers in stored order, safe for frontend
 // rendering.
 func GetMCPServers(ctx context.Context, db rowQueryer) ([]MCPServer, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get mcp servers: %w", err)
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, name, url,
 			CASE WHEN authorization_token IS NOT NULL AND trim(authorization_token) <> '' THEN 1 ELSE 0 END
 		FROM mcp_servers
+		WHERE user_id = ?
 		ORDER BY position
-	`)
+	`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get mcp servers: %w", err)
 	}
@@ -106,10 +111,15 @@ func GetMCPServers(ctx context.Context, db rowQueryer) ([]MCPServer, error) {
 // configurations in submitted capability order. Unknown or repeated
 // capabilities are rejected, and nonselected servers are never returned.
 func GetMCPServerConfigs(ctx context.Context, db rowQueryer, capabilities []string) ([]MCPServerConfig, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get mcp server configs: %w", err)
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, name, url, authorization_token
 		FROM mcp_servers
-	`)
+		WHERE user_id = ?
+	`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get mcp server configs: %w", err)
 	}
@@ -287,6 +297,10 @@ func validateMCPServerURL(id, value string) error {
 // Clear stores NULL. Stable capability names of removed servers are pruned
 // from default_tools and chat_tools; built-in names are never touched.
 func setMCPServers(ctx context.Context, db mcpServerStore, updates []MCPServerUpdate) error {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set mcp servers: %w", err)
+	}
 	normalized, err := normalizeMCPServers(updates)
 	if err != nil {
 		return fmt.Errorf("set mcp servers: %w", err)
@@ -297,7 +311,7 @@ func setMCPServers(ctx context.Context, db mcpServerStore, updates []MCPServerUp
 		return err
 	}
 
-	if _, err := db.ExecContext(ctx, `DELETE FROM mcp_servers`); err != nil {
+	if _, err := db.ExecContext(ctx, `DELETE FROM mcp_servers WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("clear mcp servers: %w", err)
 	}
 	for position, update := range normalized {
@@ -312,9 +326,9 @@ func setMCPServers(ctx context.Context, db mcpServerStore, updates []MCPServerUp
 		case MCPClearAuthorization:
 		}
 		if _, err := db.ExecContext(ctx, `
-			INSERT INTO mcp_servers (id, position, name, url, authorization_token)
-			VALUES (?, ?, ?, ?, ?)
-		`, update.Server.ID, position, update.Server.Name, update.Server.URL, token); err != nil {
+			INSERT INTO mcp_servers (user_id, id, position, name, url, authorization_token)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, userID, update.Server.ID, position, update.Server.Name, update.Server.URL, token); err != nil {
 			return fmt.Errorf("store mcp server %q: %w", update.Server.ID, err)
 		}
 	}
@@ -328,10 +342,14 @@ func setMCPServers(ctx context.Context, db mcpServerStore, updates []MCPServerUp
 			continue
 		}
 		capability := MCPServerCapability(id)
-		if _, err := db.ExecContext(ctx, `DELETE FROM default_tools WHERE name = ?`, capability); err != nil {
+		if _, err := db.ExecContext(ctx, `DELETE FROM default_tools WHERE user_id = ? AND name = ?`, userID, capability); err != nil {
 			return fmt.Errorf("prune default tool %q: %w", capability, err)
 		}
-		if _, err := db.ExecContext(ctx, `DELETE FROM chat_tools WHERE name = ?`, capability); err != nil {
+		if _, err := db.ExecContext(ctx, `
+			DELETE FROM chat_tools
+			WHERE name = ?
+				AND chat_id IN (SELECT id FROM chats WHERE user_id = ?)
+		`, capability, userID); err != nil {
 			return fmt.Errorf("prune chat tool %q: %w", capability, err)
 		}
 	}
@@ -342,7 +360,11 @@ func setMCPServers(ctx context.Context, db mcpServerStore, updates []MCPServerUp
 // with blank and NULL tokens represented by an empty string so removed
 // servers can be detected regardless of their stored secret.
 func loadMCPServerTokens(ctx context.Context, db mcpServerStore) (map[string]string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, authorization_token FROM mcp_servers`)
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load existing mcp servers: %w", err)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, authorization_token FROM mcp_servers WHERE user_id = ?`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("load existing mcp servers: %w", err)
 	}

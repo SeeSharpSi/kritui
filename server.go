@@ -62,7 +62,8 @@ func main() {
 	} else if err := migrateDatabase(database); err != nil {
 		log.Fatalf("migrate database: %v", err)
 	}
-	if err := kritui_db.EnsureDefaultModel(context.Background(), database, os.Getenv("LLM_MODEL")); err != nil {
+	ownerContext := kritui_db.WithUser(context.Background(), kritui_db.LegacyOwnerID)
+	if err := kritui_db.EnsureDefaultModel(ownerContext, database, os.Getenv("LLM_MODEL")); err != nil {
 		log.Fatalf("initialize settings: %v", err)
 	}
 	toolList := []tools.Tool{
@@ -87,8 +88,27 @@ func main() {
 		log.Fatalf("SHOW_TOOLCALLS must be true or false, got %q", value)
 	}
 
-	mux := http.NewServeMux()
+	secureCookies, err := secureCookiesFromEnvironment()
+	if err != nil {
+		log.Fatalf("configure secure cookies: %v", err)
+	}
 	toolCalls := newToolCallStore()
+	auth := newAuthService(database, secureCookies)
+	mux := newMux(database, toolRegistry, commandRegistry, toolCalls, toolCallLogger, auth)
+
+	log.Println("listening on http://localhost:8080")
+	server := newHTTPServer(mux)
+	// SSE responses intentionally have no server-wide write deadline.
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// newMux registers every application route, the account routes, and wraps the
+// whole application in session authentication and cross-origin request
+// protection. The returned handler is the only production entrypoint.
+func newMux(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *commands.Registry, toolCalls *toolCallStore, toolCallLogger *log.Logger, auth *authService) http.Handler {
+	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(database))
 	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry, commandRegistry, toolCalls))
 	mux.HandleFunc("GET /history", historyHandler(database))
@@ -106,13 +126,10 @@ func main() {
 	mux.HandleFunc("GET /logo.png", logoHandler(staticFiles))
 	mux.HandleFunc("GET /favicon.ico", faviconHandler(staticFiles))
 	mux.HandleFunc("GET /sw.js", serviceWorkerHandler(staticFiles))
+	auth.registerRoutes(mux)
 
-	log.Println("listening on http://localhost:8080")
-	server := newHTTPServer(mux)
-	// SSE responses intentionally have no server-wide write deadline.
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatal(err)
-	}
+	protected := auth.middleware(mux)
+	return http.NewCrossOriginProtection().Handler(protected)
 }
 
 func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
@@ -166,8 +183,8 @@ func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 		result, err := database.ExecContext(ctx, `
 			UPDATE chats
 			SET title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-			WHERE id = ?
-		`, title, chatID)
+			WHERE id = ? AND user_id = ?
+		`, title, chatID, kritui_db.UserID(ctx))
 		if err != nil {
 			return fmt.Errorf("rename current chat: %w", err)
 		}
@@ -484,6 +501,8 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 			(trim(tool_result_elision_summary_model) <> '' AND length(CAST(tool_result_elision_summary_model AS BLOB)) <= 512)
 		)`)
 	},
+	migrateUserAccounts,
+	migrateLegacyAccountIdentity,
 }
 
 // rebuildSettingsThemeConstraint rebuilds the settings table so its theme

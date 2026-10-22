@@ -32,6 +32,7 @@ const (
 func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *commands.Registry, toolCalls *toolCallStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
+		requestedChat := chat != ""
 		chatURL := ""
 		var promptAppends []kritui_db.PromptAppend
 		var defaultTools []string
@@ -71,13 +72,25 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			renderPageError(w, r, http.StatusBadRequest, "A valid chat is required.")
 			return
 		}
+		if requestedChat {
+			owned, err := requireOwnedChat(r.Context(), database, chatID)
+			if err != nil {
+				log.Printf("check chat ownership: %v", err)
+				renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat.")
+				return
+			}
+			if !owned {
+				renderPageError(w, r, http.StatusNotFound, "Chat not found.")
+				return
+			}
+		}
 		messages, err := kritui_db.GetMessages(r.Context(), database, chatID)
 		if err != nil {
 			log.Printf("get messages: %v", err)
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load messages.")
 			return
 		}
-		completion, completionActive := toolCalls.active(chatID)
+		completion, completionActive := toolCalls.activeForUser(kritui_db.UserID(r.Context()), chatID)
 		if !completionActive && len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 			// Completion persistence happens before the active marker is released.
 			// Re-read once to close the small race between those two observations.
@@ -254,16 +267,30 @@ func chatSummaryHandler(database *sql.DB) http.HandlerFunc {
 			http.Error(w, "A valid chat is required.", http.StatusBadRequest)
 			return
 		}
+		owned, err := requireOwnedChat(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("check chat summary ownership: %v", err)
+			http.Error(w, "Failed to load chat summary.", http.StatusInternalServerError)
+			return
+		}
+		if !owned {
+			http.Error(w, "Chat not found.", http.StatusNotFound)
+			return
+		}
 		var title string
 		var count int
-		err := database.QueryRowContext(r.Context(), `
+		err = database.QueryRowContext(r.Context(), `
 			SELECT title, (
 				SELECT COUNT(*) FROM messages
 				WHERE chat_id = chats.id AND undo_sequence IS NULL AND role != 'tool'
 				AND NOT EXISTS (SELECT 1 FROM message_tool_calls WHERE message_id = messages.id)
-			) FROM chats WHERE id = ?
-		`, chatID).Scan(&title, &count)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			) FROM chats WHERE id = ? AND user_id = ?
+		`, chatID, kritui_db.UserID(r.Context())).Scan(&title, &count)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "Chat not found.", http.StatusNotFound)
+			return
+		}
+		if err != nil {
 			log.Printf("get chat summary: %v", err)
 			http.Error(w, "Failed to load chat summary.", http.StatusInternalServerError)
 			return
@@ -282,7 +309,8 @@ func chatSummaryHandler(database *sql.DB) http.HandlerFunc {
 func historyHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")
-		if _, ok := positiveID(chat); !ok {
+		chatID, ok := positiveID(chat)
+		if !ok {
 			renderHistoryLoadError(w, r, http.StatusBadRequest, "A valid chat is required.")
 			return
 		}
@@ -297,6 +325,16 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 		limit, ok := historyPageLimit(r)
 		if !ok {
 			renderHistoryLoadError(w, r, http.StatusBadRequest, "A valid history limit is required.")
+			return
+		}
+		owned, err := requireOwnedChat(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("check history chat ownership: %v", err)
+			renderHistoryLoadError(w, r, http.StatusInternalServerError, "Failed to load chat history.")
+			return
+		}
+		if !owned {
+			renderHistoryLoadError(w, r, http.StatusNotFound, "Chat not found.")
 			return
 		}
 		if err := renderHistoryEntries(r.Context(), w, database, chat, beforeUpdatedAt, beforeID, limit); err != nil {
@@ -320,8 +358,23 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			page.ErrorMessage = message
 			renderSettingsPage(w, r, status, page, database)
 		}
-		if _, ok := positiveID(page.ChatID); !ok {
+		if r.Method == http.MethodPost && r.ContentLength > maxSettingsBodyBytes {
+			render(http.StatusRequestEntityTooLarge, "Request body is too large.")
+			return
+		}
+		chatID, ok := positiveID(page.ChatID)
+		if !ok {
 			render(http.StatusBadRequest, "A valid chat is required.")
+			return
+		}
+		owned, err := requireOwnedChat(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("check settings chat ownership: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		if !owned {
+			render(http.StatusNotFound, "Chat not found.")
 			return
 		}
 
@@ -784,8 +837,20 @@ func deleteChatHandler(database *sql.DB) http.HandlerFunc {
 			renderHistoryMutationError(w, r, http.StatusBadRequest, "A valid current chat is required.")
 			return
 		}
+		for _, id := range []int64{chatID, currentChatID} {
+			owned, err := requireOwnedChat(r.Context(), database, id)
+			if err != nil {
+				log.Printf("check delete chat ownership: %v", err)
+				renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to delete chat.")
+				return
+			}
+			if !owned {
+				renderHistoryMutationError(w, r, http.StatusNotFound, "Chat not found.")
+				return
+			}
+		}
 
-		if _, err := database.ExecContext(r.Context(), `DELETE FROM chats WHERE id = ?`, chatID); err != nil {
+		if _, err := database.ExecContext(r.Context(), `DELETE FROM chats WHERE id = ? AND user_id = ?`, chatID, kritui_db.UserID(r.Context())); err != nil {
 			log.Printf("delete chat: %v", err)
 			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to delete chat.")
 			return
@@ -811,7 +876,8 @@ func renameChatHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 		current := r.URL.Query().Get("current")
-		if _, ok := positiveID(current); !ok {
+		currentChatID, ok := positiveID(current)
+		if !ok {
 			renderHistoryMutationError(w, r, http.StatusBadRequest, "A valid current chat is required.")
 			return
 		}
@@ -830,12 +896,24 @@ func renameChatHandler(database *sql.DB) http.HandlerFunc {
 			renderHistoryMutationError(w, r, http.StatusBadRequest, "A title is required.")
 			return
 		}
+		for _, id := range []int64{chatID, currentChatID} {
+			owned, err := requireOwnedChat(r.Context(), database, id)
+			if err != nil {
+				log.Printf("check rename chat ownership: %v", err)
+				renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to rename chat.")
+				return
+			}
+			if !owned {
+				renderHistoryMutationError(w, r, http.StatusNotFound, "Chat not found.")
+				return
+			}
+		}
 
 		result, err := database.ExecContext(r.Context(), `
 			UPDATE chats
 			SET title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-			WHERE id = ?
-		`, title, chatID)
+			WHERE id = ? AND user_id = ?
+		`, title, chatID, kritui_db.UserID(r.Context()))
 		if err != nil {
 			log.Printf("rename chat: %v", err)
 			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to rename chat.")
@@ -877,9 +955,9 @@ func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *
 		return fmt.Errorf("render history status: %w", err)
 	}
 	var count int
-	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE EXISTS (
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE user_id = ? AND EXISTS (
 		SELECT 1 FROM messages WHERE messages.chat_id = chats.id
-	)`).Scan(&count); err != nil {
+	)`, kritui_db.UserID(ctx)).Scan(&count); err != nil {
 		return fmt.Errorf("count chat history: %w", err)
 	}
 	if err := templates.HistoryCount(count).Render(ctx, &fragment); err != nil {

@@ -24,6 +24,7 @@ import (
 func TestSettingsHandlerToolResultElisionRoundTripsAndHomeReload(t *testing.T) {
 	setToolElisionSettingsEnvironment(t)
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	handler := settingsHandler(database, newTestToolRegistry(t))
 
 	initial := httptest.NewRecorder()
@@ -74,8 +75,8 @@ func TestSettingsHandlerToolResultElisionRoundTripsAndHomeReload(t *testing.T) {
 		})
 	}
 
-	if _, err := database.Exec(`INSERT INTO chats (id, title) VALUES (8, 'settings reload')`); err != nil {
-		t.Fatalf("seed home chat: %v", err)
+	if _, err := database.Exec(`UPDATE chats SET title = 'settings reload' WHERE id = 8`); err != nil {
+		t.Fatalf("name home chat: %v", err)
 	}
 	page := httptest.NewRecorder()
 	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(
@@ -112,6 +113,7 @@ func TestSettingsHandlerRejectsInvalidActiveToolResultElisionWithoutSaving(t *te
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			database := openTestDatabase(t)
+			seedCurrentChat(t, database, 8)
 			baseline := llm.ToolResultElisionConfig{Mode: llm.ToolResultElisionLastUserTurns, UserTurns: 4}
 			if err := kritui_db.SaveSettings(context.Background(), database, kritui_db.SettingsUpdate{
 				Model:             "old-model",
@@ -172,6 +174,7 @@ func TestSettingsHandlerRejectsInvalidActiveToolResultElisionWithoutSaving(t *te
 func TestSettingsHandlerIgnoresInactiveToolResultElisionValues(t *testing.T) {
 	setToolElisionSettingsEnvironment(t)
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	form := toolElisionSettingsForm(llm.ToolResultElisionConfig{Mode: llm.ToolResultElisionCurrentTurn})
 	form.Set("tool_result_elision_user_turns", "not-a-number")
 	form.Set("tool_result_elision_token_budget", "999999999")
@@ -190,6 +193,7 @@ func TestSettingsHandlerIgnoresInactiveToolResultElisionValues(t *testing.T) {
 func TestSettingsHandlerOmittingToolResultElisionPreservesStoredConfig(t *testing.T) {
 	setToolElisionSettingsEnvironment(t)
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	want := llm.ToolResultElisionConfig{Mode: llm.ToolResultElisionBudget, TokenBudget: 2048}
 	if err := kritui_db.SaveSettings(context.Background(), database, kritui_db.SettingsUpdate{
 		Model: "old-model", MaxToolRounds: 7, ToolResultElision: &want,
@@ -213,6 +217,7 @@ func TestSettingsHandlerOmittingToolResultElisionPreservesStoredConfig(t *testin
 func TestSettingsHandlerAppendActionsPreserveUnsavedToolResultElision(t *testing.T) {
 	setToolElisionSettingsEnvironment(t)
 	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
 	initial, err := kritui_db.GetToolResultElision(context.Background(), database)
 	if err != nil {
 		t.Fatalf("get initial elision config: %v", err)
@@ -781,8 +786,8 @@ func assertMigratedToolElisionSettings(t *testing.T, database *sql.DB, model, ll
 	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatalf("read migrated schema version: %v", err)
 	}
-	if version != 23 {
-		t.Fatalf("schema version = %d, want 23", version)
+	if version != len(databaseMigrations) {
+		t.Fatalf("schema version = %d, want %d", version, len(databaseMigrations))
 	}
 	var gotModel, gotTheme string
 	var gotRounds int
@@ -890,9 +895,9 @@ func version22SchemaFixture(t *testing.T) string {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	fixture := prefix + schema[start+relativeEnd:]
-	const currentVersion = "PRAGMA user_version = 23;"
+	const currentVersion = "PRAGMA user_version = 25;"
 	if !strings.Contains(fixture, currentVersion) {
-		t.Fatal("schema version marker is not 23")
+		t.Fatalf("schema version marker is not 25: %s", currentVersion)
 	}
 	return strings.Replace(fixture, currentVersion, "PRAGMA user_version = 22;", 1)
 }

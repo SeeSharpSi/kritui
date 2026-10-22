@@ -58,6 +58,7 @@ type rowScanner interface {
 
 type messageQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 // GetChatsPage returns chats after the supplied cursor, ordered from most to
@@ -66,36 +67,41 @@ func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, befor
 	if limit <= 0 {
 		return nil, fmt.Errorf("get chats page: limit must be positive")
 	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get chats page: %w", err)
+	}
 
 	var (
 		rows *sql.Rows
-		err  error
 	)
 	if beforeUpdatedAt == "" {
 		rows, err = db.QueryContext(ctx, `
 			SELECT chats.id, chats.title, chats.created_at, chats.updated_at
 			FROM chats
-			WHERE EXISTS (
-				SELECT 1
-				FROM messages
-				WHERE messages.chat_id = chats.id
-			)
+			WHERE chats.user_id = ?
+				AND EXISTS (
+					SELECT 1
+					FROM messages
+					WHERE messages.chat_id = chats.id
+				)
 			ORDER BY chats.updated_at DESC, chats.id DESC
 			LIMIT ?
-		`, limit)
+		`, userID, limit)
 	} else {
 		rows, err = db.QueryContext(ctx, `
 			SELECT chats.id, chats.title, chats.created_at, chats.updated_at
 			FROM chats
-			WHERE EXISTS (
-				SELECT 1
-				FROM messages
-				WHERE messages.chat_id = chats.id
-			)
+			WHERE chats.user_id = ?
+				AND EXISTS (
+					SELECT 1
+					FROM messages
+					WHERE messages.chat_id = chats.id
+				)
 				AND (chats.updated_at < ? OR (chats.updated_at = ? AND chats.id < ?))
 			ORDER BY chats.updated_at DESC, chats.id DESC
 			LIMIT ?
-		`, beforeUpdatedAt, beforeUpdatedAt, beforeID, limit)
+		`, userID, beforeUpdatedAt, beforeUpdatedAt, beforeID, limit)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get chats page: %w", err)
@@ -131,18 +137,24 @@ func loadChatTools(ctx context.Context, db *sql.DB, chats []Chat) error {
 	if len(chats) == 0 {
 		return nil
 	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("get tools for chats: %w", err)
+	}
 	indexes := make(map[int64]int, len(chats))
-	arguments := make([]any, len(chats))
+	arguments := make([]any, 0, len(chats)+1)
+	arguments = append(arguments, userID)
 	for index := range chats {
 		indexes[chats[index].ID] = index
-		arguments[index] = chats[index].ID
+		arguments = append(arguments, chats[index].ID)
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chats)), ",")
 	rows, err := db.QueryContext(ctx, `
-		SELECT chat_id, name
-		FROM chat_tools
-		WHERE chat_id IN (`+placeholders+`)
-		ORDER BY chat_id, position
+		SELECT tools.chat_id, tools.name
+		FROM chat_tools AS tools
+		JOIN chats ON chats.id = tools.chat_id AND chats.user_id = ?
+		WHERE tools.chat_id IN (`+placeholders+`)
+		ORDER BY tools.chat_id, tools.position
 	`, arguments...)
 	if err != nil {
 		return fmt.Errorf("get tools for chats: %w", err)
@@ -167,7 +179,27 @@ func loadChatTools(ctx context.Context, db *sql.DB, chats []Chat) error {
 // GetChatTools returns enabled tool names for a chat.
 // Missing chats return an empty list.
 func GetChatTools(ctx context.Context, db *sql.DB, chatID int64) ([]string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT name FROM chat_tools WHERE chat_id = ? ORDER BY position`, chatID)
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get chat tools: %w", err)
+	}
+	access, err := chatAccessFor(ctx, db, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("get chat tools: %w", err)
+	}
+	if access == chatForeign {
+		return nil, ErrChatNotFound
+	}
+	if access == chatMissing {
+		return []string{}, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT tools.name
+		FROM chat_tools AS tools
+		JOIN chats ON chats.id = tools.chat_id AND chats.user_id = ?
+		WHERE tools.chat_id = ?
+		ORDER BY tools.position
+	`, userID, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("get chat tools: %w", err)
 	}
@@ -189,12 +221,27 @@ func GetChatTools(ctx context.Context, db *sql.DB, chatID int64) ([]string, erro
 // GetChatPromptAppendIDs returns selected prompt append IDs for a chat.
 // Missing chats return an empty list.
 func GetChatPromptAppendIDs(ctx context.Context, db *sql.DB, chatID int64) ([]string, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get chat prompt append IDs: %w", err)
+	}
+	access, err := chatAccessFor(ctx, db, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("get chat prompt append IDs: %w", err)
+	}
+	if access == chatForeign {
+		return nil, ErrChatNotFound
+	}
+	if access == chatMissing {
+		return []string{}, nil
+	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT prompt_append_id
-		FROM chat_prompt_appends
-		WHERE chat_id = ?
-		ORDER BY position
-	`, chatID)
+		SELECT appends.prompt_append_id
+		FROM chat_prompt_appends AS appends
+		JOIN chats ON chats.id = appends.chat_id AND chats.user_id = ?
+		WHERE appends.chat_id = ?
+		ORDER BY appends.position
+	`, userID, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("get chat prompt append IDs: %w", err)
 	}
@@ -240,6 +287,17 @@ func GetMessageSnapshot(ctx context.Context, db *sql.DB, chatID int64) (MessageS
 }
 
 func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (MessageSnapshot, error) {
+	access, err := chatAccessFor(ctx, db, chatID)
+	if err != nil {
+		return MessageSnapshot{}, fmt.Errorf("get messages: %w", err)
+	}
+	if access == chatForeign {
+		return MessageSnapshot{}, ErrChatNotFound
+	}
+	if access == chatMissing {
+		return MessageSnapshot{chatID: chatID, version: messageVersion{lastPosition: -1}}, nil
+	}
+
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, position, role, content, model, total_tokens, cost, tool_call_id
 		FROM messages
