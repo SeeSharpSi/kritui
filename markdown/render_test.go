@@ -47,6 +47,28 @@ func TestRenderSanitizesHTML(t *testing.T) {
 	}
 }
 
+func TestRenderPreservesAttachmentCitationLinks(t *testing.T) {
+	content := "[page 3](/chats/1/messages/2/attachments/0#page=3)\n\n[relative](notes.pdf)"
+	var output bytes.Buffer
+
+	if err := Render(content).Render(context.Background(), &output); err != nil {
+		t.Fatalf("render Markdown: %v", err)
+	}
+
+	rendered := output.String()
+	for _, want := range []string{
+		`href="/chats/1/messages/2/attachments/0#page=3"`,
+		`href="notes.pdf"`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered Markdown does not contain %q: %s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, `target="_blank"`) {
+		t.Errorf("rendered relative links were forced to open in a new tab: %s", rendered)
+	}
+}
+
 func TestRenderOpensExternalLinksInNewTab(t *testing.T) {
 	var output bytes.Buffer
 

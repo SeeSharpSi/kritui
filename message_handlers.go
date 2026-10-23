@@ -489,6 +489,7 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 	conversation, err := llm.NewConversation(client, conversationRegistry, llm.PromptContext{
 		CurrentTime:    time.Now(),
 		ClientLocation: clientLocation(clientTimezone),
+		PDFLinks:       pdfPromptLinks(request.chatID, messages),
 	}, conversationMessages...)
 	if err != nil {
 		log.Printf("configure conversation: %v", err)
@@ -1025,6 +1026,29 @@ func messagesHaveImageAttachments(messages []llm.Message) bool {
 		}
 	}
 	return false
+}
+
+// pdfPromptLinks lists PDFs from the active conversation so the model can cite
+// their canonical attachment URLs. Attachment indices include mixed images and
+// PDFs, matching the stored positions served by the attachment endpoint.
+func pdfPromptLinks(chatID int64, messages []llm.Message) []llm.PDFLink {
+	chat := strconv.FormatInt(chatID, 10)
+	var links []llm.PDFLink
+	for _, message := range messages {
+		if message.Role != "user" || message.ID <= 0 {
+			continue
+		}
+		for index, attachment := range message.Attachments {
+			if attachment.MediaType != "application/pdf" {
+				continue
+			}
+			links = append(links, llm.PDFLink{
+				Filename: attachment.Filename,
+				URL:      templates.MessageAttachmentURL(chat, message.ID, index),
+			})
+		}
+	}
+	return links
 }
 
 func modelKnownUnsupported(ctx context.Context, config kritui_db.LLMConfig, model, sessionID string) bool {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -599,6 +600,153 @@ func TestMessageAttachmentHandlerRejectsInvalidPathValues(t *testing.T) {
 			}
 			requireAttachmentNotLeaked(t, response, privatePDFName, "INVALID-PATH-PRIVATE-BYTES")
 		})
+	}
+}
+
+func TestMessageCompletionIncludesActivePDFPromptLinks(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := kritui_db.WithUser(context.Background(), kritui_db.LegacyOwnerID)
+	const chatID int64 = 79
+	seedCurrentChat(t, database, chatID)
+
+	pdf := testPDFBytes()
+	png := testImageBytes(t, "png", 1, 1)
+	hiddenID, err := kritui_db.InsertMessage(ctx, database, chatID, 0, llm.Message{
+		Role:    "user",
+		Content: "Hidden PDF turn",
+		Attachments: []llm.UserAttachment{{
+			Filename: "hidden-private.pdf", MediaType: "application/pdf", Data: pdf,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("insert hidden PDF message: %v", err)
+	}
+	if _, err := kritui_db.UndoLatestTurn(ctx, database, chatID); err != nil {
+		t.Fatalf("hide PDF message: %v", err)
+	}
+
+	earlierID, err := kritui_db.InsertMessage(ctx, database, chatID, 1, llm.Message{
+		Role:    "user",
+		Content: "Earlier files",
+		Attachments: []llm.UserAttachment{
+			{Filename: "earlier-image.png", MediaType: "image/png", Width: 1, Height: 1, Data: png},
+			{Filename: "shared-report.pdf", MediaType: "application/pdf", Data: pdf},
+			{Filename: "earlier-image-two.png", MediaType: "image/png", Width: 1, Height: 1, Data: png},
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert earlier message: %v", err)
+	}
+	latestID, err := kritui_db.InsertMessage(ctx, database, chatID, 2, llm.Message{
+		Role:    "user",
+		Content: "Latest files",
+		Attachments: []llm.UserAttachment{
+			{Filename: "shared-report.pdf", MediaType: "application/pdf", Data: pdf},
+			{Filename: "latest-image.png", MediaType: "image/png", Width: 1, Height: 1, Data: png},
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert latest message: %v", err)
+	}
+
+	snapshot, err := kritui_db.GetMessageSnapshot(ctx, database, chatID)
+	if err != nil {
+		t.Fatalf("get active snapshot: %v", err)
+	}
+	if len(snapshot.Messages) != 2 || snapshot.Messages[0].ID != earlierID || snapshot.Messages[1].ID != latestID {
+		t.Fatalf("active messages = %#v, want persisted IDs %d and %d", snapshot.Messages, earlierID, latestID)
+	}
+
+	type completionRequest struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	requests := make(chan completionRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, `{"data":[{"id":"vision-model","capabilities":{"image_input":{"supported":true}}}]}`)
+			return
+		}
+		var request completionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		requests <- request
+		_, _ = io.WriteString(w, `{"model":"vision-model","choices":[{"message":{"role":"assistant","content":"Answer"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "vision-model")
+	t.Setenv("LLM_ENDPOINT", server.URL+"/v1/chat/completions")
+
+	toolCalls := newToolCallStore()
+	response := completeForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), toolCalls,
+		fmt.Sprintf("/messages/complete?chat=%d", chatID), url.Values{
+			"model":   {"vision-model"},
+			"request": {newToolCallRequest(t, toolCalls, chatID)},
+		})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Answer") {
+		t.Fatalf("completion status = %d, body = %q, want rendered answer", response.Code, response.Body.String())
+	}
+
+	request := <-requests
+	var systemPrompt string
+	for _, message := range request.Messages {
+		if message.Role == "system" {
+			systemPrompt, _ = message.Content.(string)
+			break
+		}
+	}
+	if systemPrompt == "" {
+		t.Fatalf("provider request has no system prompt: %#v", request.Messages)
+	}
+	if count := strings.Count(systemPrompt, "## PDF attachments"); count != 1 {
+		t.Errorf("PDF metadata section count = %d, want 1: %q", count, systemPrompt)
+	}
+	if count := strings.Count(systemPrompt, "\n- Filename:"); count != 2 {
+		t.Errorf("PDF metadata entry count = %d, want 2: %q", count, systemPrompt)
+	}
+
+	earlierURL := fmt.Sprintf("/chats/%d/messages/%d/attachments/1", chatID, earlierID)
+	latestURL := fmt.Sprintf("/chats/%d/messages/%d/attachments/0", chatID, latestID)
+	hiddenURL := fmt.Sprintf("/chats/%d/messages/%d/attachments/0", chatID, hiddenID)
+	requireContains(t, systemPrompt,
+		fmt.Sprintf(`Filename: "shared-report.pdf"; URL: %s`, earlierURL),
+		fmt.Sprintf(`Filename: "shared-report.pdf"; URL: %s`, latestURL),
+	)
+	requireNotContains(t, systemPrompt,
+		hiddenURL,
+		"hidden-private.pdf",
+		fmt.Sprintf("/chats/%d/messages/%d/attachments/0", chatID, earlierID),
+		fmt.Sprintf("/chats/%d/messages/%d/attachments/2", chatID, earlierID),
+		fmt.Sprintf("/chats/%d/messages/%d/attachments/1", chatID, latestID),
+		"earlier-image.png",
+		"earlier-image-two.png",
+		"latest-image.png",
+	)
+}
+
+func TestPDFPromptLinksSkipsNonUserAndUnstoredMessages(t *testing.T) {
+	pdf := llm.UserAttachment{Filename: "report.pdf", MediaType: "application/pdf", Data: testPDFBytes()}
+	png := llm.UserAttachment{Filename: "image.png", MediaType: "image/png", Width: 1, Height: 1, Data: testImageBytes(t, "png", 1, 1)}
+	messages := []llm.Message{
+		{ID: 0, Role: "user", Attachments: []llm.UserAttachment{pdf}},
+		{ID: 4, Role: "assistant", Attachments: []llm.UserAttachment{pdf}},
+		{ID: 5, Role: "user", Attachments: []llm.UserAttachment{png}},
+		{ID: 6, Role: "user", Attachments: []llm.UserAttachment{png, pdf}},
+	}
+
+	links := pdfPromptLinks(9, messages)
+	if len(links) != 1 {
+		t.Fatalf("pdfPromptLinks() = %#v, want one PDF link", links)
+	}
+	want := llm.PDFLink{Filename: "report.pdf", URL: "/chats/9/messages/6/attachments/1"}
+	if links[0] != want {
+		t.Errorf("pdfPromptLinks()[0] = %#v, want %#v", links[0], want)
 	}
 }
 

@@ -827,24 +827,68 @@ function pdfViewerName(dialog = pdfViewerDialog()) {
     return dialog?.querySelector('#pdf-viewer-name') ?? null;
 }
 
+const pdfCitationPathPattern = /^\/chats\/[1-9]\d*\/messages\/[1-9]\d*\/attachments\/\d+$/;
+
+function pdfCitationURL(anchor) {
+    if (!(anchor instanceof HTMLAnchorElement) || !anchor.closest('.message-content.markdown')) {
+        return null;
+    }
+    let url;
+    try {
+        url = new URL(anchor.getAttribute('href') ?? '', window.location.href);
+    } catch {
+        return null;
+    }
+    if (url.origin !== window.location.origin || !pdfCitationPathPattern.test(url.pathname)) {
+        return null;
+    }
+    return url;
+}
+
+function isPlainPrimaryClick(event) {
+    return event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey;
+}
+
 function pdfViewerTriggerFor(target) {
-    return target instanceof Element ? target.closest('button[data-pdf-viewer]') : null;
+    if (!(target instanceof Element)) {
+        return null;
+    }
+    const button = target.closest('button[data-pdf-viewer]');
+    if (button) {
+        return button;
+    }
+    const anchor = target.closest('.message-content.markdown a[href]');
+    return anchor && pdfCitationURL(anchor) ? anchor : null;
 }
 
 function openPdfViewer(trigger) {
-    if (!(trigger instanceof HTMLButtonElement)) {
-        return;
-    }
     const dialog = pdfViewerDialog();
     const frame = pdfViewerFrame(dialog);
     const link = pdfViewerOpenLink(dialog);
     const nameElement = pdfViewerName(dialog);
-    const url = trigger.dataset.pdfUrl;
-    if (!dialog || !frame || !link || !url) {
+    if (!dialog || !frame || !link) {
         return;
     }
 
-    const name = trigger.dataset.pdfName || trigger.title || 'Attached PDF';
+    let url;
+    let name;
+    if (trigger instanceof HTMLButtonElement) {
+        url = trigger.dataset.pdfUrl;
+        name = trigger.dataset.pdfName || trigger.title || 'Attached PDF';
+    } else if (trigger instanceof HTMLAnchorElement) {
+        const citationURL = pdfCitationURL(trigger);
+        if (!citationURL) {
+            return;
+        }
+        url = citationURL.href;
+        name = trigger.dataset.pdfName || trigger.title || trigger.textContent.trim() || 'Attached PDF';
+    } else {
+        return;
+    }
+    if (!url) {
+        return;
+    }
+
     const wasOpen = dialog.open;
     pdfViewer.trigger = trigger;
     pdfViewer.restoreFocus = true;
@@ -1670,6 +1714,9 @@ document.addEventListener('click', (event) => {
 
     const pdfViewerTrigger = pdfViewerTriggerFor(event.target);
     if (pdfViewerTrigger) {
+        if (pdfViewerTrigger instanceof HTMLAnchorElement && !isPlainPrimaryClick(event)) {
+            return;
+        }
         event.preventDefault();
         openPdfViewer(pdfViewerTrigger);
         return;

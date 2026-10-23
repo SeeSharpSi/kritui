@@ -32,7 +32,8 @@ func userAttachmentLabel(attachment llm.UserAttachment) string {
 	return "Attached image"
 }
 
-func messageAttachmentURL(chatID string, messageID int64, index int) string {
+// MessageAttachmentURL returns the authenticated URL for one message attachment.
+func MessageAttachmentURL(chatID string, messageID int64, index int) string {
 	return "/chats/" + chatID + "/messages/" + strconv.FormatInt(messageID, 10) + "/attachments/" + strconv.Itoa(index)
 }
 
@@ -146,7 +147,7 @@ templ UserMessage(chatID string, message llm.Message) {
 								class="message-attachment-pdf"
 								title={ userAttachmentLabel(attachment) }
 								data-pdf-viewer
-								data-pdf-url={ messageAttachmentURL(chatID, message.ID, index) }
+								data-pdf-url={ MessageAttachmentURL(chatID, message.ID, index) }
 								data-pdf-name={ userAttachmentLabel(attachment) }
 								aria-haspopup="dialog"
 								aria-controls="pdf-viewer"
