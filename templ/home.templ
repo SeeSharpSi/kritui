@@ -35,34 +35,10 @@ type HomeData struct {
 	Theme                    themes.Theme
 }
 
-templ AppHeader(section string) {
-	<header class="app-header">
-		<span class="brand-mark" aria-hidden="true">
-			<svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 5a5 5 0 0 0 0 10Z" fill="currentColor"></path></svg>
-		</span>
-		<span class="brand-name">Kritui</span>
-		<span class="brand-section">{ section }</span>
-		<div class="app-context">
-			{ children... }
-		</div>
-	</header>
-}
-
 templ Home(data HomeData) {
 	@Layout("Kritui", data.Theme) {
 		<main class="app-main">
 			<div class="shell-scroll">
-				@AppHeader("Chat") {
-					<span class="context-chat" id="chat-summary" hx-get={ "/chats/" + data.ChatID + "/summary" } hx-trigger="load, chat-updated from:body" hx-swap="innerHTML" hx-sync="this:replace" hx-indicator="none" hx-status:4xx="swap:none" hx-status:5xx="swap:none">
-						if len(data.Messages) == 0 {
-							New chat · 0 messages
-						} else {
-							Conversation
-						}
-					</span>
-					<span class="context-settings">Settings</span>
-					<span class="context-history">History<span id="history-summary-count"></span></span>
-				}
 				<div class="shell-viewport">
 					<section class="chat">
 						<div class="message-panel">

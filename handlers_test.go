@@ -409,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=35`,
-		`/static/hx-sse.js?v=35`,
-		`/static/app.js?v=35`,
-		`/static/styles.css?v=35`,
+		`/static/htmx.min.js?v=36`,
+		`/static/hx-sse.js?v=36`,
+		`/static/app.js?v=36`,
+		`/static/styles.css?v=36`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -445,7 +445,8 @@ func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	requireContains(t, response.Body.String(), "No messages yet", "Empty thread", `id="chat-summary"`, `hx-get="/chats/8/summary"`)
+	requireContains(t, response.Body.String(), "No messages yet", "KRITUI")
+	requireNotContains(t, response.Body.String(), `class="app-header"`, `id="chat-summary"`, `hx-get="/chats/8/summary"`)
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?")
 }
 

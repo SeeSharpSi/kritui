@@ -100,7 +100,7 @@ main {
 
     &.app-main {
         .shell-scroll {
-            --shell-header-space: 76px;
+            --shell-header-space: 0px;
             --shell-scroll-offset: 0px;
             flex: 1;
             min-height: 0;
@@ -116,11 +116,6 @@ main {
             &::-webkit-scrollbar {
                 display: none;
             }
-        }
-
-        > .shell-scroll > .app-header {
-            flex: 0 0 60px;
-            margin-bottom: 16px;
         }
 
         .shell-viewport {
