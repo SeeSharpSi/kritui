@@ -9,20 +9,36 @@ import (
 	"seesharpsi/kritui/markdown"
 )
 
-func userImageDataURL(image llm.UserImage) templ.SafeURL {
-	switch image.MediaType {
+func isPDFAttachment(attachment llm.UserAttachment) bool {
+	return attachment.MediaType == "application/pdf"
+}
+
+func userAttachmentDataURL(attachment llm.UserAttachment) templ.SafeURL {
+	switch attachment.MediaType {
 	case "image/png", "image/jpeg", "image/webp":
-		return templ.SafeURL("data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data))
+		return templ.SafeURL("data:" + attachment.MediaType + ";base64," + base64.StdEncoding.EncodeToString(attachment.Data))
 	default:
 		return templ.SafeURL("")
 	}
 }
 
-func userImageLabel(image llm.UserImage) string {
-	if image.Filename == "" {
-		return "Attached image"
+func userAttachmentLabel(attachment llm.UserAttachment) string {
+	if attachment.Filename != "" {
+		return attachment.Filename
 	}
-	return image.Filename
+	if isPDFAttachment(attachment) {
+		return "Attached PDF"
+	}
+	return "Attached image"
+}
+
+func messageHasPDF(attachments []llm.UserAttachment) bool {
+	for _, attachment := range attachments {
+		if isPDFAttachment(attachment) {
+			return true
+		}
+	}
+	return false
 }
 
 func messageEditErrorID(messageID int64) string {
@@ -116,11 +132,16 @@ templ Messages(chatID string, messages ...llm.Message) {
 
 templ UserMessage(chatID string, message llm.Message) {
 	<article class="message user" id={ "message-" + strconv.FormatInt(message.ID, 10) }>
-		if len(message.Images) > 0 {
-			<div class="message-images" aria-label="Attached images">
-				for _, image := range message.Images {
-					if src := userImageDataURL(image); src != "" {
-						<img class="message-image" src={ src } alt={ userImageLabel(image) } title={ userImageLabel(image) } loading="lazy" decoding="async"/>
+		if len(message.Attachments) > 0 {
+			<div class={ "message-images", "message-attachments", templ.KV("attachments-static", messageHasPDF(message.Attachments)) } aria-label="Attached files">
+				for _, attachment := range message.Attachments {
+					if isPDFAttachment(attachment) {
+						<div class="message-attachment-pdf" title={ userAttachmentLabel(attachment) }>
+							<span class="message-attachment-pdf-label">PDF</span>
+							<span class="message-attachment-pdf-name">{ userAttachmentLabel(attachment) }</span>
+						</div>
+					} else if src := userAttachmentDataURL(attachment); src != "" {
+						<img class="message-image" src={ src } alt={ userAttachmentLabel(attachment) } title={ userAttachmentLabel(attachment) } loading="lazy" decoding="async"/>
 					}
 				}
 			</div>

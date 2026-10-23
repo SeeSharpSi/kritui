@@ -67,50 +67,149 @@ func TestAppendCompletionUsesStoredLastPosition(t *testing.T) {
 	}
 }
 
-func TestMessageImagesRoundTripAndSnapshotConflict(t *testing.T) {
+func TestMessageAttachmentsRoundTripAndSnapshotConflict(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
 	_, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []llm.UserImage{{Filename: "b.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{1, 2}}, {Filename: "a.jpg", MediaType: "image/jpeg", Data: []byte{3}}}
-	if _, err := InsertMessage(context.Background(), database, 1, 0, llm.Message{Role: "user", Images: want}); err != nil {
+	want := []llm.UserAttachment{{Filename: "b.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{1, 2}}, {Filename: "a.jpg", MediaType: "image/jpeg", Data: []byte{3}}}
+	if _, err := InsertMessage(context.Background(), database, 1, 0, llm.Message{Role: "user", Attachments: want}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := GetMessageSnapshot(context.Background(), database, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(snapshot.Messages[0].Images[0].Data, want[0].Data) || snapshot.Messages[0].Images[1].Filename != "a.jpg" {
-		t.Fatalf("images round trip: %#v", snapshot.Messages[0].Images)
+	if !slices.Equal(snapshot.Messages[0].Attachments[0].Data, want[0].Data) || snapshot.Messages[0].Attachments[1].Filename != "a.jpg" {
+		t.Fatalf("attachments round trip: %#v", snapshot.Messages[0].Attachments)
 	}
 	var typ string
 	if err := database.QueryRow(`SELECT typeof(data) FROM message_user_images WHERE position = 0`).Scan(&typ); err != nil || typ != "blob" {
-		t.Fatalf("typeof image data = %q, %v", typ, err)
+		t.Fatalf("typeof attachment data = %q, %v", typ, err)
 	}
 	if _, err := database.Exec(`UPDATE message_user_images SET data = ? WHERE position = 0`, []byte{9}); err != nil {
 		t.Fatal(err)
 	}
 	if err := AppendCompletion(context.Background(), database, 1, snapshot, []llm.Message{{Role: "assistant", Content: "x"}}); !errors.Is(err, ErrConversationConflict) {
-		t.Fatalf("image mutation error = %v", err)
+		t.Fatalf("attachment mutation error = %v", err)
 	}
 }
 
-func TestInsertMessageRejectsInvalidImagesAtomically(t *testing.T) {
+func TestMessagePDFAttachmentRoundTripAndSnapshotConflict(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	pdf := []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n")
+	want := []llm.UserAttachment{
+		{Filename: "diagram.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{1, 2}},
+		{Filename: "report.pdf", MediaType: "application/pdf", Data: pdf},
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 0, llm.Message{Role: "user", Attachments: want}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := snapshot.Messages[0].Attachments
+	if len(got) != 2 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("attachments round trip = %#v, want %#v", got, want)
+	}
+	var mediaType string
+	var width, height int
+	if err := database.QueryRow(`
+		SELECT media_type, width, height
+		FROM message_user_images
+		WHERE position = 1
+	`).Scan(&mediaType, &width, &height); err != nil {
+		t.Fatal(err)
+	}
+	if mediaType != "application/pdf" || width != 0 || height != 0 {
+		t.Fatalf("stored PDF = %q %dx%d, want application/pdf 0x0", mediaType, width, height)
+	}
+	if _, err := database.Exec(`UPDATE message_user_images SET data = ? WHERE position = 1`, []byte("%PDF-2.0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendCompletion(context.Background(), database, 1, snapshot, []llm.Message{{Role: "assistant", Content: "x"}}); !errors.Is(err, ErrConversationConflict) {
+		t.Fatalf("PDF mutation error = %v, want conversation conflict", err)
+	}
+}
+
+func TestMessagePDFAttachmentPreservedByEditUndoRedo(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	pdf := llm.UserAttachment{Filename: "report.pdf", MediaType: "application/pdf", Data: []byte("%PDF-1.7\n%%EOF\n")}
+	if _, err := InsertMessage(context.Background(), database, 1, 0, llm.Message{Role: "user", Content: "earlier"}); err != nil {
+		t.Fatalf("insert earlier user: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 1, llm.Message{Role: "assistant", Content: "earlier answer"}); err != nil {
+		t.Fatalf("insert earlier assistant: %v", err)
+	}
+	targetID, err := InsertMessage(context.Background(), database, 1, 2, llm.Message{Role: "user", Content: "latest", Attachments: []llm.UserAttachment{pdf}})
+	if err != nil {
+		t.Fatalf("insert latest user: %v", err)
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 3, llm.Message{Role: "assistant", Content: "latest answer"}); err != nil {
+		t.Fatalf("insert latest assistant: %v", err)
+	}
+
+	if err := ReplaceUserMessage(context.Background(), database, 1, targetID, llm.Message{Role: "user", Content: "edited"}); err != nil {
+		t.Fatalf("ReplaceUserMessage() error: %v", err)
+	}
+	messages, err := GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 || messages[2].ID != targetID || !reflect.DeepEqual(messages[2].Attachments, []llm.UserAttachment{pdf}) {
+		t.Fatalf("attachment after edit = %#v", messages)
+	}
+
+	result, err := UndoLatestTurn(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("UndoLatestTurn() error: %v", err)
+	}
+	if slices.ContainsFunc(result.Messages, func(message llm.Message) bool { return len(message.Attachments) > 0 }) {
+		t.Fatal("undone PDF visible in active messages")
+	}
+	messages, err = RedoLatestTurn(context.Background(), database, 1)
+	if err != nil {
+		t.Fatalf("RedoLatestTurn() error: %v", err)
+	}
+	if len(messages) != 3 || !reflect.DeepEqual(messages[2].Attachments, []llm.UserAttachment{pdf}) {
+		t.Fatalf("attachment after redo = %#v", messages)
+	}
+
+	if _, err := UndoLatestTurn(context.Background(), database, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := DiscardUndoneMessages(context.Background(), database, 1); err != nil {
+		t.Fatal(err)
+	}
+	var attachmentRows int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM message_user_images`).Scan(&attachmentRows); err != nil || attachmentRows != 0 {
+		t.Fatalf("attachment rows after discard = %d, err=%v; want 0", attachmentRows, err)
+	}
+}
+
+func TestInsertMessageRejectsInvalidAttachmentsAtomically(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
 	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
 		t.Fatal(err)
 	}
 	tests := []llm.Message{
-		{Role: "assistant", Images: []llm.UserImage{{MediaType: "x", Data: []byte{1}}}},
-		{Role: "user", Images: []llm.UserImage{{MediaType: "", Data: []byte{1}}}},
-		{Role: "user", Images: []llm.UserImage{{MediaType: "x"}}},
-		{Role: "user", Images: []llm.UserImage{{MediaType: "x", Width: -1, Data: []byte{1}}}},
-		{Role: "user", Images: []llm.UserImage{{MediaType: "x", Height: -1, Data: []byte{1}}}},
+		{Role: "assistant", Attachments: []llm.UserAttachment{{MediaType: "x", Data: []byte{1}}}},
+		{Role: "user", Attachments: []llm.UserAttachment{{MediaType: "", Data: []byte{1}}}},
+		{Role: "user", Attachments: []llm.UserAttachment{{MediaType: "x"}}},
+		{Role: "user", Attachments: []llm.UserAttachment{{MediaType: "x", Width: -1, Data: []byte{1}}}},
+		{Role: "user", Attachments: []llm.UserAttachment{{MediaType: "x", Height: -1, Data: []byte{1}}}},
 	}
 	for _, message := range tests {
 		if _, err := InsertMessage(context.Background(), database, 1, 0, message); err == nil {
-			t.Fatalf("invalid image accepted: %#v", message)
+			t.Fatalf("invalid attachment accepted: %#v", message)
 		}
 		var count int
 		if err := database.QueryRow(`SELECT count(*) FROM messages`).Scan(&count); err != nil || count != 0 {
@@ -369,7 +468,7 @@ func TestReplaceUserMessageKeepsTargetAndTruncatesLaterMessages(t *testing.T) {
 		Role:              "user",
 		Content:           "original",
 		PromptAppendTexts: []string{"old append"},
-		Images:            []llm.UserImage{{Filename: "target.png", MediaType: "image/png", Width: 4, Height: 5, Data: []byte{1, 2, 3}}},
+		Attachments:       []llm.UserAttachment{{Filename: "target.png", MediaType: "image/png", Width: 4, Height: 5, Data: []byte{1, 2, 3}}},
 	})
 	if err != nil {
 		t.Fatalf("insert edit target: %v", err)
@@ -390,7 +489,7 @@ func TestReplaceUserMessageKeepsTargetAndTruncatesLaterMessages(t *testing.T) {
 		Role:              "user",
 		Content:           "discarded follow-up",
 		PromptAppendTexts: []string{"discarded append"},
-		Images:            []llm.UserImage{{Filename: "later.png", MediaType: "image/png", Data: []byte{4, 5}}},
+		Attachments:       []llm.UserAttachment{{Filename: "later.png", MediaType: "image/png", Data: []byte{4, 5}}},
 	}); err != nil {
 		t.Fatalf("insert discarded user: %v", err)
 	}
@@ -413,7 +512,7 @@ func TestReplaceUserMessageKeepsTargetAndTruncatesLaterMessages(t *testing.T) {
 	if messages[0].Content != "earlier" || messages[1].Content != "earlier answer" {
 		t.Errorf("earlier messages changed: %#v", messages[:2])
 	}
-	if messages[2].ID != targetID || messages[2].Content != "edited" || !slices.Equal(messages[2].PromptAppendTexts, []string{"new append"}) || !reflect.DeepEqual(messages[2].Images, []llm.UserImage{{Filename: "target.png", MediaType: "image/png", Width: 4, Height: 5, Data: []byte{1, 2, 3}}}) {
+	if messages[2].ID != targetID || messages[2].Content != "edited" || !slices.Equal(messages[2].PromptAppendTexts, []string{"new append"}) || !reflect.DeepEqual(messages[2].Attachments, []llm.UserAttachment{{Filename: "target.png", MediaType: "image/png", Width: 4, Height: 5, Data: []byte{1, 2, 3}}}) {
 		t.Errorf("edited message = %#v, want stable ID %d, edited content, and new append", messages[2], targetID)
 	}
 	var position, toolCalls, promptAppends int
@@ -428,23 +527,23 @@ func TestReplaceUserMessageKeepsTargetAndTruncatesLaterMessages(t *testing.T) {
 	if position != 2 || toolCalls != 0 || promptAppends != 1 {
 		t.Errorf("edited rows = position %d, tool calls %d, appends %d; want 2, 0, 1", position, toolCalls, promptAppends)
 	}
-	var imageRows int
-	if err := database.QueryRow(`SELECT COUNT(*) FROM message_user_images`).Scan(&imageRows); err != nil || imageRows != 1 {
-		t.Fatalf("image rows after replacement = %d, err=%v; want target image only", imageRows, err)
+	var attachmentRows int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM message_user_images`).Scan(&attachmentRows); err != nil || attachmentRows != 1 {
+		t.Fatalf("attachment rows after replacement = %d, err=%v; want target attachment only", attachmentRows, err)
 	}
 	before, err := GetMessages(context.Background(), database, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ReplaceUserMessage(context.Background(), database, 1, targetID, llm.Message{Role: "user", Content: "must reject", Images: []llm.UserImage{{MediaType: "image/png", Data: []byte{9}}}}); err == nil {
-		t.Fatal("replacement images accepted")
+	if err := ReplaceUserMessage(context.Background(), database, 1, targetID, llm.Message{Role: "user", Content: "must reject", Attachments: []llm.UserAttachment{{MediaType: "image/png", Data: []byte{9}}}}); err == nil {
+		t.Fatal("replacement attachments accepted")
 	}
 	after, err := GetMessages(context.Background(), database, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, after) {
-		t.Fatalf("history changed after rejected image replacement")
+		t.Fatalf("history changed after rejected attachment replacement")
 	}
 }
 
@@ -508,7 +607,7 @@ func TestUndoRedoLatestTurnPreservesStoredMessages(t *testing.T) {
 		Role:              "user",
 		Content:           "latest",
 		PromptAppendTexts: []string{"Research carefully."},
-		Images:            []llm.UserImage{{Filename: "latest.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{7, 8}}},
+		Attachments:       []llm.UserAttachment{{Filename: "latest.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{7, 8}}},
 	})
 	if err != nil {
 		t.Fatalf("insert latest user: %v", err)
@@ -543,8 +642,8 @@ func TestUndoRedoLatestTurnPreservesStoredMessages(t *testing.T) {
 	if len(result.Messages) != 2 || result.Messages[1].Content != "earlier answer" {
 		t.Fatalf("active messages after undo = %#v", result.Messages)
 	}
-	if slices.ContainsFunc(result.Messages, func(message llm.Message) bool { return len(message.Images) > 0 }) {
-		t.Fatal("undone image visible in active messages")
+	if slices.ContainsFunc(result.Messages, func(message llm.Message) bool { return len(message.Attachments) > 0 }) {
+		t.Fatal("undone attachment visible in active messages")
 	}
 	var hidden, toolCalls, appends, outputs int
 	if err := database.QueryRow(`
@@ -570,7 +669,7 @@ func TestUndoRedoLatestTurnPreservesStoredMessages(t *testing.T) {
 	if len(messages) != 6 {
 		t.Fatalf("message count after redo = %d, want 6: %#v", len(messages), messages)
 	}
-	if messages[2].ID != latestID || !slices.Equal(messages[2].PromptAppendTexts, []string{"Research carefully."}) || !reflect.DeepEqual(messages[2].Images, []llm.UserImage{{Filename: "latest.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{7, 8}}}) {
+	if messages[2].ID != latestID || !slices.Equal(messages[2].PromptAppendTexts, []string{"Research carefully."}) || !reflect.DeepEqual(messages[2].Attachments, []llm.UserAttachment{{Filename: "latest.png", MediaType: "image/png", Width: 2, Height: 3, Data: []byte{7, 8}}}) {
 		t.Errorf("restored user message = %#v", messages[2])
 	}
 	if len(messages[3].ToolCalls) != 1 || messages[3].ToolCalls[0].ID != "call-1" || len(messages[3].ProviderMetadata.ResponsesOutput()) != 1 {
@@ -585,9 +684,9 @@ func TestUndoRedoLatestTurnPreservesStoredMessages(t *testing.T) {
 	if err := DiscardUndoneMessages(context.Background(), database, 1); err != nil {
 		t.Fatal(err)
 	}
-	var imageRows int
-	if err := database.QueryRow(`SELECT COUNT(*) FROM message_user_images`).Scan(&imageRows); err != nil || imageRows != 0 {
-		t.Fatalf("image rows after discard = %d, err=%v; want 0", imageRows, err)
+	var attachmentRows int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM message_user_images`).Scan(&attachmentRows); err != nil || attachmentRows != 0 {
+		t.Fatalf("attachment rows after discard = %d, err=%v; want 0", attachmentRows, err)
 	}
 }
 

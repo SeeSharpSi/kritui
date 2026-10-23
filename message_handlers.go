@@ -45,19 +45,19 @@ type persistedUserMessage struct {
 	appends []kritui_db.PromptAppend
 }
 
-type imageUploadError struct {
+type attachmentUploadError struct {
 	status  int
 	message string
 }
 
-func (e *imageUploadError) Error() string { return e.message }
+func (e *attachmentUploadError) Error() string { return e.message }
 
 const (
 	maxMessageBodyBytes    int64 = 1 << 20
 	maxMessagePostBytes    int64 = 84 << 20
-	maxImageBytes          int64 = 20 << 20
-	maxImagesRawBytes      int64 = 80 << 20
-	maxImages                    = 4
+	maxAttachmentBytes     int64 = 20 << 20
+	maxAttachmentsRawBytes int64 = 80 << 20
+	maxAttachments               = 4
 	maxImageDimension            = 8000
 	maxImagePixels               = 40_000_000
 	maxCompletionBodyBytes int64 = 16 << 10
@@ -90,10 +90,10 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 			renderMessageError(w, r, http.StatusRequestEntityTooLarge, "Message is too large.")
 			return
 		}
-		images, err := uploadedImages(r)
+		attachments, err := uploadedAttachments(r)
 		if err != nil {
 			status := http.StatusBadRequest
-			var uploadError *imageUploadError
+			var uploadError *attachmentUploadError
 			if errors.As(err, &uploadError) {
 				status = uploadError.status
 			}
@@ -102,8 +102,8 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 		}
 		parsedCommand, isCommand, err := commands.Parse(rawMessage)
 		if isCommand {
-			if len(images) > 0 {
-				renderMessageError(w, r, http.StatusBadRequest, "Slash commands cannot include images.")
+			if len(attachments) > 0 {
+				renderMessageError(w, r, http.StatusBadRequest, "Slash commands cannot include attachments.")
 				return
 			}
 			if err != nil {
@@ -135,7 +135,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 		}
 
 		message := strings.TrimSpace(rawMessage)
-		if message == "" && len(images) == 0 {
+		if message == "" && len(attachments) == 0 {
 			renderMessageError(w, r, http.StatusBadRequest, "Message is required.")
 			return
 		}
@@ -144,7 +144,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 		if !ok {
 			return
 		}
-		if len(images) > 0 {
+		if hasImageAttachments(attachments) {
 			effectiveConfig, configErr := effectiveLLMConfig(r.Context(), database)
 			if configErr == nil && modelKnownUnsupported(r.Context(), effectiveConfig, request.model, strconv.FormatInt(request.chatID, 10)) {
 				renderMessageError(w, r, http.StatusBadRequest, "Selected model does not support images.")
@@ -161,7 +161,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 			renderMessageError(w, r, http.StatusInternalServerError, "Failed to prepare message.")
 			return
 		}
-		persisted, err := persistUserMessage(r.Context(), database, request.chatID, message, images, request.toolNames, r.Form["append"])
+		persisted, err := persistUserMessage(r.Context(), database, request.chatID, message, attachments, request.toolNames, r.Form["append"])
 		if err != nil {
 			toolCalls.delete(requestID)
 			switch {
@@ -180,7 +180,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 
 		appendTexts := promptAppendTexts(persisted.appends)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		userMessage := llm.Message{ID: persisted.id, Role: "user", Content: message, Images: images, PromptAppendTexts: appendTexts}
+		userMessage := llm.Message{ID: persisted.id, Role: "user", Content: message, Attachments: attachments, PromptAppendTexts: appendTexts}
 		if err := templates.PendingSubmission(strconv.FormatInt(request.chatID, 10), requestID, userMessage, request.model, request.toolNames).Render(r.Context(), w); err != nil {
 			toolCalls.delete(requestID)
 			log.Printf("render pending message: %v", err)
@@ -199,9 +199,9 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			return
 		}
 		defer removeMultipartForm(r)
-		if images, err := uploadedImages(r); err != nil || len(images) > 0 {
+		if attachments, err := uploadedAttachments(r); err != nil || len(attachments) > 0 {
 			if err == nil {
-				err = errors.New("Images cannot be added while editing a message.")
+				err = errors.New("Attachments cannot be added while editing a message.")
 			}
 			renderMessageEditError(w, r, http.StatusBadRequest, messageID, err.Error())
 			return
@@ -400,7 +400,7 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, request message
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure model.", request.model, selectedTools))
 		return
 	}
-	if hasImages(messages) && modelKnownUnsupportedWithClient(ctx, client, request.model) {
+	if messagesHaveImageAttachments(messages) && modelKnownUnsupportedWithClient(ctx, client, request.model) {
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Selected model does not support images.", request.model, selectedTools))
 		return
 	}
@@ -727,7 +727,7 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 // cannot slip between validation and persistence, so stale references are never
 // reintroduced into chat selections. It returns the stored message ID and the
 // resolved append definitions used for rendering.
-func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, images []llm.UserImage, tools []string, appendIDs []string) (persistedUserMessage, error) {
+func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, message string, attachments []llm.UserAttachment, tools []string, appendIDs []string) (persistedUserMessage, error) {
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return persistedUserMessage{}, fmt.Errorf("begin user message transaction: %w", err)
@@ -761,7 +761,7 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	id, err := kritui_db.InsertMessage(ctx, tx, chatID, position, llm.Message{
 		Role:              "user",
 		Content:           message,
-		Images:            images,
+		Attachments:       attachments,
 		PromptAppendTexts: promptAppendTexts(selectedAppends),
 	})
 	if err != nil {
@@ -894,7 +894,7 @@ func removeMultipartForm(r *http.Request) {
 	}
 }
 
-func uploadedImages(r *http.Request) ([]llm.UserImage, error) {
+func uploadedAttachments(r *http.Request) ([]llm.UserAttachment, error) {
 	if r.MultipartForm == nil {
 		return nil, nil
 	}
@@ -904,52 +904,79 @@ func uploadedImages(r *http.Request) ([]llm.UserImage, error) {
 		}
 	}
 	files := r.MultipartForm.File["image"]
-	if len(files) > maxImages {
-		return nil, &imageUploadError{status: http.StatusRequestEntityTooLarge, message: "Too many images."}
+	if len(files) > maxAttachments {
+		return nil, &attachmentUploadError{status: http.StatusRequestEntityTooLarge, message: "Too many attachments."}
 	}
 	var total int64
-	images := make([]llm.UserImage, 0, len(files))
+	attachments := make([]llm.UserAttachment, 0, len(files))
 	for _, header := range files {
-		if header.Size > maxImageBytes {
-			return nil, &imageUploadError{status: http.StatusRequestEntityTooLarge, message: "Image is too large."}
+		if header.Size > maxAttachmentBytes {
+			return nil, &attachmentUploadError{status: http.StatusRequestEntityTooLarge, message: "Attachment is too large."}
 		}
 		file, err := header.Open()
 		if err != nil {
-			return nil, errors.New("invalid image upload")
+			return nil, errors.New("invalid attachment upload")
 		}
-		data, readErr := io.ReadAll(io.LimitReader(file, maxImageBytes+1))
+		data, readErr := io.ReadAll(io.LimitReader(file, maxAttachmentBytes+1))
 		closeErr := file.Close()
-		if readErr != nil || closeErr != nil || int64(len(data)) > maxImageBytes {
-			return nil, &imageUploadError{status: http.StatusRequestEntityTooLarge, message: "Image is too large."}
+		if readErr != nil || closeErr != nil || int64(len(data)) > maxAttachmentBytes {
+			return nil, &attachmentUploadError{status: http.StatusRequestEntityTooLarge, message: "Attachment is too large."}
 		}
 		total += int64(len(data))
-		if total > maxImagesRawBytes {
-			return nil, &imageUploadError{status: http.StatusRequestEntityTooLarge, message: "Images are too large."}
+		if total > maxAttachmentsRawBytes {
+			return nil, &attachmentUploadError{status: http.StatusRequestEntityTooLarge, message: "Attachments are too large."}
 		}
-		config, format, err := image.DecodeConfig(bytes.NewReader(data))
-		if err != nil {
-			return nil, errors.New("invalid image data")
-		}
-		if config.Width <= 0 || config.Height <= 0 || config.Width > maxImageDimension || config.Height > maxImageDimension || int64(config.Width)*int64(config.Height) > maxImagePixels {
-			return nil, errors.New("image dimensions are too large")
-		}
-		media := map[string]string{"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp"}[format]
-		if media == "" {
-			return nil, errors.New("unsupported image format")
+		var (
+			media         string
+			width, height int
+		)
+		if isPDFData(data) {
+			media = "application/pdf"
+		} else {
+			config, format, err := image.DecodeConfig(bytes.NewReader(data))
+			if err != nil {
+				return nil, errors.New("invalid attachment data")
+			}
+			if config.Width <= 0 || config.Height <= 0 || config.Width > maxImageDimension || config.Height > maxImageDimension || int64(config.Width)*int64(config.Height) > maxImagePixels {
+				return nil, errors.New("image dimensions are too large")
+			}
+			media = map[string]string{"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp"}[format]
+			if media == "" {
+				return nil, errors.New("unsupported image format")
+			}
+			width, height = config.Width, config.Height
 		}
 		name := path.Base(strings.ReplaceAll(header.Filename, `\`, "/"))
 		runes := []rune(name)
 		if len(runes) > 255 {
 			name = string(runes[:255])
 		}
-		images = append(images, llm.UserImage{Filename: name, MediaType: media, Width: config.Width, Height: config.Height, Data: data})
+		attachments = append(attachments, llm.UserAttachment{Filename: name, MediaType: media, Width: width, Height: height, Data: data})
 	}
-	return images, nil
+	return attachments, nil
 }
 
-func hasImages(messages []llm.Message) bool {
+// isPDFData detects PDF uploads by their content signature instead of trusting
+// a filename or declared media type.
+func isPDFData(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("%PDF-"))
+}
+
+// hasImageAttachments reports whether any attachment needs image-input support.
+// PDF attachments are validated by the provider and are not gated by image
+// capability metadata.
+func hasImageAttachments(attachments []llm.UserAttachment) bool {
+	for _, attachment := range attachments {
+		if strings.HasPrefix(attachment.MediaType, "image/") {
+			return true
+		}
+	}
+	return false
+}
+
+func messagesHaveImageAttachments(messages []llm.Message) bool {
 	for _, message := range messages {
-		if len(message.Images) > 0 {
+		if hasImageAttachments(message.Attachments) {
 			return true
 		}
 	}

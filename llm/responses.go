@@ -30,6 +30,9 @@ type responseTool struct {
 func (c *Client) completeResponse(ctx context.Context, endpoint endpointCandidate, messages []Message, definitions []tools.Definition) (Message, error) {
 	input := make([]any, 0, len(messages))
 	for _, message := range messages {
+		if len(message.Attachments) > 0 && message.Role != "user" {
+			return Message{}, errors.New("llm: attachments are only allowed on user messages")
+		}
 		if responseOutput := message.ProviderMetadata.ResponsesOutput(); len(responseOutput) > 0 {
 			for _, item := range responseOutput {
 				input = append(input, item)
@@ -44,16 +47,22 @@ func (c *Client) completeResponse(ctx context.Context, endpoint endpointCandidat
 				Output: message.Content,
 			})
 		default:
-			if len(message.Images) > 0 {
-				if message.Role != "user" {
-					return Message{}, errors.New("llm: images are only allowed on user messages")
-				}
-				parts := make([]any, 0, len(message.Images)+1)
-				for _, image := range message.Images {
-					if len(image.Data) == 0 || image.MediaType == "" {
-						return Message{}, errors.New("llm: image data and media type are required")
+			if len(message.Attachments) > 0 {
+				parts := make([]any, 0, len(message.Attachments)+1)
+				for _, attachment := range message.Attachments {
+					if err := validateAttachment(attachment); err != nil {
+						return Message{}, err
 					}
-					parts = append(parts, map[string]any{"type": "input_image", "image_url": "data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data), "detail": "auto"})
+					encoded := base64.StdEncoding.EncodeToString(attachment.Data)
+					if isPDFAttachment(attachment) {
+						parts = append(parts, map[string]any{
+							"type":      "input_file",
+							"filename":  attachment.Filename,
+							"file_data": "data:" + attachment.MediaType + ";base64," + encoded,
+						})
+						continue
+					}
+					parts = append(parts, map[string]any{"type": "input_image", "image_url": "data:" + attachment.MediaType + ";base64," + encoded, "detail": "auto"})
 				}
 				if message.Content != "" {
 					parts = append(parts, map[string]any{"type": "input_text", "text": message.Content})

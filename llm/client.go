@@ -58,13 +58,13 @@ var endpointDefinitions = []struct {
 // Message is one message in a chat completion conversation.
 type Message struct {
 	// ID is local storage identity and is never sent to providers.
-	ID          int64       `json:"-"`
-	Role        string      `json:"role"`
-	Content     string      `json:"content"`
-	Images      []UserImage `json:"-"`
-	Model       string      `json:"-"`
-	TotalTokens *int        `json:"-"`
-	Cost        *float64    `json:"-"`
+	ID          int64            `json:"-"`
+	Role        string           `json:"role"`
+	Content     string           `json:"content"`
+	Attachments []UserAttachment `json:"-"`
+	Model       string           `json:"-"`
+	TotalTokens *int             `json:"-"`
+	Cost        *float64         `json:"-"`
 	// PromptAppendTexts contains snapshotted append text expanded before
 	// provider requests.
 	PromptAppendTexts []string         `json:"-"`
@@ -73,13 +73,30 @@ type Message struct {
 	ProviderMetadata  ProviderMetadata `json:"-"`
 }
 
-// UserImage is validated image content attached to a user message.
-type UserImage struct {
+// UserAttachment is validated file content attached to a user message. Images
+// carry pixel dimensions; PDF attachments use zero dimensions.
+type UserAttachment struct {
 	Filename  string
 	MediaType string
 	Width     int
 	Height    int
 	Data      []byte
+}
+
+const pdfMediaType = "application/pdf"
+
+func validateAttachment(attachment UserAttachment) error {
+	if len(attachment.Data) == 0 || strings.TrimSpace(attachment.MediaType) == "" {
+		return errors.New("llm: attachment data and media type are required")
+	}
+	if isPDFAttachment(attachment) || strings.HasPrefix(attachment.MediaType, "image/") {
+		return nil
+	}
+	return fmt.Errorf("llm: unsupported attachment media type %q", attachment.MediaType)
+}
+
+func isPDFAttachment(attachment UserAttachment) bool {
+	return attachment.MediaType == pdfMediaType
 }
 
 // ImageSupport reports provider knowledge about model image input.

@@ -409,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=34`,
-		`/static/hx-sse.js?v=34`,
-		`/static/app.js?v=34`,
-		`/static/styles.css?v=34`,
+		`/static/htmx.min.js?v=35`,
+		`/static/hx-sse.js?v=35`,
+		`/static/app.js?v=35`,
+		`/static/styles.css?v=35`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -719,7 +719,7 @@ func TestMessageHandlerPersistsChatToolsAndUserMessage(t *testing.T) {
 	}
 }
 
-func TestMessageHandlerPersistsUploadedImages(t *testing.T) {
+func TestMessageHandlerPersistsUploadedAttachments(t *testing.T) {
 	database := openTestDatabase(t)
 	seedCurrentChat(t, database, 41)
 	seedCurrentChat(t, database, 42)
@@ -738,15 +738,15 @@ func TestMessageHandlerPersistsUploadedImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 1 || messages[0].Content != "" || len(messages[0].Images) != 1 {
+	if len(messages) != 1 || messages[0].Content != "" || len(messages[0].Attachments) != 1 {
 		t.Fatalf("messages = %#v", messages)
 	}
-	image := messages[0].Images[0]
-	if image.MediaType != "image/png" || image.Width != 2 || image.Height != 3 || !bytes.Equal(image.Data, pngBytes) {
-		t.Errorf("stored image = %#v", image)
+	attachment := messages[0].Attachments[0]
+	if attachment.MediaType != "image/png" || attachment.Width != 2 || attachment.Height != 3 || !bytes.Equal(attachment.Data, pngBytes) {
+		t.Errorf("stored attachment = %#v", attachment)
 	}
-	if len([]rune(image.Filename)) != 255 {
-		t.Errorf("filename = %q", image.Filename)
+	if len([]rune(attachment.Filename)) != 255 {
+		t.Errorf("filename = %q", attachment.Filename)
 	}
 	if response.Body.Len() == 0 {
 		t.Error("pending response empty")
@@ -765,7 +765,7 @@ func TestMessageHandlerPersistsUploadedImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 1 || len(messages[0].Images) != 3 || messages[0].Images[0].Filename != "first.jpg" || messages[0].Images[1].Filename != "second.png" || messages[0].Images[2].MediaType != "image/webp" || !bytes.Equal(messages[0].Images[2].Data, webpBytes) {
+	if len(messages) != 1 || len(messages[0].Attachments) != 3 || messages[0].Attachments[0].Filename != "first.jpg" || messages[0].Attachments[1].Filename != "second.png" || messages[0].Attachments[2].MediaType != "image/webp" || !bytes.Equal(messages[0].Attachments[2].Data, webpBytes) {
 		t.Fatalf("order = %#v", messages)
 	}
 }
@@ -786,7 +786,7 @@ func TestMessageHandlerNormalizesDeclaredJPEGType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 1 || len(messages[0].Images) != 1 || messages[0].Images[0].MediaType != "image/jpeg" || !bytes.Equal(messages[0].Images[0].Data, jpegBytes) {
+	if len(messages) != 1 || len(messages[0].Attachments) != 1 || messages[0].Attachments[0].MediaType != "image/jpeg" || !bytes.Equal(messages[0].Attachments[0].Data, jpegBytes) {
 		t.Fatalf("images = %#v", messages)
 	}
 }
@@ -805,7 +805,7 @@ func TestMessageHandlerRejectsInvalidImageUploads(t *testing.T) {
 		{"command", "/new", []testUpload{{"x.png", "image/png", testImageBytes(t, "png", 1, 1)}}, 400},
 		{"dimensions", "", []testUpload{{"x.png", "image/png", testImageBytes(t, "png", 8001, 1)}}, 400},
 		{"too many", "", []testUpload{{"1.png", "", testImageBytes(t, "png", 1, 1)}, {"2.png", "", testImageBytes(t, "png", 1, 1)}, {"3.png", "", testImageBytes(t, "png", 1, 1)}, {"4.png", "", testImageBytes(t, "png", 1, 1)}, {"5.png", "", testImageBytes(t, "png", 1, 1)}}, 413},
-		{"too large", "", []testUpload{{"large.png", "", bytes.Repeat([]byte("x"), int(maxImageBytes)+1)}}, 413},
+		{"too large", "", []testUpload{{"large.png", "", bytes.Repeat([]byte("x"), int(maxAttachmentBytes)+1)}}, 413},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

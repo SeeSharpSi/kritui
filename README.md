@@ -29,11 +29,17 @@ Open <http://localhost:8080> and sign in or create an account.
 
 ## Accounts
 
-Username and password login and open signup are available at `/login` and `/signup`. Each account has its own chats, history, images, undo state, settings, stored secrets, MCP servers and tokens, prompt appends, default tools, theme, and model protocol preferences. New accounts start from built-in defaults and never inherit another account's data or secrets. Completions, SSE streams, and private tool results are isolated per account.
+Username and password login and open signup are available at `/login` and `/signup`. Each account has its own chats, history, attachments, undo state, settings, stored secrets, MCP servers and tokens, prompt appends, default tools, theme, and model protocol preferences. New accounts start from built-in defaults and never inherit another account's data or secrets. Completions, SSE streams, and private tool results are isolated per account.
 
 On an existing database, legacy data stays attached to the Skrittle account (ID 1). Use the normal signup form once with the username Skrittle to set its password and claim the existing data. Usernames are case-insensitive. If Skrittle already has a password, sign in with it instead. Signing up with any other username creates a separate new account with built-in defaults; it does not receive the legacy data. There are no email flows, password reset, or account recovery yet. Multiple sessions may be active; logout revokes only the current session.
 
 PWA assets remain public before login, and the manifest keeps its identity, start URL, and scope at `/`. Login and signup pages share the manifest and mobile web-app metadata, and installed apps keep their session across relaunches. The service worker does not cache private pages or API responses. Mobile installation requires HTTPS, except for the browser localhost exception.
+
+## Attachments
+
+Use the chat's plus button to attach PNG, JPEG, WebP, or PDF files. A message can contain up to four attachments, with a limit of 20 MiB per file and 80 MiB total. Text is optional when attaching files. Remove a selected file with its preview's remove button before sending.
+
+PDFs appear as filename cards in the composer and chat history. Kritui stores their original bytes and sends them as native file or document content through Responses, Messages, or Chat Completions. The selected provider and model must support PDF input. Attachments remain available after reloading a chat, editing message text, undoing and redoing a turn, or retrying a completion.
 
 ## Docker
 

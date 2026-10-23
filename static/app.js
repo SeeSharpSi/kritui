@@ -679,15 +679,26 @@ function syncToolResultElisionControls(root = document) {
     });
 }
 
-const imageAttachmentStates = new WeakMap();
+const attachmentStates = new WeakMap();
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp']);
-const maxImageCount = 4;
-const maxImageBytes = 20 * 1024 * 1024;
-const maxImageTotalBytes = 80 * 1024 * 1024;
+const maxAttachmentCount = 4;
+const maxAttachmentBytes = 20 * 1024 * 1024;
+const maxAttachmentTotalBytes = 80 * 1024 * 1024;
 
-function acceptableImageFile(file) {
+function attachmentIsPDF(file) {
     const type = (file?.type || '').toLowerCase();
-    if (imageTypes.has(type)) {
+    if (type === 'application/pdf') {
+        return true;
+    }
+    if (type === '' || type === 'application/octet-stream') {
+        return (file?.name || '').toLowerCase().endsWith('.pdf');
+    }
+    return false;
+}
+
+function acceptableAttachmentFile(file) {
+    const type = (file?.type || '').toLowerCase();
+    if (imageTypes.has(type) || attachmentIsPDF(file)) {
         return true;
     }
     if (type === '' || type === 'application/octet-stream') {
@@ -697,79 +708,105 @@ function acceptableImageFile(file) {
     return false;
 }
 
-function imageAttachmentState(input) {
-    let state = imageAttachmentStates.get(input);
+function attachmentState(input) {
+    let state = attachmentStates.get(input);
     if (!state) {
         state = { files: [], urls: [] };
-        imageAttachmentStates.set(input, state);
+        attachmentStates.set(input, state);
     }
     return state;
 }
 
-function renderImagePreviews(input) {
-    const state = imageAttachmentState(input);
+function syncComposerMessageRequirement(input) {
+    const messageInput = input.closest('form')?.querySelector('#message');
+    if (messageInput) {
+        messageInput.required = attachmentState(input).files.length === 0;
+    }
+}
+
+function renderAttachmentPreviews(input) {
+    const state = attachmentState(input);
     state.urls.forEach((url) => URL.revokeObjectURL(url));
     state.urls = [];
     const main = input.closest('main');
     const previews = main?.querySelector('#image-previews');
-    if (!previews) {
-        return;
+    if (previews) {
+        previews.replaceChildren();
+        previews.hidden = state.files.length === 0;
     }
 
-    previews.replaceChildren();
-    previews.hidden = state.files.length === 0;
     state.files.forEach((file, index) => {
-        const name = file.name || `Image ${index + 1}`;
+        if (!previews) {
+            return;
+        }
+        const pdf = attachmentIsPDF(file);
+        const name = file.name || (pdf ? `PDF ${index + 1}` : `Image ${index + 1}`);
         const wrapper = document.createElement('div');
-        wrapper.className = 'image-preview';
-        const image = document.createElement('img');
-        image.alt = '';
-        image.title = name;
-        const url = URL.createObjectURL(file);
-        state.urls.push(url);
-        image.src = url;
+        wrapper.className = 'image-preview attachment-preview';
         const remove = document.createElement('button');
         remove.className = 'image-preview-remove';
         remove.type = 'button';
         remove.dataset.imageIndex = String(index);
         remove.setAttribute('aria-label', `Remove ${name}`);
-        remove.title = 'Remove image';
+        remove.title = 'Remove attachment';
         remove.textContent = '\u00d7';
-        wrapper.append(image, remove);
+        if (pdf) {
+            wrapper.classList.add('attachment-pdf');
+            const label = document.createElement('span');
+            label.className = 'attachment-pdf-label';
+            label.textContent = 'PDF';
+            const filename = document.createElement('span');
+            filename.className = 'attachment-pdf-name';
+            filename.textContent = name;
+            filename.title = name;
+            wrapper.append(label, filename, remove);
+        } else {
+            wrapper.classList.add('attachment-image');
+            const image = document.createElement('img');
+            image.alt = '';
+            image.title = name;
+            const url = URL.createObjectURL(file);
+            state.urls.push(url);
+            image.src = url;
+            wrapper.append(image, remove);
+        }
         previews.append(wrapper);
     });
-    previews.scrollLeft = previews.scrollWidth;
+    if (previews) {
+        previews.scrollLeft = previews.scrollWidth;
+    }
+    syncComposerMessageRequirement(input);
 }
 
-function announceImageAttachments(input, message) {
+function announceAttachments(input, message) {
     const status = input.closest('form')?.querySelector('#image-paste-status');
     if (status) {
         status.textContent = message;
     }
 }
 
-function clearImageAttachments(input) {
-    const state = imageAttachmentState(input);
+function clearAttachments(input) {
+    const state = attachmentState(input);
     state.files = [];
     input.value = '';
-    renderImagePreviews(input);
-    announceImageAttachments(input, '');
+    renderAttachmentPreviews(input);
+    announceAttachments(input, '');
 }
 
-function addImageAttachments(input, files) {
-    const state = imageAttachmentState(input);
+function addAttachments(input, files) {
+    const state = attachmentState(input);
     const accepted = [];
     const rejected = [];
     let totalBytes = state.files.reduce((total, file) => total + file.size, 0);
     files.forEach((file) => {
-        const name = file.name || 'Image';
-        if (!acceptableImageFile(file)) {
+        const name = file.name || 'Attachment';
+        if (!acceptableAttachmentFile(file)) {
             rejected.push(`${name}: unsupported type`);
-        } else if (file.size > maxImageBytes) {
+        } else if (file.size > maxAttachmentBytes) {
             rejected.push(`${name}: too large`);
-        } else if (state.files.length + accepted.length >= maxImageCount) {
-            rejected.push(`${name}: image limit reached`);
-        } else if (totalBytes + file.size > maxImageTotalBytes) {
+        } else if (state.files.length + accepted.length >= maxAttachmentCount) {
+            rejected.push(`${name}: attachment limit reached`);
+        } else if (totalBytes + file.size > maxAttachmentTotalBytes) {
             rejected.push(`${name}: total size limit reached`);
         } else {
             accepted.push(file);
@@ -777,24 +814,24 @@ function addImageAttachments(input, files) {
         }
     });
     state.files.push(...accepted);
-    renderImagePreviews(input);
-    const result = `${accepted.length} image${accepted.length === 1 ? '' : 's'} added.`
+    renderAttachmentPreviews(input);
+    const result = `${accepted.length} attachment${accepted.length === 1 ? '' : 's'} added.`
         + (rejected.length ? ` ${rejected.join('; ')}.` : '');
-    announceImageAttachments(input, result);
+    announceAttachments(input, result);
 }
 
-function clearComposerImages(root) {
+function clearComposerAttachments(root) {
     const input = root.matches?.('#image-input')
         ? root
         : root.querySelector?.('#image-input');
     if (input) {
-        const state = imageAttachmentStates.get(input);
+        const state = attachmentStates.get(input);
         if (state) {
             state.urls.forEach((url) => URL.revokeObjectURL(url));
             state.urls = [];
             state.files = [];
         }
-        imageAttachmentStates.delete(input);
+        attachmentStates.delete(input);
     }
 }
 
@@ -1018,17 +1055,17 @@ document.addEventListener('paste', (event) => {
     const items = Array.from(event.clipboardData?.items ?? [])
         .filter((item) => item.kind === 'file')
         .map((item) => item.getAsFile())
-        .filter((file) => file && acceptableImageFile(file));
+        .filter((file) => file && acceptableAttachmentFile(file));
     const files = items.length > 0
         ? items
-        : Array.from(event.clipboardData?.files ?? []).filter((file) => acceptableImageFile(file));
+        : Array.from(event.clipboardData?.files ?? []).filter((file) => acceptableAttachmentFile(file));
     if (files.length === 0) {
         return;
     }
     event.preventDefault();
     const imageInput = input.form?.querySelector('#image-input');
     if (imageInput) {
-        addImageAttachments(imageInput, files);
+        addAttachments(imageInput, files);
     }
 });
 
@@ -1043,7 +1080,7 @@ document.addEventListener('change', (event) => {
     }
     const selected = Array.from(input.files || []);
     if (selected.length > 0) {
-        addImageAttachments(input, selected);
+        addAttachments(input, selected);
     }
 });
 
@@ -1219,7 +1256,7 @@ document.addEventListener('htmx:config:request', (event) => {
         return;
     }
     body.delete('image');
-    imageAttachmentState(imageInput).files.forEach((file) => {
+    attachmentState(imageInput).files.forEach((file) => {
         body.append('image', file, file.name || 'image');
     });
 });
@@ -1318,7 +1355,7 @@ document.addEventListener('htmx:after:request', (event) => {
     if (status >= 200 && status <= 399 && source?.matches?.('#message-form')) {
         const input = source.querySelector('#image-input');
         if (input) {
-            clearImageAttachments(input);
+            clearAttachments(input);
         }
         autoresizeAllMessageInputs(source);
     }
@@ -1359,7 +1396,7 @@ document.addEventListener('kritui:message-edited', () => {
 });
 document.addEventListener('htmx:before:cleanup', (event) => {
     const root = event.target;
-    clearComposerImages(root);
+    clearComposerAttachments(root);
     destroyMessageListStates(root);
     destroyShell(root);
 });
@@ -1434,11 +1471,11 @@ document.addEventListener('click', (event) => {
     if (removeImage) {
         const input = removeImage.closest('main')?.querySelector('#image-input');
         const index = Number(removeImage.dataset.imageIndex);
-        const state = input && imageAttachmentStates.get(input);
+        const state = input && attachmentStates.get(input);
         if (input && state && Number.isInteger(index) && index >= 0 && index < state.files.length) {
             state.files.splice(index, 1);
-            renderImagePreviews(input);
-            announceImageAttachments(input, `${state.files.length} image${state.files.length === 1 ? '' : 's'} remaining.`);
+            renderAttachmentPreviews(input);
+            announceAttachments(input, `${state.files.length} attachment${state.files.length === 1 ? '' : 's'} remaining.`);
             input.closest('form')?.querySelector('#message')?.focus();
         }
         return;

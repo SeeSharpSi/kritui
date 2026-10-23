@@ -17,28 +17,38 @@ type chatImageURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail"`
 }
+type chatFile struct {
+	Filename string `json:"filename"`
+	FileData string `json:"file_data"`
+}
 type chatContentPart struct {
 	Type     string        `json:"type"`
 	ImageURL *chatImageURL `json:"image_url,omitempty"`
+	File     *chatFile     `json:"file,omitempty"`
 	Text     string        `json:"text,omitempty"`
 }
 
 func (c *Client) completeChat(ctx context.Context, endpoint endpointCandidate, messages []Message, definitions []tools.Definition) (Message, error) {
 	requestMessages := make([]any, len(messages))
 	for i, message := range messages {
-		if len(message.Images) == 0 {
+		if len(message.Attachments) == 0 {
 			requestMessages[i] = message
 			continue
 		}
 		if message.Role != "user" {
-			return Message{}, errors.New("llm: images are only allowed on user messages")
+			return Message{}, errors.New("llm: attachments are only allowed on user messages")
 		}
-		parts := make([]chatContentPart, 0, len(message.Images)+1)
-		for _, image := range message.Images {
-			if len(image.Data) == 0 || image.MediaType == "" {
-				return Message{}, errors.New("llm: image data and media type are required")
+		parts := make([]chatContentPart, 0, len(message.Attachments)+1)
+		for _, attachment := range message.Attachments {
+			if err := validateAttachment(attachment); err != nil {
+				return Message{}, err
 			}
-			parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: "data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data), Detail: "auto"}})
+			encoded := base64.StdEncoding.EncodeToString(attachment.Data)
+			if isPDFAttachment(attachment) {
+				parts = append(parts, chatContentPart{Type: "file", File: &chatFile{Filename: attachment.Filename, FileData: "data:" + attachment.MediaType + ";base64," + encoded}})
+				continue
+			}
+			parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: "data:" + attachment.MediaType + ";base64," + encoded, Detail: "auto"}})
 		}
 		if message.Content != "" {
 			parts = append(parts, chatContentPart{Type: "text", Text: message.Content})

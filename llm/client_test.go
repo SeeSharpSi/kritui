@@ -1020,12 +1020,14 @@ func newCountingToolConversation(t *testing.T, endpoint string, executions *int)
 	return conversation
 }
 
-func TestImageMessageCloneCopiesData(t *testing.T) {
+func TestAttachmentMessageCloneCopiesData(t *testing.T) {
 	data := []byte{1, 2, 3}
-	got := cloneMessage(Message{Images: []UserImage{{Data: data}}})
-	got.Images[0].Data[0] = 9
-	if data[0] != 1 {
-		t.Fatal("clone changed source image data")
+	message := Message{Attachments: []UserAttachment{{Filename: "report.pdf", Data: data}}}
+	got := cloneMessage(message)
+	got.Attachments[0].Filename = "changed.pdf"
+	got.Attachments[0].Data[0] = 9
+	if message.Attachments[0].Filename != "report.pdf" || data[0] != 1 {
+		t.Fatal("clone changed source attachment")
 	}
 }
 
@@ -1108,8 +1110,8 @@ func TestCompleteImageSerializers(t *testing.T) {
 				if test.name != "messages" && !strings.Contains(wire, "data:image/png;base64,AQID") {
 					t.Errorf("canonical image URL missing: %s", wire)
 				}
-				if strings.Contains(wire, `"Images"`) {
-					t.Error("raw Images field present")
+				if strings.Contains(wire, `"Attachments"`) {
+					t.Error("raw Attachments field present")
 				}
 				if test.name == "responses" && !strings.Contains(wire, `"type":"input_image"`) {
 					t.Error("missing Responses image part")
@@ -1134,7 +1136,7 @@ func TestCompleteImageSerializers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := client.complete(context.Background(), []Message{{Role: "user", Content: "text", Images: []UserImage{{Data: []byte{1, 2, 3}, MediaType: "image/png"}}}}, nil); err != nil {
+			if _, err := client.complete(context.Background(), []Message{{Role: "user", Content: "text", Attachments: []UserAttachment{{Data: []byte{1, 2, 3}, MediaType: "image/png"}}}}, nil); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -1174,7 +1176,7 @@ func TestImageValidationMakesNoRequest(t *testing.T) {
 		calls := 0
 		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
 		client, _ := New("key", "model", server.URL+suffix)
-		_, err := client.complete(context.Background(), []Message{{Role: "assistant", Images: []UserImage{{Data: []byte{1}, MediaType: "image/png"}}}}, nil)
+		_, err := client.complete(context.Background(), []Message{{Role: "assistant", Attachments: []UserAttachment{{Data: []byte{1}, MediaType: "image/png"}}}}, nil)
 		server.Close()
 		if err == nil || calls != 0 {
 			t.Fatalf("%s error=%v calls=%d", suffix, err, calls)
@@ -1193,7 +1195,7 @@ func TestAnthropicImageOnlyHasNoEmptyTextBlock(t *testing.T) {
 	}))
 	defer server.Close()
 	client, _ := New("key", "model", server.URL+"/v1/chat/messages")
-	if _, err := client.complete(context.Background(), []Message{{Role: "user", Images: []UserImage{{Data: []byte{1}, MediaType: "image/png"}}}}, nil); err != nil {
+	if _, err := client.complete(context.Background(), []Message{{Role: "user", Attachments: []UserAttachment{{Data: []byte{1}, MediaType: "image/png"}}}}, nil); err != nil {
 		t.Fatal(err)
 	}
 }

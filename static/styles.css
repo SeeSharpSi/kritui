@@ -1154,6 +1154,34 @@ main {
                     object-fit: cover;
                 }
 
+                &.attachment-pdf {
+                    flex: 0 1 auto;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    gap: .25rem;
+                    width: auto;
+                    min-width: 8rem;
+                    max-width: 14rem;
+                    padding: .45rem 1.75rem .45rem .55rem;
+                    overflow: hidden;
+
+                    .attachment-pdf-label {
+                        color: var(--color-accent);
+                        font: 600 .625rem/1 var(--font-mono);
+                        letter-spacing: .08em;
+                    }
+
+                    .attachment-pdf-name {
+                        min-width: 0;
+                        overflow: hidden;
+                        color: var(--color-text);
+                        font: 500 .75rem/1.25 var(--font-mono);
+                        text-overflow: ellipsis;
+                        white-space: nowrap;
+                    }
+                }
+
                 .image-preview-remove {
                     position: absolute;
                     top: .15rem;
@@ -1269,9 +1297,18 @@ main {
                     }
                 }
 
-                &.image-expanded .message-images {
+                &.image-expanded .message-images:not(.attachments-static) {
                     height: 4.25rem;
                     margin-top: -2.166667rem;
+                }
+
+                .message-images.attachments-static {
+                    flex-direction: row;
+                    justify-content: safe flex-end;
+                    height: auto;
+                    margin-top: 0;
+                    margin-bottom: .5rem;
+                    overflow-y: hidden;
                 }
 
                 .message-image {
@@ -1282,6 +1319,36 @@ main {
                     border: 1px solid var(--color-border);
                     background: var(--color-surface);
                     object-fit: cover;
+                }
+
+                .message-attachment-pdf {
+                    flex: 0 0 auto;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    gap: .25rem;
+                    width: min(10rem, 60vw);
+                    height: 4.25rem;
+                    box-sizing: border-box;
+                    padding: .55rem .65rem;
+                    border: 1px solid var(--color-border);
+                    background: var(--color-surface);
+                    overflow: hidden;
+
+                    .message-attachment-pdf-label {
+                        color: var(--color-accent);
+                        font: 600 .625rem/1 var(--font-mono);
+                        letter-spacing: .08em;
+                    }
+
+                    .message-attachment-pdf-name {
+                        min-width: 0;
+                        overflow: hidden;
+                        color: var(--color-text);
+                        font: 500 .75rem/1.25 var(--font-mono);
+                        text-overflow: ellipsis;
+                        white-space: nowrap;
+                    }
                 }
 
                 .message-bubble {
@@ -2298,6 +2365,12 @@ main {
         .image-preview {
             flex-basis: 3.5rem;
             height: 3.5rem;
+
+            &.attachment-pdf {
+                flex-basis: auto;
+                min-width: 7rem;
+                max-width: 60vw;
+            }
         }
     }
 
@@ -2307,11 +2380,20 @@ main {
         height: 3.5rem;
     }
 
-    main .chat .message.user .message-images {
+    main .chat .message.user .message-attachment-pdf {
+        width: min(8rem, 60vw);
+        height: 3.5rem;
+    }
+
+    main .chat .message.user .message-images:not(.attachments-static) {
         height: 1.833333rem;
     }
 
-    main .chat .message.user.image-expanded .message-images {
+    main .chat .message.user .message-images.attachments-static {
+        height: auto;
+    }
+
+    main .chat .message.user.image-expanded .message-images:not(.attachments-static) {
         height: 3.5rem;
         margin-top: -1.666667rem;
     }

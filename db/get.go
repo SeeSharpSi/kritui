@@ -49,7 +49,7 @@ type storedMessage struct {
 	toolCallPositions       []int
 	promptAppendPositions   []int
 	providerOutputPositions []int
-	imagePositions          []int
+	attachmentPositions     []int
 }
 
 type rowScanner interface {
@@ -332,7 +332,7 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 	if err := loadMessagePromptAppends(ctx, db, chatID, storedMessages, indexes); err != nil {
 		return MessageSnapshot{}, err
 	}
-	if err := loadMessageUserImages(ctx, db, chatID, storedMessages, indexes); err != nil {
+	if err := loadMessageAttachments(ctx, db, chatID, storedMessages, indexes); err != nil {
 		return MessageSnapshot{}, err
 	}
 	if err := loadMessageProviderOutputs(ctx, db, chatID, storedMessages, indexes); err != nil {
@@ -355,35 +355,37 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 	return snapshot, nil
 }
 
-func loadMessageUserImages(ctx context.Context, db messageQueryer, chatID int64, messages []storedMessage, indexes map[int64]int) error {
+// loadMessageAttachments restores ordered image and PDF attachments from the
+// shared message_user_images table. PDFs carry zero dimensions.
+func loadMessageAttachments(ctx context.Context, db messageQueryer, chatID int64, messages []storedMessage, indexes map[int64]int) error {
 	rows, err := db.QueryContext(ctx, `
-		SELECT images.message_id, images.position, images.filename, images.media_type, images.width, images.height, images.data
-		FROM message_user_images AS images JOIN messages ON messages.id = images.message_id
+		SELECT attachments.message_id, attachments.position, attachments.filename, attachments.media_type, attachments.width, attachments.height, attachments.data
+		FROM message_user_images AS attachments JOIN messages ON messages.id = attachments.message_id
 		WHERE messages.chat_id = ? AND messages.undo_sequence IS NULL
-		ORDER BY messages.position, messages.id, images.position
+		ORDER BY messages.position, messages.id, attachments.position
 	`, chatID)
 	if err != nil {
-		return fmt.Errorf("get message images: %w", err)
+		return fmt.Errorf("get message attachments: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id int64
 		var position, width, height int
-		var image llm.UserImage
-		if err := rows.Scan(&id, &position, &image.Filename, &image.MediaType, &width, &height, &image.Data); err != nil {
-			return fmt.Errorf("scan message image: %w", err)
+		var attachment llm.UserAttachment
+		if err := rows.Scan(&id, &position, &attachment.Filename, &attachment.MediaType, &width, &height, &attachment.Data); err != nil {
+			return fmt.Errorf("scan message attachment: %w", err)
 		}
 		index, ok := indexes[id]
 		if !ok {
-			return fmt.Errorf("message image references unloaded message %d", id)
+			return fmt.Errorf("message attachment references unloaded message %d", id)
 		}
-		image.Width, image.Height = width, height
-		image.Data = append([]byte(nil), image.Data...)
-		messages[index].message.Images = append(messages[index].message.Images, image)
-		messages[index].imagePositions = append(messages[index].imagePositions, position)
+		attachment.Width, attachment.Height = width, height
+		attachment.Data = append([]byte(nil), attachment.Data...)
+		messages[index].message.Attachments = append(messages[index].message.Attachments, attachment)
+		messages[index].attachmentPositions = append(messages[index].attachmentPositions, position)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate message images: %w", err)
+		return fmt.Errorf("iterate message attachments: %w", err)
 	}
 	return nil
 }
@@ -545,15 +547,15 @@ func writeStoredMessage(digest hash.Hash, stored storedMessage) {
 		writeInt64(digest, int64(stored.promptAppendPositions[index]))
 		writeString(digest, text)
 	}
-	writeInt64(digest, int64(len(stored.message.Images)))
-	for index, image := range stored.message.Images {
-		writeInt64(digest, int64(stored.imagePositions[index]))
-		writeString(digest, image.Filename)
-		writeString(digest, image.MediaType)
-		writeInt64(digest, int64(image.Width))
-		writeInt64(digest, int64(image.Height))
-		writeInt64(digest, int64(len(image.Data)))
-		_, _ = digest.Write(image.Data)
+	writeInt64(digest, int64(len(stored.message.Attachments)))
+	for index, attachment := range stored.message.Attachments {
+		writeInt64(digest, int64(stored.attachmentPositions[index]))
+		writeString(digest, attachment.Filename)
+		writeString(digest, attachment.MediaType)
+		writeInt64(digest, int64(attachment.Width))
+		writeInt64(digest, int64(attachment.Height))
+		writeInt64(digest, int64(len(attachment.Data)))
+		_, _ = digest.Write(attachment.Data)
 	}
 	outputs := stored.message.ProviderMetadata.ResponsesOutput()
 	writeInt64(digest, int64(len(outputs)))

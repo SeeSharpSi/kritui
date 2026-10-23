@@ -165,12 +165,12 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 	if !message.ProviderMetadata.IsZero() && message.Role != "assistant" {
 		return 0, fmt.Errorf("store provider metadata: only assistant messages may contain provider metadata")
 	}
-	if len(message.Images) > 0 && message.Role != "user" {
-		return 0, fmt.Errorf("store images: only user messages may contain images")
+	if len(message.Attachments) > 0 && message.Role != "user" {
+		return 0, fmt.Errorf("store attachments: only user messages may contain attachments")
 	}
-	for imagePosition, image := range message.Images {
-		if image.MediaType == "" || len(image.Data) == 0 || image.Width < 0 || image.Height < 0 {
-			return 0, fmt.Errorf("store image %d: invalid media type, data, or dimensions", imagePosition)
+	for attachmentPosition, attachment := range message.Attachments {
+		if attachment.MediaType == "" || len(attachment.Data) == 0 || attachment.Width < 0 || attachment.Height < 0 {
+			return 0, fmt.Errorf("store attachment %d: invalid media type, data, or dimensions", attachmentPosition)
 		}
 	}
 
@@ -220,13 +220,13 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 			return 0, fmt.Errorf("store prompt append %d for message %d: %w", appendPosition, id, err)
 		}
 	}
-	for imagePosition, image := range message.Images {
+	for attachmentPosition, attachment := range message.Attachments {
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO message_user_images
 				(message_id, message_role, position, filename, media_type, width, height, data)
 			VALUES (?, 'user', ?, ?, ?, ?, ?, ?)
-		`, id, imagePosition, image.Filename, image.MediaType, image.Width, image.Height, image.Data); err != nil {
-			return 0, fmt.Errorf("store image %d for message %d: %w", imagePosition, id, err)
+		`, id, attachmentPosition, attachment.Filename, attachment.MediaType, attachment.Width, attachment.Height, attachment.Data); err != nil {
+			return 0, fmt.Errorf("store attachment %d for message %d: %w", attachmentPosition, id, err)
 		}
 	}
 	for outputPosition, output := range message.ProviderMetadata.ResponsesOutput() {
@@ -249,8 +249,8 @@ func ReplaceUserMessage(ctx context.Context, db databaseExecutor, chatID, messag
 	if message.Model != "" || message.TotalTokens != nil || message.Cost != nil || len(message.ToolCalls) > 0 || message.ToolCallID != "" || !message.ProviderMetadata.IsZero() {
 		return fmt.Errorf("replace user message: invalid user message metadata")
 	}
-	if len(message.Images) > 0 {
-		return fmt.Errorf("replace user message: image replacement is unsupported")
+	if len(message.Attachments) > 0 {
+		return fmt.Errorf("replace user message: attachment replacement is unsupported")
 	}
 	userID, err := requireUserID(ctx)
 	if err != nil {

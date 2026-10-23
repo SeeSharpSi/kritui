@@ -130,7 +130,7 @@ templ Home(data HomeData) {
 							</div>
 						</details>
 						@HistoryButton()
-						<div id="image-previews" class="image-previews" aria-label="Attached images" hidden></div>
+						<div id="image-previews" class="image-previews" aria-label="Attached files" hidden></div>
 					</section>
 					<form
 						id="message-form"
@@ -146,7 +146,7 @@ templ Home(data HomeData) {
 							hx-replace-url={ data.ChatURL }
 						}
 					>
-						<input id="image-input" type="file" name="image" accept="image/png,image/jpeg,image/jpg,image/webp,.jpg,.jpeg" multiple class="visually-hidden" tabindex="-1" aria-hidden="true"/>
+						<input id="image-input" type="file" name="image" accept="image/png,image/jpeg,image/jpg,image/webp,application/pdf,.jpg,.jpeg,.pdf" multiple class="visually-hidden" tabindex="-1" aria-hidden="true"/>
 						<div id="image-paste-status" class="visually-hidden" role="status" aria-live="polite"></div>
 						<label for="message" class="visually-hidden">Message</label>
 						<div id="command-autocomplete" class="command-autocomplete" role="listbox" aria-label="Slash commands" hidden>
@@ -251,7 +251,7 @@ templ SendButton() {
 }
 
 templ AttachButton() {
-	<button id="attach-button" type="button" aria-label="Attach images" title="Attach images">
+	<button id="attach-button" type="button" aria-label="Attach images or PDFs" title="Attach images or PDFs">
 		@Icon("M12 5v14", "M5 12h14")
 	</button>
 }
