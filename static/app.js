@@ -7,51 +7,359 @@ function scrollMessages(root) {
     }
 }
 
+const shellStates = new WeakMap();
+
+function shellFor(root) {
+    if (root?.matches?.('.shell-scroll')) {
+        return root;
+    }
+    return root?.closest?.('.shell-scroll') ?? root?.querySelector?.('.shell-scroll') ?? null;
+}
+
+function shellHeaderSpace(shell) {
+    const header = shell.querySelector(':scope > .app-header');
+    if (!header) {
+        return 0;
+    }
+    const style = getComputedStyle(header);
+    return header.getBoundingClientRect().height
+        + (parseFloat(style.marginTop) || 0)
+        + (parseFloat(style.marginBottom) || 0);
+}
+
+const shellPaneSelector = '#message-list, #settings-page, #history-page';
+const shellExcludedSelector = [
+    'input',
+    'textarea',
+    'select',
+    '[contenteditable]:not([contenteditable="false"])',
+    '#message-form',
+    '.command-autocomplete',
+    '.chat-options',
+    '.model-picker',
+    '.tool-picker',
+    '.append-picker',
+].join(', ');
+const shellTouchSlop = 4;
+
+function shellActivePane(target) {
+    const element = target instanceof Element ? target : target?.parentElement;
+    const pane = element?.closest?.(shellPaneSelector);
+    if (!pane || pane.hidden || !pane.isConnected) {
+        return null;
+    }
+    const style = getComputedStyle(pane);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+        return null;
+    }
+    return pane;
+}
+
+function shellPaneForInput(shell, target) {
+    const element = target instanceof Element ? target : target?.parentElement;
+    if (!element || element.closest(shellExcludedSelector)) {
+        return null;
+    }
+    const pane = shellActivePane(target);
+    if (!pane || !shell.contains(pane)) {
+        return null;
+    }
+    let nested = element;
+    while (nested && nested !== pane) {
+        if (nested.scrollHeight > nested.clientHeight + 1) {
+            const style = getComputedStyle(nested);
+            if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+                return null;
+            }
+        }
+        nested = nested.parentElement;
+    }
+    return pane;
+}
+
+function shellHeaderVisible(shell, state) {
+    return state.headerSpace > 0 && shell.scrollTop < state.headerSpace - 0.5;
+}
+
+function shellHeaderRemaining(shell, state) {
+    const offset = Math.min(Math.max(shell.scrollTop, 0), state.headerSpace);
+    return Math.max(0, state.headerSpace - offset);
+}
+
+function shellPayHeaderThenPane(shell, state, pane, delta) {
+    const headerDelta = Math.min(delta, shellHeaderRemaining(shell, state));
+    if (headerDelta > 0) {
+        shell.scrollTop = Math.min(state.headerSpace, Math.max(shell.scrollTop, 0) + headerDelta);
+        syncShellOffset(shell, state);
+    }
+    const residual = delta - headerDelta;
+    if (residual <= 0) {
+        return;
+    }
+    const maxScroll = Math.max(0, pane.scrollHeight - pane.clientHeight);
+    if (maxScroll <= 0) {
+        return;
+    }
+    pane.scrollTop = Math.min(maxScroll, Math.max(pane.scrollTop, 0) + residual);
+}
+
+function shellWheelPixels(event, pane) {
+    if (event.deltaMode === 1) {
+        return event.deltaY * 16;
+    }
+    if (event.deltaMode === 2) {
+        return event.deltaY * Math.max(1, pane.clientHeight);
+    }
+    return event.deltaY;
+}
+
+function handleShellWheel(shell, state, event) {
+    if (event.defaultPrevented || !event.cancelable || event.ctrlKey || event.shiftKey) {
+        return;
+    }
+    if (event.deltaY <= 0 || !shellHeaderVisible(shell, state)) {
+        return;
+    }
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+        return;
+    }
+    const pane = shellPaneForInput(shell, event.target);
+    if (!pane) {
+        return;
+    }
+    const delta = shellWheelPixels(event, pane);
+    if (delta <= 0) {
+        return;
+    }
+    event.preventDefault();
+    shellPayHeaderThenPane(shell, state, pane, delta);
+}
+
+function handleShellTouchStart(shell, state, event) {
+    state.touch = null;
+    if (event.touches.length !== 1 || !shellHeaderVisible(shell, state)) {
+        return;
+    }
+    const pane = shellPaneForInput(shell, event.target);
+    if (!pane) {
+        return;
+    }
+    const touch = event.touches[0];
+    state.touch = {
+        identifier: touch.identifier,
+        startX: touch.clientX,
+        startY: touch.clientY,
+        lastY: touch.clientY,
+        pane,
+        claimed: false,
+        reversing: false,
+        revealBlocked: false,
+    };
+}
+
+function shellTouchDelta(shell, state, gesture, delta) {
+    const pane = gesture.pane;
+    if (delta > 0) {
+        gesture.reversing = false;
+        shellPayHeaderThenPane(shell, state, pane, delta);
+        return;
+    }
+    if (delta === 0) {
+        return;
+    }
+
+    const upward = -delta;
+    if (!gesture.reversing) {
+        gesture.reversing = true;
+        gesture.revealBlocked = pane.scrollTop > 0;
+    }
+    if (gesture.revealBlocked) {
+        const applied = Math.min(Math.max(pane.scrollTop, 0), upward);
+        if (applied > 0) {
+            pane.scrollTop -= applied;
+        }
+        return;
+    }
+
+    const offset = Math.min(Math.max(shell.scrollTop, 0), state.headerSpace);
+    const applied = Math.min(offset, upward);
+    if (applied <= 0) {
+        return;
+    }
+    shell.scrollTop = offset - applied;
+    syncShellOffset(shell, state);
+}
+
+function handleShellTouchMove(shell, state, event) {
+    const gesture = state.touch;
+    if (!gesture) {
+        return;
+    }
+    if (event.touches.length !== 1 || event.touches[0].identifier !== gesture.identifier) {
+        state.touch = null;
+        return;
+    }
+    const touch = event.touches[0];
+    if (!event.cancelable || event.defaultPrevented) {
+        gesture.lastY = touch.clientY;
+        return;
+    }
+    if (!gesture.pane?.isConnected) {
+        state.touch = null;
+        return;
+    }
+
+    const horizontal = touch.clientX - gesture.startX;
+    const downward = gesture.startY - touch.clientY;
+    if (!gesture.claimed) {
+        if (Math.max(Math.abs(horizontal), Math.abs(downward)) < shellTouchSlop) {
+            return;
+        }
+        if (Math.abs(horizontal) >= Math.abs(downward) || downward <= 0) {
+            state.touch = null;
+            return;
+        }
+        gesture.claimed = true;
+        gesture.lastY = gesture.startY;
+    }
+
+    event.preventDefault();
+    const delta = gesture.lastY - touch.clientY;
+    gesture.lastY = touch.clientY;
+    if (delta !== 0) {
+        shellTouchDelta(shell, state, gesture, delta);
+    }
+}
+
+function handleShellTouchEnd(state, event) {
+    const gesture = state.touch;
+    if (!gesture) {
+        return;
+    }
+    if (!Array.from(event.touches).some((touch) => touch.identifier === gesture.identifier)) {
+        state.touch = null;
+    }
+}
+
+function syncShellOffset(shell, state) {
+    const maxScroll = Math.max(0, shell.scrollHeight - shell.clientHeight);
+    const offset = Math.min(Math.max(shell.scrollTop, 0), state.headerSpace, maxScroll);
+    shell.style.setProperty('--shell-scroll-offset', `${offset}px`);
+}
+
+function measureShell(shell, state) {
+    state.headerSpace = Math.max(0, shellHeaderSpace(shell));
+    shell.style.setProperty('--shell-header-space', `${state.headerSpace}px`);
+    syncShellOffset(shell, state);
+    return state.headerSpace;
+}
+
+function shellState(shell) {
+    let state = shellStates.get(shell);
+    if (state) {
+        return state;
+    }
+
+    state = {
+        headerSpace: 76,
+        initialized: false,
+        pendingInitial: false,
+        initialAttempts: 0,
+        touch: null,
+        onScroll: () => syncShellOffset(shell, state),
+        onWheel: (event) => handleShellWheel(shell, state, event),
+        onTouchStart: (event) => handleShellTouchStart(shell, state, event),
+        onTouchMove: (event) => handleShellTouchMove(shell, state, event),
+        onTouchEnd: (event) => handleShellTouchEnd(state, event),
+        onTouchCancel: () => {
+            state.touch = null;
+        },
+        resizeObserver: null,
+    };
+    shell.addEventListener('scroll', state.onScroll, { passive: true });
+    shell.addEventListener('wheel', state.onWheel, { passive: false });
+    shell.addEventListener('touchstart', state.onTouchStart, { passive: true });
+    shell.addEventListener('touchmove', state.onTouchMove, { passive: false });
+    shell.addEventListener('touchend', state.onTouchEnd, { passive: true });
+    shell.addEventListener('touchcancel', state.onTouchCancel, { passive: true });
+    state.resizeObserver = new ResizeObserver(() => measureShell(shell, state));
+    state.resizeObserver.observe(shell);
+    const header = shell.querySelector(':scope > .app-header');
+    if (header) {
+        state.resizeObserver.observe(header);
+    }
+    shellStates.set(shell, state);
+    return state;
+}
+
+function destroyShell(root) {
+    const shell = root?.matches?.('.shell-scroll')
+        ? root
+        : root?.querySelector?.('.shell-scroll');
+    const state = shell && shellStates.get(shell);
+    if (!state) {
+        return;
+    }
+    shell.removeEventListener('scroll', state.onScroll);
+    shell.removeEventListener('wheel', state.onWheel);
+    shell.removeEventListener('touchstart', state.onTouchStart);
+    shell.removeEventListener('touchmove', state.onTouchMove);
+    shell.removeEventListener('touchend', state.onTouchEnd);
+    shell.removeEventListener('touchcancel', state.onTouchCancel);
+    state.touch = null;
+    state.resizeObserver.disconnect();
+    shellStates.delete(shell);
+}
+
+function initializeShell(root) {
+    const shell = shellFor(root);
+    if (!shell?.isConnected) {
+        return;
+    }
+    const state = shellState(shell);
+    const headerSpace = measureShell(shell, state);
+    if (state.initialized) {
+        return;
+    }
+
+    const messageList = shell.querySelector('#message-list');
+    const measurable = !messageList || messageList.clientHeight > 0;
+    if (!measurable && state.initialAttempts < 2) {
+        state.initialAttempts += 1;
+        if (!state.pendingInitial) {
+            state.pendingInitial = true;
+            requestAnimationFrame(() => {
+                state.pendingInitial = false;
+                initializeShell(shell);
+            });
+        }
+        return;
+    }
+
+    state.initialized = true;
+    shell.scrollTop = 0;
+    syncShellOffset(shell, state);
+    if (messageList && measurable && messageList.scrollHeight - messageList.clientHeight > 2) {
+        shell.scrollTop = headerSpace;
+        syncShellOffset(shell, state);
+    }
+}
+
+window.addEventListener('resize', () => {
+    document.querySelectorAll('.shell-scroll').forEach((shell) => {
+        const state = shellStates.get(shell);
+        if (state) {
+            measureShell(shell, state);
+        }
+    });
+}, { passive: true });
+
 const messageListStates = new WeakMap();
 const messageBlockSelector = '.message, .completed-tool-calls, .chat-empty';
 
 function refreshChatSummary() {
     document.body.dispatchEvent(new Event('chat-updated'));
 }
-
-function syncShellCollapse() {
-    const main = document.querySelector('main');
-    if (!main) {
-        return;
-    }
-    const activePane = main.querySelector('#page-panel > .panel-page:not([hidden])') || main.querySelector('#message-list');
-    if (!activePane) {
-        return;
-    }
-    // Expanding the panel lets flexible content (history list) absorb the
-    // freed space, which can clamp scrollTop back to 0. Only engage when the
-    // pane has more than a header of overflow; disengage purely on position
-    // so a clamped pane still reopens at the top.
-    if (activePane.scrollTop <= 8) {
-        main.classList.remove('collapsed');
-    } else if (activePane.scrollHeight - activePane.clientHeight > 104) {
-        main.classList.add('collapsed');
-    }
-}
-
-document.addEventListener('scroll', (event) => {
-    const pane = event.target;
-    if (!pane?.matches?.('#message-list, #settings-page, #history-page')) {
-        return;
-    }
-    if (pane.hidden) {
-        return;
-    }
-    const main = pane.closest?.('main');
-    if (!main) {
-        return;
-    }
-    const activePane = main.querySelector('#page-panel > .panel-page:not([hidden])') || main.querySelector('#message-list');
-    if (pane !== activePane) {
-        return;
-    }
-    syncShellCollapse();
-}, { capture: true, passive: true });
 
 function messageListFor(root) {
     return root?.matches?.('.message-list')
@@ -102,6 +410,7 @@ function messageListState(messageList) {
         observedBlocks: new WeakSet(),
     };
     state.resizeObserver = new ResizeObserver(() => pinMessageList(messageList));
+    state.resizeObserver.observe(messageList);
     state.mutationObserver = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
             mutation.removedNodes.forEach((node) => unobserveMessageBlocks(node, state));
@@ -161,7 +470,6 @@ function pinMessageList(messageList, force = false) {
 
     state.forcing ||= force;
     messageList.scrollTop = messageList.scrollHeight;
-    syncShellCollapse();
     if (state.frame) {
         return;
     }
@@ -179,7 +487,6 @@ function pinMessageList(messageList, force = false) {
         }
 
         messageList.scrollTop = messageList.scrollHeight;
-        syncShellCollapse();
         const height = messageList.scrollHeight;
         stableFrames = height === previousHeight && isMessageListAtBottom(messageList)
             ? stableFrames + 1
@@ -633,7 +940,6 @@ function togglePanel(panelID, panelButton) {
         panelButton?.focus();
     }
     syncPanelSendButton();
-    syncShellCollapse();
 }
 
 function showCompletionNetworkError(event, message) {
@@ -663,8 +969,8 @@ function showCompletionNetworkError(event, message) {
 
 document.addEventListener('DOMContentLoaded', () => {
     scrollMessages(document);
+    initializeShell(document);
     syncPanelSendButton();
-    syncShellCollapse();
     syncToolResultElisionControls(document);
     autoresizeAllMessageInputs(document);
     if ('serviceWorker' in navigator) {
@@ -896,6 +1202,7 @@ async function copyMessage(button) {
 
 document.addEventListener('htmx:after:process', (event) => {
     scrollMessages(event.target);
+    initializeShell(event.target);
     syncToolResultElisionControls(event.target);
 });
 document.addEventListener('htmx:config:request', (event) => {
@@ -965,7 +1272,6 @@ document.addEventListener('htmx:after:swap', (event) => {
     syncPanelSendButton();
     syncToolResultElisionControls(event.target);
     autoresizeAllMessageInputs(event.target);
-    syncShellCollapse();
 });
 function applySettingsTheme(root) {
     const settingsPage = root?.matches?.('#settings-page')
@@ -989,6 +1295,7 @@ function applySettingsTheme(root) {
 
 document.addEventListener('htmx:after:settle', (event) => {
     restoreMessageScroll(event.detail?.task?.target);
+    initializeShell(event.detail?.task?.target ?? event.target);
     applySettingsTheme(event.detail?.task?.target);
     syncToolResultElisionControls(event.target);
     autoresizeAllMessageInputs(event.target);
@@ -1000,7 +1307,6 @@ document.addEventListener('htmx:after:settle', (event) => {
             input.disabled = false;
         });
     }
-    syncShellCollapse();
 });
 document.addEventListener('htmx:after:request', (event) => {
     const ctx = event.detail?.ctx;
@@ -1055,6 +1361,7 @@ document.addEventListener('htmx:before:cleanup', (event) => {
     const root = event.target;
     clearComposerImages(root);
     destroyMessageListStates(root);
+    destroyShell(root);
 });
 document.addEventListener('htmx:sse:before:message', (event) => {
     rememberMessageScroll(event.target);

@@ -31,12 +31,12 @@ func TestPWAPublicAssetsBypassAuthentication(t *testing.T) {
 		cacheControl string
 		contentType  string
 	}{
-		{path: "/static/manifest.json?v=29", cacheControl: staticAssetCacheControl},
+		{path: "/static/manifest.json?v=32", cacheControl: staticAssetCacheControl},
 		{path: "/static/icon-192.png?v=2", cacheControl: staticAssetCacheControl},
 		{path: "/static/icon-512.png?v=2", cacheControl: staticAssetCacheControl},
 		{path: "/static/icon-512-maskable.png?v=2", cacheControl: staticAssetCacheControl},
-		{path: "/static/styles.css?v=29", cacheControl: staticAssetCacheControl},
-		{path: "/static/app.js?v=29", cacheControl: staticAssetCacheControl},
+		{path: "/static/styles.css?v=32", cacheControl: staticAssetCacheControl},
+		{path: "/static/app.js?v=32", cacheControl: staticAssetCacheControl},
 		{path: "/static/htmx.min.js", cacheControl: staticAssetCacheControl},
 		{path: "/static/hx-sse.js", cacheControl: staticAssetCacheControl},
 		{path: "/static/fonts/inter-latin.woff2", cacheControl: staticAssetCacheControl},
@@ -72,7 +72,7 @@ func TestPWAPublicAssetsBypassAuthentication(t *testing.T) {
 
 	t.Run("/static/app.js registers the service worker", func(t *testing.T) {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/static/app.js?v=29", nil))
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/static/app.js?v=32", nil))
 
 		if response.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -118,7 +118,7 @@ func TestPWAPublicAssetsBypassAuthentication(t *testing.T) {
 func TestPWAManifestIsPublicAndInstallable(t *testing.T) {
 	handler := newPWATestHandler(t)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/static/manifest.json?v=29", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/static/manifest.json?v=32", nil))
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -224,10 +224,10 @@ func TestPWAAuthPagesIncludeMobileInstallMetadata(t *testing.T) {
 				"viewport-fit=cover",
 				`name="theme-color"`,
 				`rel="manifest"`,
-				`href="/static/manifest.json?v=29"`,
+				`href="/static/manifest.json?v=32"`,
 				`rel="apple-touch-icon"`,
-				`href="/static/icon-192.png?v=29"`,
-				`src="/static/app.js?v=29"`,
+				`href="/static/icon-192.png?v=32"`,
+				`src="/static/app.js?v=32"`,
 				"defer",
 				`name="username"`,
 				`name="password"`,

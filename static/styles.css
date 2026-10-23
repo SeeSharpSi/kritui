@@ -80,14 +80,9 @@ main {
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    transition: padding-top 180ms ease;
-
-    &.collapsed {
-        padding-top: env(safe-area-inset-top, 0px);
-    }
 
     .app-header {
-        flex: 0 0 auto;
+        flex: 0 0 60px;
         height: 60px;
         display: flex;
         align-items: center;
@@ -95,17 +90,52 @@ main {
         min-width: 0;
         box-sizing: border-box;
         padding: 0 24px;
-        margin-bottom: 16px;
         border-bottom: 1px solid var(--color-border);
         overflow: clip;
-        transition: height 180ms ease, margin-bottom 180ms ease, opacity 180ms ease, border-bottom-color 180ms ease;
     }
 
-    &.collapsed .app-header {
-        height: 0;
-        margin-bottom: 0;
-        opacity: 0;
-        border-bottom-width: 0;
+    &.auth-main > .app-header {
+        margin-bottom: 16px;
+    }
+
+    &.app-main {
+        .shell-scroll {
+            --shell-header-space: 76px;
+            --shell-scroll-offset: 0px;
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+            overflow-y: auto;
+            overscroll-behavior-y: none;
+            overflow-anchor: none;
+            scroll-behavior: auto;
+            scrollbar-width: none;
+
+            &::-webkit-scrollbar {
+                display: none;
+            }
+        }
+
+        > .shell-scroll > .app-header {
+            flex: 0 0 60px;
+            margin-bottom: 16px;
+        }
+
+        .shell-viewport {
+            flex: 0 0 auto;
+            height: max(0px, calc(100% - var(--shell-header-space) + var(--shell-scroll-offset)));
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .shell-tail {
+            flex: 0 0 auto;
+            height: max(0px, calc(var(--shell-header-space) - var(--shell-scroll-offset)));
+            pointer-events: none;
+        }
     }
 
     .brand-mark {
@@ -262,6 +292,7 @@ main {
             }
 
             .settings-main-form {
+                --settings-section-border: color-mix(in srgb, var(--color-border-strong) 75%, var(--color-text));
                 display: grid;
                 gap: 1.1rem;
                 width: min(100%, 56rem);
@@ -270,13 +301,13 @@ main {
                 .settings-section {
                     min-width: 0;
                     overflow: hidden;
-                    border: 1px solid var(--color-border);
+                    border: 2px solid var(--settings-section-border);
                     background: var(--color-surface);
                 }
 
                 .settings-section-heading {
                     padding: 18px 21px;
-                    border-bottom: 1px solid var(--color-border);
+                    border-bottom: 1px solid var(--settings-section-border);
 
                     h2,
                     .settings-section-title {
@@ -2225,6 +2256,13 @@ main {
     }
 }
 
+@media (max-width: 48rem), (orientation: portrait) and (max-width: 60rem) {
+    main:not(.auth-main) {
+        width: 100%;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+}
+
 @media (max-width: 30rem) {
     main {
         .app-header { padding: 0 16px; gap: 8px; }
@@ -2270,14 +2308,6 @@ main {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    main {
-        transition: none;
-    }
-
-    main .app-header {
-        transition: none;
-    }
-
     main .chat .message.user .message-images {
         transition: none;
     }

@@ -85,8 +85,8 @@ func TestByIDResolvesBuiltInIDsOnly(t *testing.T) {
 	if forestNight.Colors["accent"] != "#8fbc8f" {
 		t.Errorf("forest-night accent = %q, want #8fbc8f", forestNight.Colors["accent"])
 	}
-	if forestNight.Colors["muted"] != "#4a5568" {
-		t.Errorf("forest-night muted = %q, want #4a5568", forestNight.Colors["muted"])
+	if forestNight.Colors["muted"] != "#a8b3bd" {
+		t.Errorf("forest-night muted = %q, want #a8b3bd", forestNight.Colors["muted"])
 	}
 	usGraphics, err := ByID("1975")
 	if err != nil {
@@ -201,7 +201,7 @@ func TestBuiltInThemesMapMutedForReadability(t *testing.T) {
 		"rose-pine":      "#5f5a78",
 		"rose-pine-dark": "#9f9694",
 		"nord":           "#7f8ca3",
-		"forest-night":   "#4a5568",
+		"forest-night":   "#a8b3bd",
 		"matte-black":    "#8a8a8d",
 		"1975":           "#555555",
 	}

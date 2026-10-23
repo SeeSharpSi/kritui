@@ -5,7 +5,13 @@ mode = "dark"
 
 accent = "#8FBC8F"
 selection = "#3a4a55"
-muted = "#4a5568"
+muted = "#a8b3bd"
+
+# Semantic overrides keep composer text and placeholders readable.
+surface = "#222a30"
+surface_muted = "#26313a"
+border = "#526575"
+border_strong = "#748a9d"
 
 background = "#1a2125"
 dark_background = "#14191c"
