@@ -164,7 +164,7 @@ templ UserMessage(chatID string, message llm.Message) {
 							aria-label="Edit message"
 							title="Edit message"
 						>
-							Edit
+							@Icon("M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z")
 						</button>
 						<button
 							type="button"
@@ -172,8 +172,12 @@ templ UserMessage(chatID string, message llm.Message) {
 							aria-label="Copy message"
 							title="Copy message"
 						>
-							<span class="message-copy-default">Copy</span>
-							<span class="message-copy-confirmation">Copied</span>
+							<span class="message-copy-default">
+								@Icon("M9 9h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z", "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1")
+							</span>
+							<span class="message-copy-confirmation">
+								@Icon("M20 6 9 17l-5-5")
+							</span>
 						</button>
 						<button
 							type="button"
