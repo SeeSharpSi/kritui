@@ -39,7 +39,7 @@ PWA assets remain public before login, and the manifest keeps its identity, star
 
 Use the chat's plus button to attach PNG, JPEG, WebP, or PDF files. A message can contain up to four attachments, with a limit of 20 MiB per file and 80 MiB total. Text is optional when attaching files. Remove a selected file with its preview's remove button before sending.
 
-PDFs appear as filename cards in the composer and chat history. Kritui stores their original bytes and sends them as native file or document content through Responses, Messages, or Chat Completions. The selected provider and model must support PDF input. Attachments remain available after reloading a chat, editing message text, undoing and redoing a turn, or retrying a completion.
+PDFs appear as filename cards in the composer and chat history. Composer cards are static previews. In chat history, select a sent PDF card to open the stored file in a full-screen viewer. The browser supplies scrolling and, where available, zoom and page controls. Use Close to return focus to the card, or Open in new tab when inline PDF display is unavailable. Kritui stores the original bytes, serves them only to the signed-in owner, and sends them as native file or document content through Responses, Messages, or Chat Completions. The selected provider and model must support PDF input. Attachments remain available after reloading a chat, editing message text, undoing and redoing a turn, or retrying a completion.
 
 ## Docker
 

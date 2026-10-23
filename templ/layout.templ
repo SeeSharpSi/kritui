@@ -4,7 +4,7 @@ import (
 	"seesharpsi/kritui/themes"
 )
 
-const staticAssetVersion = "37"
+const staticAssetVersion = "38"
 
 func staticAsset(path string) string {
 	return path + "?v=" + staticAssetVersion
@@ -50,6 +50,38 @@ templ Layout(title string, theme themes.Theme) {
 				>
 					@Icon("M18 6 6 18", "M6 6l12 12")
 				</button>
+			</dialog>
+			<dialog id="pdf-viewer" class="image-viewer pdf-viewer" aria-label="PDF viewer">
+				<div class="pdf-viewer-panel">
+					<div class="pdf-viewer-toolbar">
+						<span id="pdf-viewer-name" class="pdf-viewer-name"></span>
+						<div class="pdf-viewer-actions">
+							<a
+								id="pdf-viewer-open"
+								class="pdf-viewer-open"
+								data-pdf-viewer-open
+								href="#"
+								target="_blank"
+								rel="noopener"
+							>Open in new tab</a>
+							<button
+								type="button"
+								class="image-viewer-close pdf-viewer-close"
+								data-pdf-viewer-close
+								aria-label="Close PDF viewer"
+								title="Close PDF viewer"
+								autofocus
+							>
+								@Icon("M18 6 6 18", "M6 6l12 12")
+							</button>
+						</div>
+					</div>
+					<iframe
+						id="pdf-viewer-frame"
+						class="pdf-viewer-frame"
+						title="PDF document"
+					></iframe>
+				</div>
 			</dialog>
 		</body>
 	</html>

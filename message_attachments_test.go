@@ -3,10 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -306,4 +310,349 @@ func TestMessageCompletionHandlerPDFOnlySkipsImageCapabilityCheck(t *testing.T) 
 	if assistants != 1 {
 		t.Errorf("stored assistants = %d, want 1", assistants)
 	}
+}
+
+func seedAttachmentMessage(t *testing.T, database *sql.DB, ctx context.Context, attachments []llm.UserAttachment) (int64, int64) {
+	t.Helper()
+
+	chatID, err := kritui_db.AllocateChat(ctx, database, nil, nil)
+	if err != nil {
+		t.Fatalf("allocate attachment chat: %v", err)
+	}
+	messageID, err := kritui_db.InsertMessage(ctx, database, chatID, 0, llm.Message{
+		Role:        "user",
+		Content:     "Attachment fixture",
+		Attachments: attachments,
+	})
+	if err != nil {
+		t.Fatalf("insert attachment message: %v", err)
+	}
+	return chatID, messageID
+}
+
+func serveAttachmentRequest(t *testing.T, handler http.Handler, ctx context.Context, method, chat, message, position string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	request := httptest.NewRequest(method, "/chats/"+chat+"/messages/"+message+"/attachments/"+position, nil)
+	request = request.WithContext(ctx)
+	request.SetPathValue("chat", chat)
+	request.SetPathValue("message", message)
+	request.SetPathValue("position", position)
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func requireInlinePDFDisposition(t *testing.T, header, wantFilename string) {
+	t.Helper()
+
+	if strings.ContainsAny(header, "\r\n") {
+		t.Fatalf("Content-Disposition contains a line break: %q", header)
+	}
+	mediaType, params, err := mime.ParseMediaType(header)
+	if err != nil {
+		t.Fatalf("parse Content-Disposition %q: %v", header, err)
+	}
+	if mediaType != "inline" {
+		t.Errorf("Content-Disposition media type = %q, want inline", mediaType)
+	}
+	if params["filename"] != wantFilename {
+		t.Errorf("Content-Disposition filename = %q, want %q", params["filename"], wantFilename)
+	}
+}
+
+func requireAttachmentNotLeaked(t *testing.T, response *httptest.ResponseRecorder, values ...string) {
+	t.Helper()
+	requireNotContains(t, response.Body.String(), values...)
+	requireNotContains(t, response.Header().Get("Content-Disposition"), values...)
+}
+
+func TestMessageAttachmentHandlerServesPDF(t *testing.T) {
+	database := openTestDatabase(t)
+	ownerContext := kritui_db.WithUser(context.Background(), kritui_db.LegacyOwnerID)
+	const filename = `report "final" (1).pdf`
+	pdf := testPDFBytes()
+	chatID, messageID := seedAttachmentMessage(t, database, ownerContext, []llm.UserAttachment{{
+		Filename: filename, MediaType: "application/pdf", Data: pdf,
+	}})
+	handler := messageAttachmentHandler(database)
+	chat := strconv.FormatInt(chatID, 10)
+	message := strconv.FormatInt(messageID, 10)
+
+	t.Run("GET returns the inline PDF", func(t *testing.T) {
+		response := serveAttachmentRequest(t, handler, ownerContext, http.MethodGet, chat, message, "0", nil)
+
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+		}
+		if got := response.Header().Get("Content-Type"); got != "application/pdf" {
+			t.Errorf("Content-Type = %q, want application/pdf", got)
+		}
+		if got := response.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store", got)
+		}
+		if got := response.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+		}
+		if got := response.Header().Get("Accept-Ranges"); got != "bytes" {
+			t.Errorf("Accept-Ranges = %q, want bytes", got)
+		}
+		requireInlinePDFDisposition(t, response.Header().Get("Content-Disposition"), filename)
+		if !bytes.Equal(response.Body.Bytes(), pdf) {
+			t.Errorf("body = %q, want the stored PDF", response.Body.String())
+		}
+	})
+
+	t.Run("HEAD returns headers without a body", func(t *testing.T) {
+		response := serveAttachmentRequest(t, handler, ownerContext, http.MethodHead, chat, message, "0", nil)
+
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+		}
+		if response.Body.Len() != 0 {
+			t.Errorf("HEAD body length = %d, want 0", response.Body.Len())
+		}
+		if got := response.Header().Get("Content-Length"); got != strconv.Itoa(len(pdf)) {
+			t.Errorf("Content-Length = %q, want %d", got, len(pdf))
+		}
+		if got := response.Header().Get("Content-Type"); got != "application/pdf" {
+			t.Errorf("Content-Type = %q, want application/pdf", got)
+		}
+		requireInlinePDFDisposition(t, response.Header().Get("Content-Disposition"), filename)
+	})
+
+	t.Run("Range returns a partial PDF", func(t *testing.T) {
+		response := serveAttachmentRequest(t, handler, ownerContext, http.MethodGet, chat, message, "0", map[string]string{
+			"Range": "bytes=0-4",
+		})
+
+		if response.Code != http.StatusPartialContent {
+			t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusPartialContent, response.Body.String())
+		}
+		if got := response.Header().Get("Content-Range"); got != fmt.Sprintf("bytes 0-4/%d", len(pdf)) {
+			t.Errorf("Content-Range = %q, want bytes 0-4/%d", got, len(pdf))
+		}
+		if got := response.Body.String(); got != "%PDF-" {
+			t.Errorf("partial body = %q, want %%PDF-", got)
+		}
+		if got := response.Header().Get("Content-Type"); got != "application/pdf" {
+			t.Errorf("Content-Type = %q, want application/pdf", got)
+		}
+	})
+
+	t.Run("unsatisfiable Range is rejected", func(t *testing.T) {
+		response := serveAttachmentRequest(t, handler, ownerContext, http.MethodGet, chat, message, "0", map[string]string{
+			"Range": "bytes=100000-100004",
+		})
+
+		if response.Code != http.StatusRequestedRangeNotSatisfiable {
+			t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusRequestedRangeNotSatisfiable, response.Body.String())
+		}
+		if got := response.Header().Get("Content-Range"); got != fmt.Sprintf("bytes */%d", len(pdf)) {
+			t.Errorf("Content-Range = %q, want bytes */%d", got, len(pdf))
+		}
+		requireAttachmentNotLeaked(t, response, filename, "PRIVATE-ATTACHMENT-BYTES")
+	})
+}
+
+func TestMessageAttachmentHandlerServesPDFAtMixedAttachmentIndex(t *testing.T) {
+	database := openTestDatabase(t)
+	ownerContext := kritui_db.WithUser(context.Background(), kritui_db.LegacyOwnerID)
+	png := testImageBytes(t, "png", 2, 2)
+	pdf := testPDFBytes()
+	firstImage := "first-image.png"
+	pdfName := "second-report.pdf"
+	thirdImage := "third-image.png"
+	chatID, messageID := seedAttachmentMessage(t, database, ownerContext, []llm.UserAttachment{
+		{Filename: firstImage, MediaType: "image/png", Width: 2, Height: 2, Data: png},
+		{Filename: pdfName, MediaType: "application/pdf", Data: pdf},
+		{Filename: thirdImage, MediaType: "image/png", Width: 2, Height: 2, Data: png},
+	})
+	handler := messageAttachmentHandler(database)
+	chat := strconv.FormatInt(chatID, 10)
+	message := strconv.FormatInt(messageID, 10)
+
+	response := serveAttachmentRequest(t, handler, ownerContext, http.MethodGet, chat, message, "1", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("mixed PDF status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireInlinePDFDisposition(t, response.Header().Get("Content-Disposition"), pdfName)
+	if !bytes.Equal(response.Body.Bytes(), pdf) {
+		t.Error("mixed PDF body does not match the stored PDF")
+	}
+
+	for _, position := range []string{"0", "2"} {
+		t.Run("image at "+position, func(t *testing.T) {
+			response := serveAttachmentRequest(t, handler, ownerContext, http.MethodGet, chat, message, position, nil)
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("image attachment status = %d, want %d; body = %q", response.Code, http.StatusNotFound, response.Body.String())
+			}
+			requireAttachmentNotLeaked(t, response, firstImage, pdfName, thirdImage)
+		})
+	}
+}
+
+func TestMessageAttachmentHandlerHidesForeignHiddenAndMissingAttachments(t *testing.T) {
+	database := openTestDatabase(t)
+	ownerContext := kritui_db.WithUser(context.Background(), kritui_db.LegacyOwnerID)
+	privatePDFName := "private-owner-report.pdf"
+	privatePDF := []byte("%PDF-1.7\nPRIVATE-ATTACHMENT-BYTES\n%%EOF\n")
+	chatID, messageID := seedAttachmentMessage(t, database, ownerContext, []llm.UserAttachment{{
+		Filename: privatePDFName, MediaType: "application/pdf", Data: privatePDF,
+	}})
+
+	wrongChatID, err := kritui_db.AllocateChat(ownerContext, database, nil, nil)
+	if err != nil {
+		t.Fatalf("allocate wrong chat: %v", err)
+	}
+
+	hiddenChatID, hiddenMessageID := seedAttachmentMessage(t, database, ownerContext, []llm.UserAttachment{{
+		Filename: "hidden-report.pdf", MediaType: "application/pdf", Data: privatePDF,
+	}})
+	if _, err := kritui_db.UndoLatestTurn(ownerContext, database, hiddenChatID); err != nil {
+		t.Fatalf("hide attachment message: %v", err)
+	}
+
+	imageName := "private-image.png"
+	imageChatID, imageMessageID := seedAttachmentMessage(t, database, ownerContext, []llm.UserAttachment{{
+		Filename: imageName, MediaType: "image/png", Width: 1, Height: 1, Data: testImageBytes(t, "png", 1, 1),
+	}})
+
+	foreign, err := kritui_db.CreateUser(context.Background(), database, "Attachment_Foreign", "encoded-attachment-foreign")
+	if err != nil {
+		t.Fatalf("create foreign account: %v", err)
+	}
+	foreignContext := kritui_db.WithUser(context.Background(), foreign.ID)
+
+	handler := messageAttachmentHandler(database)
+	tests := []struct {
+		name     string
+		ctx      context.Context
+		chatID   int64
+		message  int64
+		position string
+	}{
+		{name: "foreign owner", ctx: foreignContext, chatID: chatID, message: messageID, position: "0"},
+		{name: "wrong chat", ctx: ownerContext, chatID: wrongChatID, message: messageID, position: "0"},
+		{name: "hidden by undo", ctx: ownerContext, chatID: hiddenChatID, message: hiddenMessageID, position: "0"},
+		{name: "missing attachment slot", ctx: ownerContext, chatID: chatID, message: messageID, position: "1"},
+		{name: "missing message", ctx: ownerContext, chatID: chatID, message: messageID + 1000, position: "0"},
+		{name: "missing chat", ctx: ownerContext, chatID: chatID + 1000, message: messageID, position: "0"},
+		{name: "image attachment slot", ctx: ownerContext, chatID: imageChatID, message: imageMessageID, position: "0"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := serveAttachmentRequest(t, handler, test.ctx, http.MethodGet,
+				strconv.FormatInt(test.chatID, 10), strconv.FormatInt(test.message, 10), test.position, nil)
+
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusNotFound, response.Body.String())
+			}
+			requireAttachmentNotLeaked(t, response, privatePDFName, "PRIVATE-ATTACHMENT-BYTES", imageName)
+		})
+	}
+}
+
+func TestMessageAttachmentHandlerRejectsInvalidPathValues(t *testing.T) {
+	database := openTestDatabase(t)
+	ownerContext := kritui_db.WithUser(context.Background(), kritui_db.LegacyOwnerID)
+	privatePDFName := "invalid-path-report.pdf"
+	privatePDF := []byte("%PDF-1.7\nINVALID-PATH-PRIVATE-BYTES\n%%EOF\n")
+	chatID, messageID := seedAttachmentMessage(t, database, ownerContext, []llm.UserAttachment{{
+		Filename: privatePDFName, MediaType: "application/pdf", Data: privatePDF,
+	}})
+	handler := messageAttachmentHandler(database)
+	chat := strconv.FormatInt(chatID, 10)
+	message := strconv.FormatInt(messageID, 10)
+
+	tests := []struct {
+		name          string
+		chat, message string
+		position      string
+	}{
+		{name: "nonnumeric chat", chat: "not-a-chat", message: message, position: "0"},
+		{name: "zero chat", chat: "0", message: message, position: "0"},
+		{name: "negative chat", chat: "-1", message: message, position: "0"},
+		{name: "nonnumeric message", chat: chat, message: "not-a-message", position: "0"},
+		{name: "zero message", chat: chat, message: "0", position: "0"},
+		{name: "negative message", chat: chat, message: "-1", position: "0"},
+		{name: "negative position", chat: chat, message: message, position: "-1"},
+		{name: "nonnumeric position", chat: chat, message: message, position: "not-a-position"},
+		{name: "empty position", chat: chat, message: message, position: ""},
+		{name: "fractional position", chat: chat, message: message, position: "1.5"},
+		{name: "overflowing position", chat: chat, message: message, position: "999999999999999999999"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := serveAttachmentRequest(t, handler, ownerContext, http.MethodGet,
+				test.chat, test.message, test.position, nil)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+			if got := response.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			requireAttachmentNotLeaked(t, response, privatePDFName, "INVALID-PATH-PRIVATE-BYTES")
+		})
+	}
+}
+
+func TestMessageAttachmentRouteRequiresAuthentication(t *testing.T) {
+	database := openTestDatabase(t)
+	handler := newMux(
+		database,
+		newTestToolRegistry(t),
+		newTestCommandRegistry(t, database),
+		newToolCallStore(),
+		nil,
+		newAuthService(database, false),
+	)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := newAuthTestClient()
+
+	const username = "Attachment_Route_User"
+	_, cookie := authSignup(t, client, server.URL, username, authTestPassword, "")
+	user, err := kritui_db.GetUserByUsername(context.Background(), database, username)
+	if err != nil {
+		t.Fatalf("look up signed-up attachment owner: %v", err)
+	}
+	userContext := kritui_db.WithUser(context.Background(), user.ID)
+	privatePDF := []byte("%PDF-1.7\nROUTE-PRIVATE-ATTACHMENT-BYTES\n%%EOF\n")
+	chatID, messageID := seedAttachmentMessage(t, database, userContext, []llm.UserAttachment{{
+		Filename: "route-private-report.pdf", MediaType: "application/pdf", Data: privatePDF,
+	}})
+	path := fmt.Sprintf("/chats/%d/messages/%d/attachments/0", chatID, messageID)
+
+	response, body := authGet(t, client, server.URL+path, nil, nil)
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("unauthenticated attachment status = %d, want %d; body = %q", response.StatusCode, http.StatusSeeOther, body)
+	}
+	if location := response.Header.Get("Location"); !strings.HasPrefix(location, "/login?next=") {
+		t.Errorf("unauthenticated attachment Location = %q, want a login redirect", location)
+	}
+	requireNotContains(t, body, "ROUTE-PRIVATE-ATTACHMENT-BYTES", "route-private-report.pdf")
+
+	response, body = authGet(t, client, server.URL+path, cookie, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated attachment status = %d, want %d; body = %q", response.StatusCode, http.StatusOK, body)
+	}
+	if body != string(privatePDF) {
+		t.Errorf("authenticated attachment body = %q, want the stored PDF", body)
+	}
+	if got := response.Header.Get("Content-Type"); got != "application/pdf" {
+		t.Errorf("Content-Type = %q, want application/pdf", got)
+	}
+	if got := response.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := response.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	requireInlinePDFDisposition(t, response.Header.Get("Content-Disposition"), "route-private-report.pdf")
 }

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"math"
@@ -353,6 +354,46 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 	}
 	copy(snapshot.version.digest[:], digest.Sum(nil))
 	return snapshot, nil
+}
+
+// GetMessageAttachment returns one attachment from an active message in a chat
+// owned by the explicit user in ctx. Foreign, hidden, and missing attachments
+// all return ErrMessageNotFound so callers cannot distinguish them.
+func GetMessageAttachment(ctx context.Context, database *sql.DB, chatID, messageID int64, position int) (llm.UserAttachment, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return llm.UserAttachment{}, fmt.Errorf("get message attachment: %w", err)
+	}
+	var (
+		attachment llm.UserAttachment
+		width      int
+		height     int
+	)
+	err = database.QueryRowContext(ctx, `
+		SELECT attachments.filename, attachments.media_type, attachments.width, attachments.height, attachments.data
+		FROM message_user_images AS attachments
+		JOIN messages ON messages.id = attachments.message_id
+		JOIN chats ON chats.id = messages.chat_id
+		WHERE chats.user_id = ?
+			AND messages.chat_id = ?
+			AND messages.id = ?
+			AND attachments.position = ?
+			AND messages.undo_sequence IS NULL
+	`, userID, chatID, messageID, position).Scan(
+		&attachment.Filename,
+		&attachment.MediaType,
+		&width,
+		&height,
+		&attachment.Data,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return llm.UserAttachment{}, ErrMessageNotFound
+	}
+	if err != nil {
+		return llm.UserAttachment{}, fmt.Errorf("get message attachment: %w", err)
+	}
+	attachment.Width, attachment.Height = width, height
+	return attachment, nil
 }
 
 // loadMessageAttachments restores ordered image and PDF attachments from the

@@ -119,6 +119,7 @@ func newMux(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *com
 	mux.HandleFunc("GET /chats/{chat}/summary", chatSummaryHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, commandRegistry, toolCalls))
 	mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, toolRegistry, toolCalls))
+	mux.HandleFunc("GET /chats/{chat}/messages/{message}/attachments/{position}", messageAttachmentHandler(database))
 	mux.HandleFunc("POST /messages/retry", messageRetryHandler(database, toolRegistry, toolCalls))
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
 	mux.HandleFunc("GET /messages/tools", messageToolStreamHandler(toolCalls))

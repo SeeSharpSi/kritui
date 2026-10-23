@@ -806,6 +806,114 @@ function handleImageViewerClose() {
 
 imageViewerDialog()?.addEventListener('close', handleImageViewerClose);
 
+const pdfViewer = {
+    trigger: null,
+    restoreFocus: true,
+};
+
+function pdfViewerDialog() {
+    return document.getElementById('pdf-viewer');
+}
+
+function pdfViewerFrame(dialog = pdfViewerDialog()) {
+    return dialog?.querySelector('#pdf-viewer-frame') ?? null;
+}
+
+function pdfViewerOpenLink(dialog = pdfViewerDialog()) {
+    return dialog?.querySelector('#pdf-viewer-open') ?? null;
+}
+
+function pdfViewerName(dialog = pdfViewerDialog()) {
+    return dialog?.querySelector('#pdf-viewer-name') ?? null;
+}
+
+function pdfViewerTriggerFor(target) {
+    return target instanceof Element ? target.closest('button[data-pdf-viewer]') : null;
+}
+
+function openPdfViewer(trigger) {
+    if (!(trigger instanceof HTMLButtonElement)) {
+        return;
+    }
+    const dialog = pdfViewerDialog();
+    const frame = pdfViewerFrame(dialog);
+    const link = pdfViewerOpenLink(dialog);
+    const nameElement = pdfViewerName(dialog);
+    const url = trigger.dataset.pdfUrl;
+    if (!dialog || !frame || !link || !url) {
+        return;
+    }
+
+    const name = trigger.dataset.pdfName || trigger.title || 'Attached PDF';
+    const wasOpen = dialog.open;
+    pdfViewer.trigger = trigger;
+    pdfViewer.restoreFocus = true;
+    frame.src = url;
+    frame.title = `PDF document: ${name}`;
+    link.href = url;
+    if (nameElement) {
+        nameElement.textContent = name;
+    }
+    dialog.setAttribute('aria-label', `PDF viewer: ${name}`);
+    if (!wasOpen) {
+        dialog.showModal();
+    }
+}
+
+function clearPdfViewer() {
+    const dialog = pdfViewerDialog();
+    const frame = pdfViewerFrame(dialog);
+    const link = pdfViewerOpenLink(dialog);
+    const nameElement = pdfViewerName(dialog);
+    if (frame) {
+        frame.removeAttribute('src');
+        frame.title = 'PDF document';
+    }
+    if (link) {
+        link.removeAttribute('href');
+    }
+    if (nameElement) {
+        nameElement.textContent = '';
+    }
+    dialog?.setAttribute('aria-label', 'PDF viewer');
+}
+
+function closePdfViewer(restoreFocus = true) {
+    const dialog = pdfViewerDialog();
+    if (!dialog?.open) {
+        return;
+    }
+    pdfViewer.restoreFocus = restoreFocus;
+    dialog.close();
+}
+
+function closePdfViewerWithin(root, restoreFocus = true) {
+    const trigger = pdfViewer.trigger;
+    if (!trigger || !root) {
+        return;
+    }
+    if (root === trigger || root.contains?.(trigger)) {
+        closePdfViewer(restoreFocus);
+    }
+}
+
+function handlePdfViewerClose() {
+    if (pdfViewerDialog()?.open) {
+        return;
+    }
+
+    const trigger = pdfViewer.trigger;
+    const restoreFocus = pdfViewer.restoreFocus;
+    pdfViewer.trigger = null;
+    pdfViewer.restoreFocus = true;
+    clearPdfViewer();
+    if (restoreFocus && trigger?.isConnected) {
+        trigger.focus({ preventScroll: true });
+    }
+}
+
+pdfViewerDialog()?.addEventListener('close', handlePdfViewerClose);
+
 function renderAttachmentPreviews(input) {
     const main = input.closest('main');
     const previews = main?.querySelector('#image-previews');
@@ -1504,6 +1612,7 @@ document.addEventListener('kritui:message-edited', () => {
 document.addEventListener('htmx:before:cleanup', (event) => {
     const root = event.target;
     closeImageViewerWithin(root, false);
+    closePdfViewerWithin(root, false);
     clearComposerAttachments(root);
     destroyMessageListStates(root);
     destroyShell(root);
@@ -1556,6 +1665,25 @@ document.addEventListener('click', (event) => {
     const viewerDialog = event.target.closest?.('#image-viewer');
     if (viewerDialog && event.target === viewerDialog) {
         closeImageViewer();
+        return;
+    }
+
+    const pdfViewerTrigger = pdfViewerTriggerFor(event.target);
+    if (pdfViewerTrigger) {
+        event.preventDefault();
+        openPdfViewer(pdfViewerTrigger);
+        return;
+    }
+
+    const pdfViewerClose = event.target.closest?.('[data-pdf-viewer-close]');
+    if (pdfViewerClose) {
+        closePdfViewer();
+        return;
+    }
+
+    const pdfViewerDialogElement = event.target.closest?.('#pdf-viewer');
+    if (pdfViewerDialogElement && event.target === pdfViewerDialogElement) {
+        closePdfViewer();
         return;
     }
 

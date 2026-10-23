@@ -280,6 +280,50 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 	}
 }
 
+func messageAttachmentHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		chatID, ok := positiveID(r.PathValue("chat"))
+		if !ok {
+			http.Error(w, "A valid chat is required.", http.StatusBadRequest)
+			return
+		}
+		messageID, ok := positiveID(r.PathValue("message"))
+		if !ok {
+			http.Error(w, "A valid message is required.", http.StatusBadRequest)
+			return
+		}
+		position, err := strconv.Atoi(r.PathValue("position"))
+		if err != nil || position < 0 {
+			http.Error(w, "A valid attachment position is required.", http.StatusBadRequest)
+			return
+		}
+
+		attachment, err := kritui_db.GetMessageAttachment(r.Context(), database, chatID, messageID, position)
+		switch {
+		case errors.Is(err, kritui_db.ErrMessageNotFound):
+			http.Error(w, "Attachment not found.", http.StatusNotFound)
+			return
+		case err != nil:
+			log.Printf("get message attachment: %v", err)
+			http.Error(w, "Failed to load attachment.", http.StatusInternalServerError)
+			return
+		}
+		if attachment.MediaType != "application/pdf" {
+			http.Error(w, "Attachment not found.", http.StatusNotFound)
+			return
+		}
+
+		if disposition := mime.FormatMediaType("inline", map[string]string{"filename": attachment.Filename}); disposition != "" {
+			w.Header().Set("Content-Disposition", disposition)
+		}
+		w.Header().Set("Content-Type", "application/pdf")
+		http.ServeContent(w, r, attachment.Filename, time.Time{}, bytes.NewReader(attachment.Data))
+	}
+}
+
 func renderCommandResult(w http.ResponseWriter, r *http.Request, result commands.Result) {
 	var fragment bytes.Buffer
 	if result.Body != nil {

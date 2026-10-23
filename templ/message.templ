@@ -32,6 +32,10 @@ func userAttachmentLabel(attachment llm.UserAttachment) string {
 	return "Attached image"
 }
 
+func messageAttachmentURL(chatID string, messageID int64, index int) string {
+	return "/chats/" + chatID + "/messages/" + strconv.FormatInt(messageID, 10) + "/attachments/" + strconv.Itoa(index)
+}
+
 func messageHasPDF(attachments []llm.UserAttachment) bool {
 	for _, attachment := range attachments {
 		if isPDFAttachment(attachment) {
@@ -134,12 +138,29 @@ templ UserMessage(chatID string, message llm.Message) {
 	<article class="message user" id={ "message-" + strconv.FormatInt(message.ID, 10) }>
 		if len(message.Attachments) > 0 {
 			<div class={ "message-images", "message-attachments", templ.KV("attachments-static", messageHasPDF(message.Attachments)) } aria-label="Attached files">
-				for _, attachment := range message.Attachments {
+				for index, attachment := range message.Attachments {
 					if isPDFAttachment(attachment) {
-						<div class="message-attachment-pdf" title={ userAttachmentLabel(attachment) }>
-							<span class="message-attachment-pdf-label">PDF</span>
-							<span class="message-attachment-pdf-name">{ userAttachmentLabel(attachment) }</span>
-						</div>
+						if message.ID > 0 && chatID != "" {
+							<button
+								type="button"
+								class="message-attachment-pdf"
+								title={ userAttachmentLabel(attachment) }
+								data-pdf-viewer
+								data-pdf-url={ messageAttachmentURL(chatID, message.ID, index) }
+								data-pdf-name={ userAttachmentLabel(attachment) }
+								aria-haspopup="dialog"
+								aria-controls="pdf-viewer"
+								aria-label={ "Open " + userAttachmentLabel(attachment) }
+							>
+								<span class="message-attachment-pdf-label">PDF</span>
+								<span class="message-attachment-pdf-name">{ userAttachmentLabel(attachment) }</span>
+							</button>
+						} else {
+							<div class="message-attachment-pdf" title={ userAttachmentLabel(attachment) }>
+								<span class="message-attachment-pdf-label">PDF</span>
+								<span class="message-attachment-pdf-name">{ userAttachmentLabel(attachment) }</span>
+							</div>
+						}
 					} else if src := userAttachmentDataURL(attachment); src != "" {
 						<img
 							class="message-image"
