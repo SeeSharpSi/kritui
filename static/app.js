@@ -724,12 +724,95 @@ function syncComposerMessageRequirement(input) {
     }
 }
 
+const imageViewer = {
+    trigger: null,
+    restoreFocus: true,
+};
+
+function imageViewerDialog() {
+    return document.getElementById('image-viewer');
+}
+
+function imageViewerImage(dialog = imageViewerDialog()) {
+    return dialog?.querySelector('#image-viewer-image') ?? null;
+}
+
+function imageViewerTriggerFor(target) {
+    return target instanceof Element ? target.closest('img[data-image-viewer]') : null;
+}
+
+function openImageViewer(trigger) {
+    if (!(trigger instanceof HTMLImageElement)) {
+        return;
+    }
+    const dialog = imageViewerDialog();
+    const image = imageViewerImage(dialog);
+    const src = trigger.currentSrc || trigger.src;
+    if (!dialog || !image || !src) {
+        return;
+    }
+
+    const wasOpen = dialog.open;
+    imageViewer.trigger = trigger;
+    imageViewer.restoreFocus = true;
+    image.src = src;
+    image.alt = trigger.title || trigger.alt || 'Attached image';
+    if (!wasOpen) {
+        dialog.showModal();
+    }
+}
+
+function clearImageViewer() {
+    const image = imageViewerImage();
+    if (image) {
+        image.removeAttribute('src');
+        image.alt = '';
+    }
+}
+
+function closeImageViewer(restoreFocus = true) {
+    const dialog = imageViewerDialog();
+    if (!dialog?.open) {
+        return;
+    }
+    imageViewer.restoreFocus = restoreFocus;
+    dialog.close();
+}
+
+function closeImageViewerWithin(root, restoreFocus = true) {
+    const trigger = imageViewer.trigger;
+    if (!trigger || !root) {
+        return;
+    }
+    if (root === trigger || root.contains?.(trigger)) {
+        closeImageViewer(restoreFocus);
+    }
+}
+
+function handleImageViewerClose() {
+    if (imageViewerDialog()?.open) {
+        return;
+    }
+
+    const trigger = imageViewer.trigger;
+    const restoreFocus = imageViewer.restoreFocus;
+    imageViewer.trigger = null;
+    imageViewer.restoreFocus = true;
+    clearImageViewer();
+    if (restoreFocus && trigger?.isConnected) {
+        trigger.focus({ preventScroll: true });
+    }
+}
+
+imageViewerDialog()?.addEventListener('close', handleImageViewerClose);
+
 function renderAttachmentPreviews(input) {
+    const main = input.closest('main');
+    const previews = main?.querySelector('#image-previews');
+    closeImageViewerWithin(previews, false);
     const state = attachmentState(input);
     state.urls.forEach((url) => URL.revokeObjectURL(url));
     state.urls = [];
-    const main = input.closest('main');
-    const previews = main?.querySelector('#image-previews');
     if (previews) {
         previews.replaceChildren();
         previews.hidden = state.files.length === 0;
@@ -765,6 +848,12 @@ function renderAttachmentPreviews(input) {
             const image = document.createElement('img');
             image.alt = '';
             image.title = name;
+            image.dataset.imageViewer = '';
+            image.setAttribute('role', 'button');
+            image.tabIndex = 0;
+            image.setAttribute('aria-haspopup', 'dialog');
+            image.setAttribute('aria-controls', 'image-viewer');
+            image.setAttribute('aria-label', `Open ${name}`);
             const url = URL.createObjectURL(file);
             state.urls.push(url);
             image.src = url;
@@ -826,6 +915,13 @@ function clearComposerAttachments(root) {
         : root.querySelector?.('#image-input');
     if (input) {
         const state = attachmentStates.get(input);
+        const previews = input.closest('main')?.querySelector('#image-previews');
+        const viewerSource = imageViewerImage()?.getAttribute('src') ?? '';
+        if (state?.urls.includes(viewerSource)) {
+            closeImageViewer(false);
+        } else {
+            closeImageViewerWithin(previews, false);
+        }
         if (state) {
             state.urls.forEach((url) => URL.revokeObjectURL(url));
             state.urls = [];
@@ -1098,6 +1194,17 @@ document.addEventListener('focusin', (event) => {
 
 document.addEventListener('keydown', (event) => {
     const input = event.target;
+
+    if (!event.isComposing && (event.key === 'Enter' || event.key === ' ')) {
+        const viewerTrigger = imageViewerTriggerFor(input);
+        if (viewerTrigger) {
+            event.preventDefault();
+            if (!event.repeat) {
+                openImageViewer(viewerTrigger);
+            }
+            return;
+        }
+    }
 
     if (input.matches('.message-edit-input')) {
         if (event.key === 'Escape' && !event.isComposing) {
@@ -1396,6 +1503,7 @@ document.addEventListener('kritui:message-edited', () => {
 });
 document.addEventListener('htmx:before:cleanup', (event) => {
     const root = event.target;
+    closeImageViewerWithin(root, false);
     clearComposerAttachments(root);
     destroyMessageListStates(root);
     destroyShell(root);
@@ -1432,6 +1540,25 @@ document.addEventListener('htmx:confirm', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+    const viewerTrigger = imageViewerTriggerFor(event.target);
+    if (viewerTrigger) {
+        event.preventDefault();
+        openImageViewer(viewerTrigger);
+        return;
+    }
+
+    const viewerClose = event.target.closest?.('[data-image-viewer-close]');
+    if (viewerClose) {
+        closeImageViewer();
+        return;
+    }
+
+    const viewerDialog = event.target.closest?.('#image-viewer');
+    if (viewerDialog && event.target === viewerDialog) {
+        closeImageViewer();
+        return;
+    }
+
     const attachButton = event.target.closest('#attach-button');
     if (attachButton) {
         const imageInput = attachButton.closest('form')?.querySelector('#image-input');

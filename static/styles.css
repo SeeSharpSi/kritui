@@ -69,6 +69,82 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
+.image-viewer {
+    position: fixed;
+    inset: 0;
+    display: none;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    max-height: none;
+    box-sizing: border-box;
+    margin: 0;
+    padding:
+        calc(max(1rem, env(safe-area-inset-top)) + 2.75rem)
+        max(1rem, env(safe-area-inset-right))
+        calc(max(1rem, env(safe-area-inset-bottom)) + 2.75rem)
+        max(1rem, env(safe-area-inset-left));
+    border: 0;
+    border-radius: 0;
+    background: color-mix(in srgb, var(--color-background) 92%, transparent);
+    color: var(--color-text);
+    overflow: hidden;
+    grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+    place-items: center;
+
+    &[open] {
+        display: grid;
+    }
+
+    &::backdrop {
+        background: rgb(0 0 0 / 80%);
+    }
+}
+
+.image-viewer-image {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    min-width: 0;
+    min-height: 0;
+    object-fit: contain;
+}
+
+.image-viewer-close {
+    position: absolute;
+    top: max(1rem, env(safe-area-inset-top));
+    right: max(1rem, env(safe-area-inset-right));
+    display: grid;
+    width: 2.75rem;
+    height: 2.75rem;
+    box-sizing: border-box;
+    padding: 0;
+    border: 1px solid var(--color-border-strong);
+    border-radius: 0;
+    background: var(--color-surface);
+    color: var(--color-text);
+    cursor: pointer;
+    place-items: center;
+
+    &:hover,
+    &:focus-visible {
+        border-color: var(--color-accent);
+        color: var(--color-accent);
+    }
+}
+
+main .message.user .message-image[data-image-viewer],
+main .chat > .image-previews .image-preview img[data-image-viewer] {
+    cursor: zoom-in;
+}
+
+main .message.user .message-image[data-image-viewer]:focus-visible,
+main .chat > .image-previews .image-preview img[data-image-viewer]:focus-visible {
+    outline-offset: -3px;
+}
+
 main {
     --shell-top-space: max(16px, env(safe-area-inset-top));
     width: min(60rem, calc(100% - 2rem));
@@ -2393,6 +2469,29 @@ main {
         margin-top: -1.666667rem;
     }
 
+}
+
+@media (pointer: coarse) {
+    main .chat > .image-previews .image-preview.attachment-image {
+        display: flex;
+        flex-direction: column;
+        height: auto;
+
+        > img {
+            height: auto;
+            aspect-ratio: 1;
+        }
+
+        > .image-preview-remove {
+            position: static;
+            width: 100%;
+            height: 2rem;
+            box-sizing: border-box;
+            flex-shrink: 0;
+            border: 0;
+            border-top: 1px solid var(--color-border);
+        }
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {

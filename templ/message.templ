@@ -141,7 +141,20 @@ templ UserMessage(chatID string, message llm.Message) {
 							<span class="message-attachment-pdf-name">{ userAttachmentLabel(attachment) }</span>
 						</div>
 					} else if src := userAttachmentDataURL(attachment); src != "" {
-						<img class="message-image" src={ src } alt={ userAttachmentLabel(attachment) } title={ userAttachmentLabel(attachment) } loading="lazy" decoding="async"/>
+						<img
+							class="message-image"
+							src={ src }
+							alt={ userAttachmentLabel(attachment) }
+							title={ userAttachmentLabel(attachment) }
+							loading="lazy"
+							decoding="async"
+							role="button"
+							tabindex="0"
+							data-image-viewer
+							aria-haspopup="dialog"
+							aria-controls="image-viewer"
+							aria-label={ "Open " + userAttachmentLabel(attachment) }
+						/>
 					}
 				}
 			</div>

@@ -4,7 +4,7 @@ import (
 	"seesharpsi/kritui/themes"
 )
 
-const staticAssetVersion = "36"
+const staticAssetVersion = "37"
 
 func staticAsset(path string) string {
 	return path + "?v=" + staticAssetVersion
@@ -38,6 +38,19 @@ templ Layout(title string, theme themes.Theme) {
 				<span class="braille-spinner" aria-hidden="true"></span>
 			</div>
 			{ children... }
+			<dialog id="image-viewer" class="image-viewer" aria-label="Image viewer">
+				<img id="image-viewer-image" class="image-viewer-image" alt=""/>
+				<button
+					type="button"
+					class="image-viewer-close"
+					data-image-viewer-close
+					aria-label="Close image viewer"
+					title="Close image viewer"
+					autofocus
+				>
+					@Icon("M18 6 6 18", "M6 6l12 12")
+				</button>
+			</dialog>
 		</body>
 	</html>
 }
