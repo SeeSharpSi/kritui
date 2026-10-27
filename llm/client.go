@@ -818,7 +818,7 @@ func endpointError(resp *http.Response) error {
 		return fmt.Errorf("llm: read error response: %w", err)
 	}
 
-	message := strings.TrimSpace(string(body))
+	message := ""
 	var errorResponse struct {
 		Error struct {
 			Message string `json:"message"`

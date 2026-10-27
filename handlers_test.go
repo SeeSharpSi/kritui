@@ -4613,7 +4613,7 @@ func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
 				Message:    "provider secret detail",
 				Body:       `{"secret":"provider credential"}`,
 			},
-			want: "Model endpoint returned HTTP 502: Bad Gateway.",
+			want: "Model endpoint returned HTTP 502: provider secret detail.",
 		},
 		{
 			name: "unknown provider status",
@@ -4621,7 +4621,7 @@ func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
 				StatusCode: 700,
 				Message:    "provider secret detail",
 			},
-			want: "Model endpoint returned an error.",
+			want: "Model endpoint returned HTTP 700: provider secret detail.",
 		},
 		{
 			name: "tool call limit",

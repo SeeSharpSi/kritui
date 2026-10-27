@@ -1199,11 +1199,17 @@ func completionErrorMessage(err error) string {
 	}
 	var apiError *llm.APIError
 	if errors.As(err, &apiError) && apiError != nil {
-		status := http.StatusText(apiError.StatusCode)
-		if status == "" {
+		message := strings.TrimSpace(apiError.Message)
+		if message == "" {
+			message = http.StatusText(apiError.StatusCode)
+		}
+		if message == "" {
 			return "Model endpoint returned an error."
 		}
-		return fmt.Sprintf("Model endpoint returned HTTP %d: %s.", apiError.StatusCode, status)
+		if apiError.StatusCode > 0 {
+			return fmt.Sprintf("Model endpoint returned HTTP %d: %s.", apiError.StatusCode, message)
+		}
+		return fmt.Sprintf("Model endpoint returned an error: %s.", message)
 	}
 	var limitError *llm.MaxToolRoundsError
 	if errors.As(err, &limitError) {
