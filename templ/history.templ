@@ -20,7 +20,9 @@ templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
 		}
 	>
 		<div id="messages" class="message-thread">
-			@Messages(chatID, messages...)
+			<div id="message-history">
+				@Messages(chatID, messages...)
+			</div>
 			{ children... }
 		</div>
 		if len(messages) == 0 {

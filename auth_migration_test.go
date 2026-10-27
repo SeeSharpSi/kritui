@@ -131,8 +131,8 @@ func TestUserAccountsMigrationPreservesVersion23Ownership(t *testing.T) {
 	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 25 || version != len(databaseMigrations) {
-		t.Fatalf("migrated version = %d, want 25 and %d", version, len(databaseMigrations))
+	if version != 26 || version != len(databaseMigrations) {
+		t.Fatalf("migrated version = %d, want 26 and %d", version, len(databaseMigrations))
 	}
 
 	var ownerDisabled int
@@ -352,8 +352,8 @@ func TestLegacyAccountIdentityMigration(t *testing.T) {
 		if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 			t.Fatal(err)
 		}
-		if version != 25 {
-			t.Fatalf("migrated version = %d, want 25", version)
+		if version != 26 {
+			t.Fatalf("migrated version = %d, want 26", version)
 		}
 		if err := database.QueryRow(`
 			SELECT username, password_hash, disabled FROM users WHERE id = 1

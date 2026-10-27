@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -36,15 +37,17 @@ var (
 const legacyToolCallOwner int64 = kritui_db.LegacyOwnerID
 
 type toolCallTracker struct {
-	mu        sync.RWMutex
-	calls     []llm.ToolCall
-	running   string
-	errors    map[string]string
-	terminal  string
-	finished  bool
-	updates   chan struct{}
-	done      chan struct{}
-	closeOnce sync.Once
+	mu           sync.RWMutex
+	calls        []llm.ToolCall
+	running      string
+	errors       map[string]string
+	terminal     string
+	finished     bool
+	presentation string
+	revision     uint64
+	updates      chan struct{}
+	done         chan struct{}
+	closeOnce    sync.Once
 }
 
 func newToolCallTracker() *toolCallTracker {
@@ -73,6 +76,22 @@ func (t *toolCallTracker) observe(call llm.ToolCall, running bool, result string
 }
 
 func (t *toolCallTracker) streamSnapshot() ([]llm.ToolCall, string, map[string]string, string, bool, <-chan struct{}) {
+	state := t.snapshot()
+	return state.calls, state.running, state.errors, state.terminal, state.finished, state.updates
+}
+
+type toolCallSnapshot struct {
+	calls        []llm.ToolCall
+	running      string
+	errors       map[string]string
+	terminal     string
+	finished     bool
+	presentation string
+	revision     uint64
+	updates      <-chan struct{}
+}
+
+func (t *toolCallTracker) snapshot() toolCallSnapshot {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -80,7 +99,42 @@ func (t *toolCallTracker) streamSnapshot() ([]llm.ToolCall, string, map[string]s
 	for id, message := range t.errors {
 		errors[id] = message
 	}
-	return append([]llm.ToolCall(nil), t.calls...), t.running, errors, t.terminal, t.finished, t.updates
+	return toolCallSnapshot{
+		calls: append([]llm.ToolCall(nil), t.calls...), running: t.running, errors: errors,
+		terminal: t.terminal, finished: t.finished, presentation: t.presentation,
+		revision: t.revision, updates: t.updates,
+	}
+}
+
+// present refreshes the transcript and inbox without changing in-flight tools.
+func (t *toolCallTracker) present(content string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.presentLocked(content)
+}
+
+func (t *toolCallTracker) presentLocked(content string) {
+	t.presentation = content
+	t.revision++
+	close(t.updates)
+	t.updates = make(chan struct{})
+}
+
+// presentCheckpoint atomically moves archived batches into the transcript and
+// keeps the entire unfinished tool chain in the expanded live list. Only the
+// completion worker calls this, after all tools in a batch have finished.
+func (t *toolCallTracker) presentCheckpoint(ctx context.Context, chat string, messages []llm.Message, items []kritui_db.InboxItem) {
+	view := templates.ActiveCompletionView(messages)
+	content := renderCompletionFragment(ctx, templates.CompletionResult(chat, view.Messages, items))
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls = view.ToolCalls
+	t.running = ""
+	t.errors = view.ToolErrors
+	if t.errors == nil {
+		t.errors = make(map[string]string)
+	}
+	t.presentLocked(content)
 }
 
 func (t *toolCallTracker) finish(content string) {
@@ -130,6 +184,9 @@ type activeCompletion struct {
 // live (unclaimed or running, not yet finished) tracker may exist per chat;
 // finished trackers are retained for reconnect replay until their TTL lapses.
 type toolCallStore struct {
+	// workMu serializes durable admission and completion boundaries. It is never
+	// held while calling a provider or executing a tool.
+	workMu       sync.Mutex
 	mu           sync.RWMutex
 	entries      map[string]*toolCallTrackerEntry
 	unclaimedTTL time.Duration
@@ -330,6 +387,7 @@ func messageToolStreamHandlerWithHeartbeat(toolCalls *toolCallStore, heartbeatIn
 
 		heartbeat := time.NewTicker(heartbeatInterval)
 		defer heartbeat.Stop()
+		var presentationRevision uint64
 
 		for {
 			select {
@@ -341,15 +399,21 @@ func messageToolStreamHandlerWithHeartbeat(toolCalls *toolCallStore, heartbeatIn
 			default:
 			}
 
-			calls, running, toolErrors, terminal, finished, updates := tracker.streamSnapshot()
-			if finished {
-				if err := writeServerSentPartial(w, "#completion-"+requestID, "outerHTML", terminal); err == nil {
+			state := tracker.snapshot()
+			if state.finished {
+				if err := writeServerSentPartial(w, "#completion-"+requestID, "outerHTML", state.terminal); err == nil {
 					flusher.Flush()
 				}
 				return
 			}
+			if state.revision != presentationRevision {
+				if err := writeServerSentEvent(w, "", state.presentation); err != nil {
+					return
+				}
+				presentationRevision = state.revision
+			}
 			var content strings.Builder
-			if err := templates.ToolCalls(calls, running, toolErrors).Render(r.Context(), &content); err != nil {
+			if err := templates.ToolCalls(state.calls, state.running, state.errors).Render(r.Context(), &content); err != nil {
 				log.Printf("render tool-call stream: %v", err)
 				return
 			}
@@ -359,7 +423,7 @@ func messageToolStreamHandlerWithHeartbeat(toolCalls *toolCallStore, heartbeatIn
 			flusher.Flush()
 
 			select {
-			case <-updates:
+			case <-state.updates:
 			case <-tracker.done:
 				if err := writeServerSentEvent(w, toolCallCloseEvent, ""); err == nil {
 					flusher.Flush()

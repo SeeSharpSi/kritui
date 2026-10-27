@@ -123,6 +123,9 @@ func newMux(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *com
 	mux.HandleFunc("POST /messages/retry", messageRetryHandler(database, toolRegistry, toolCalls))
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
 	mux.HandleFunc("GET /messages/tools", messageToolStreamHandler(toolCalls))
+	mux.HandleFunc("PATCH /chats/{chat}/inbox/{input}", inboxMutationHandler(database, toolRegistry, toolCalls, toolCallLogger))
+	mux.HandleFunc("DELETE /chats/{chat}/inbox/{input}", inboxMutationHandler(database, toolRegistry, toolCalls, toolCallLogger))
+	mux.HandleFunc("POST /chats/{chat}/inbox/resume", inboxResumeHandler(database, toolRegistry, toolCalls, toolCallLogger))
 	mux.Handle("GET /static/", staticHandler(staticFiles))
 	mux.HandleFunc("GET /logo.png", logoHandler(staticFiles))
 	mux.HandleFunc("GET /favicon.ico", faviconHandler(staticFiles))
@@ -504,6 +507,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	},
 	migrateUserAccounts,
 	migrateLegacyAccountIdentity,
+	kritui_db.MigrateInbox,
 }
 
 // rebuildSettingsThemeConstraint rebuilds the settings table so its theme

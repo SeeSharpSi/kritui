@@ -71,6 +71,16 @@ func AllocateChat(ctx context.Context, db *sql.DB, tools, appendIDs []string) (i
 				FROM messages
 				WHERE messages.chat_id = chats.id
 			)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM inbox_items
+				WHERE inbox_items.chat_id = chats.id AND inbox_items.status = 'pending'
+			)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM completion_state
+				WHERE completion_state.chat_id = chats.id AND completion_state.pending = 1
+			)
 	`, userID, id); err != nil {
 		return 0, fmt.Errorf("remove abandoned chats: %w", err)
 	}

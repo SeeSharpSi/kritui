@@ -28,6 +28,21 @@ func (e *MaxToolRoundsError) Error() string {
 	return fmt.Sprintf("llm: reached maximum of %d consecutive tool-call rounds", e.Limit)
 }
 
+// ConversationBoundary describes messages generated since the previous
+// boundary callback and whether the conversation can continue with another
+// provider request. Generated is nil at the initial boundary.
+type ConversationBoundary struct {
+	Generated         []Message
+	NeedsContinuation bool
+}
+
+// ConversationInput supplies user messages and an optional refreshed prompt
+// context at a conversation boundary.
+type ConversationInput struct {
+	Messages      []Message
+	PromptContext *PromptContext
+}
+
 // Conversation retains message history and executes tool calls requested by
 // the model. A Conversation must not be used concurrently.
 type Conversation struct {
@@ -36,6 +51,7 @@ type Conversation struct {
 	maxToolRounds     int
 	toolCallLogger    *log.Logger
 	toolCallObserver  func(ToolCall, bool, string)
+	roundBoundary     func(context.Context, ConversationBoundary) (ConversationInput, error)
 	messages          []Message
 	toolResultElision ToolResultElisionConfig
 	summarizer        *Client
@@ -55,6 +71,16 @@ func (c *Conversation) SetToolCallLogger(logger *log.Logger) {
 func (c *Conversation) SetToolCallObserver(observer func(ToolCall, bool, string)) {
 	if c != nil {
 		c.toolCallObserver = observer
+	}
+}
+
+// SetRoundBoundary configures a callback invoked before the first provider
+// request and after each completed assistant response, including all of its
+// tool results, before the next provider request or final return. Returned
+// user messages are appended to history and continue the conversation.
+func (c *Conversation) SetRoundBoundary(boundary func(context.Context, ConversationBoundary) (ConversationInput, error)) {
+	if c != nil {
+		c.roundBoundary = boundary
 	}
 }
 
@@ -153,6 +179,18 @@ func (c *Conversation) Complete(ctx context.Context) error {
 	}
 
 	toolRounds := 0
+	boundaryCursor := 0
+	if c.roundBoundary != nil {
+		injected, err := c.invokeRoundBoundary(ctx, ConversationBoundary{NeedsContinuation: true})
+		if err != nil {
+			return err
+		}
+		if injected {
+			toolRounds = 0
+		}
+		boundaryCursor = len(c.messages)
+	}
+
 	for {
 		requestMessages := c.messages
 		if c.toolResultElision.Mode != "" && c.toolResultElision.Mode != ToolResultElisionNone {
@@ -173,7 +211,22 @@ func (c *Conversation) Complete(ctx context.Context) error {
 		calls := completion.ToolCalls
 		if len(calls) == 0 {
 			c.messages = append(c.messages, cloneMessage(completion))
-			return nil
+			if c.roundBoundary == nil {
+				return nil
+			}
+			injected, err := c.invokeRoundBoundary(ctx, ConversationBoundary{
+				Generated:         cloneMessages(c.messages[boundaryCursor:]),
+				NeedsContinuation: false,
+			})
+			if err != nil {
+				return err
+			}
+			boundaryCursor = len(c.messages)
+			if !injected {
+				return nil
+			}
+			toolRounds = 0
+			continue
 		}
 		if toolRounds >= c.maxToolRounds {
 			return &MaxToolRoundsError{Limit: c.maxToolRounds}
@@ -193,7 +246,51 @@ func (c *Conversation) Complete(ctx context.Context) error {
 		}
 
 		toolRounds++
+		if c.roundBoundary == nil {
+			continue
+		}
+		injected, err := c.invokeRoundBoundary(ctx, ConversationBoundary{
+			Generated:         cloneMessages(c.messages[boundaryCursor:]),
+			NeedsContinuation: true,
+		})
+		if err != nil {
+			return err
+		}
+		if injected {
+			toolRounds = 0
+		}
+		boundaryCursor = len(c.messages)
 	}
+}
+
+func (c *Conversation) invokeRoundBoundary(ctx context.Context, boundary ConversationBoundary) (bool, error) {
+	input, err := c.roundBoundary(ctx, boundary)
+	if err != nil {
+		return false, err
+	}
+	return c.applyRoundBoundaryInput(input)
+}
+
+func (c *Conversation) applyRoundBoundaryInput(input ConversationInput) (bool, error) {
+	messages := cloneMessages(input.Messages)
+	for index, message := range messages {
+		if message.Role != "user" {
+			return false, fmt.Errorf("llm: boundary message %d role must be user, got %q", index, message.Role)
+		}
+		if strings.TrimSpace(message.Content) == "" && len(message.Attachments) == 0 {
+			return false, fmt.Errorf("llm: boundary message %d must contain content or attachments", index)
+		}
+		for _, attachment := range message.Attachments {
+			if err := validateAttachment(attachment); err != nil {
+				return false, fmt.Errorf("llm: boundary message %d: %w", index, err)
+			}
+		}
+	}
+	if input.PromptContext != nil {
+		c.messages[0] = Message{Role: "system", Content: systemPromptWithContext(*input.PromptContext)}
+	}
+	c.messages = append(c.messages, messages...)
+	return len(messages) > 0, nil
 }
 
 func (c *Conversation) executeToolCall(ctx context.Context, call ToolCall) (result string, err error) {

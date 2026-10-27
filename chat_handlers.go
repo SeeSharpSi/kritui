@@ -101,9 +101,28 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 				return
 			}
 		}
-		if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
+		if len(messages) == 0 {
 			completion = activeCompletion{}
 			completionActive = false
+		}
+		completionState, err := kritui_db.GetCompletionState(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("get completion state: %v", err)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load completion state.")
+			return
+		}
+		inbox, err := kritui_db.GetInbox(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("get prompt inbox: %v", err)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load pending prompts.")
+			return
+		}
+		if !completion.started && !completionState.Pending && len(inbox) == 0 && len(messages) > 0 {
+			last := messages[len(messages)-1]
+			if last.Role == "assistant" && len(last.ToolCalls) == 0 {
+				completion = activeCompletion{}
+				completionActive = false
+			}
 		}
 		enabledTools, err := kritui_db.GetChatTools(r.Context(), database, chatID)
 		if err != nil {
@@ -135,6 +154,11 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 				selectedModel = completion.model
 			}
 			enabledTools = completion.tools
+		} else if completionState.Pending {
+			if completionState.Model != "" {
+				selectedModel = completionState.Model
+			}
+			enabledTools = completionState.Tools
 		}
 		models, selectedModel := availableModels(r, database, selectedModel)
 		if renderSettings.defaultModel != "" && !slices.Contains(models, renderSettings.defaultModel) {
@@ -162,6 +186,8 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			EnabledAppendIDs:         enabledAppendIDs,
 			CompletionRequestID:      completion.requestID,
 			CompletionStarted:        completion.started,
+			CompletionInterrupted:    completionState.Pending && !completionActive,
+			Inbox:                    inbox,
 			CommandDefinitions:       commandRegistry.Definitions(),
 			Theme:                    renderSettings.theme,
 		}

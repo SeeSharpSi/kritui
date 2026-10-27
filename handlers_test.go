@@ -409,10 +409,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=39`,
-		`/static/hx-sse.js?v=39`,
-		`/static/app.js?v=39`,
-		`/static/styles.css?v=39`,
+		`/static/htmx.min.js?v=42`,
+		`/static/hx-sse.js?v=42`,
+		`/static/app.js?v=42`,
+		`/static/styles.css?v=42`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -562,7 +562,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, string(script), `moveCommandSelection(input, 1)`)
 	requireContains(t, string(script), `activateCommandOption(input, selected)`)
 	requireContains(t, string(script), `option.dataset.commandRequiresArguments === 'true'`)
-	requireContains(t, string(script), `input.form?.requestSubmit()`)
+	requireContains(t, string(script), `submitMessageForm(input.form)`)
 	requireContains(t, string(script), `if (!event.detail?.preserveInput)`)
 	requireContains(t, string(script), `input[name^="mcp_authorization_"]`)
 	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger", "htmx:oobBeforeSwap", "htmx:oobAfterSwap", "htmx:configRequest")
@@ -1023,7 +1023,8 @@ func TestMessageHandlerNewMessageDiscardsRedoHistory(t *testing.T) {
 	if _, err := kritui_db.UndoLatestTurn(context.Background(), database, 1); err != nil {
 		t.Fatalf("undo original turn: %v", err)
 	}
-	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
+	toolCalls := newToolCallStore()
+	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls)
 
 	response := postForm(t, handler, "/messages?chat=1", url.Values{
 		"message": {"Replacement question"},
@@ -1047,6 +1048,9 @@ func TestMessageHandlerNewMessageDiscardsRedoHistory(t *testing.T) {
 		t.Errorf("hidden messages = %d, want 0", hidden)
 	}
 
+	if active, ok := toolCalls.active(1); ok {
+		toolCalls.delete(active.requestID)
+	}
 	redo := postForm(t, handler, "/messages?chat=1", url.Values{"message": {"/redo"}})
 	if redo.Code != http.StatusConflict {
 		t.Fatalf("redo status = %d, want %d; body = %q", redo.Code, http.StatusConflict, redo.Body.String())
@@ -3225,7 +3229,7 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`hx-post="/messages/complete?chat=1"`,
 		`hx-trigger="load"`,
 		`hx-sync="#messages:queue last"`,
-		`hx-disable="#message-form button[type='submit']"`,
+		`hx-target="#message-history"`,
 		`hx-sse:connect="/messages/tools?request=`,
 		`hx-sse:close="close"`,
 		`hx-config="sse.pauseOnBackground:false"`,
@@ -3537,7 +3541,7 @@ func TestMessageHandlerUsesStoredDefaultWhenModelIsMissing(t *testing.T) {
 	requireContains(t, response.Body.String(), "stored-default", `name="model" value="stored-default"`)
 }
 
-func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
+func TestMessageHandlerAdmitsSteeringForActiveChat(t *testing.T) {
 	database := openTestDatabase(t)
 	seedCurrentChat(t, database, 1)
 	seedCurrentChat(t, database, 2)
@@ -3555,10 +3559,10 @@ func TestMessageHandlerRejectsConcurrentCompletionForSameChat(t *testing.T) {
 		t.Fatalf("first status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	response := submit(1, "Second")
-	if response.Code != http.StatusConflict {
-		t.Fatalf("concurrent status = %d, want %d; body = %q", response.Code, http.StatusConflict, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("concurrent status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	requireContains(t, response.Body.String(), "response is already in progress")
+	requireContains(t, response.Body.String(), "Second", "Steer", `id="prompt-inbox"`)
 	if response := submit(2, "Other chat"); response.Code != http.StatusOK {
 		t.Fatalf("other chat status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
@@ -3708,11 +3712,22 @@ func TestMessageCompletionHandlerDoesNotReleaseActiveChatOnExpiry(t *testing.T) 
 
 	toolCalls.expireUnclaimed(requestID)
 	replacement := postForm(t, messageHandler(database, registry, newTestCommandRegistry(t, database), toolCalls), "/messages?chat=1", url.Values{
-		"message": {"Replacement question"},
-		"model":   {"selected-model"},
+		"message":  {"Replacement question"},
+		"model":    {"selected-model"},
+		"delivery": {"queue"},
 	})
-	if replacement.Code != http.StatusConflict {
-		t.Fatalf("replacement status = %d, want %d; body = %q", replacement.Code, http.StatusConflict, replacement.Body.String())
+	if replacement.Code != http.StatusOK {
+		t.Fatalf("pending status = %d, want %d; body = %q", replacement.Code, http.StatusOK, replacement.Body.String())
+	}
+	if active, ok := toolCalls.active(1); !ok || active.requestID != requestID {
+		t.Fatal("admitting pending input replaced the active completion")
+	}
+	inbox, err := kritui_db.GetInbox(context.Background(), database, 1)
+	if err != nil || len(inbox) != 1 {
+		t.Fatalf("pending inbox = %#v, %v; want one prompt", inbox, err)
+	}
+	if err := kritui_db.CancelInboxPrompt(context.Background(), database, 1, inbox[0].ID); err != nil {
+		t.Fatalf("cancel pending prompt: %v", err)
 	}
 
 	close(releaseRequest)
@@ -3963,6 +3978,19 @@ func TestHomeHandlerRestoresCompletionState(t *testing.T) {
 
 		requireContains(t, response.Body.String(), "Finished answer.", "finished-model")
 		requireNotContains(t, response.Body.String(), `class="message loading-message completion-active"`, "stale-active-model")
+	})
+
+	t.Run("persisted final keeps running worker subscribed", func(t *testing.T) {
+		toolCalls := newToolCallStore()
+		requestID := newToolCallRequest(t, toolCalls, 1)
+		if _, ok := toolCalls.claim(requestID, 1, "settling-model", nil); !ok {
+			t.Fatal("claim settling completion")
+		}
+		response := httptest.NewRecorder()
+		homeHandler(database, registry, commands, toolCalls)(response, httptest.NewRequest(http.MethodGet, "/?chat=1", nil))
+
+		requireContains(t, response.Body.String(), "Finished answer.", `hx-sse:connect="/messages/tools?request=`+requestID+`"`)
+		requireNotContains(t, response.Body.String(), `hx-post="/messages/complete?chat=1"`)
 	})
 }
 

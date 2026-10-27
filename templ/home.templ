@@ -2,6 +2,8 @@ package templates
 
 import (
 	"slices"
+	"strconv"
+	"strings"
 
 	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
@@ -31,6 +33,8 @@ type HomeData struct {
 	EnabledAppendIDs         []string
 	CompletionRequestID      string
 	CompletionStarted        bool
+	CompletionInterrupted    bool
+	Inbox                    []kritui_db.InboxItem
 	CommandDefinitions       []commands.Definition
 	Theme                    themes.Theme
 }
@@ -42,14 +46,10 @@ templ Home(data HomeData) {
 				<div class="shell-viewport">
 					<section class="chat">
 						<div class="message-panel">
-							@MessageList(data.ChatID, data.Messages, false) {
+							@MessageList(data.ChatID, homeHistory(data), false) {
 								if data.CompletionRequestID != "" {
-									if data.CompletionStarted {
-										@ActiveCompletion(data.ChatID, data.CompletionRequestID, data.SelectedModel, data.EnabledTools)
-									} else {
-										@PendingCompletion(data.ChatID, data.CompletionRequestID, data.SelectedModel, data.EnabledTools)
-									}
-								} else if len(data.Messages) > 0 && data.Messages[len(data.Messages)-1].Role == "user" {
+									@CompletionWithHistory(data.ChatID, data.CompletionRequestID, data.SelectedModel, data.EnabledTools, !data.CompletionStarted, data.Messages)
+								} else if data.CompletionInterrupted || len(data.Messages) > 0 && data.Messages[len(data.Messages)-1].Role == "user" {
 									@CompletionError(data.ChatID, "Completion was interrupted. Retry the completion.", data.SelectedModel, data.EnabledTools)
 								}
 							}
@@ -73,6 +73,7 @@ templ Home(data HomeData) {
 								@HistoryPage(data.ChatID)
 							</div>
 						</div>
+						@PromptInbox(data.ChatID, data.Inbox)
 						@SettingsButton()
 						<details class="chat-options">
 							<summary aria-label="Toggle chat model">Model</summary>
@@ -123,6 +124,7 @@ templ Home(data HomeData) {
 						}
 					>
 						<input id="image-input" type="file" name="image" accept="image/png,image/jpeg,image/jpg,image/webp,application/pdf,.jpg,.jpeg,.pdf" multiple class="visually-hidden" tabindex="-1" aria-hidden="true"/>
+						<input id="message-submission" type="hidden" name="submission" value=""/>
 						<div id="image-paste-status" class="visually-hidden" role="status" aria-live="polite"></div>
 						<label for="message" class="visually-hidden">Message</label>
 						<div id="command-autocomplete" class="command-autocomplete" role="listbox" aria-label="Slash commands" hidden>
@@ -144,6 +146,7 @@ templ Home(data HomeData) {
 						</div>
 						@MessageInput("", false)
 						@AttachButton()
+						@QueueButton(data.CompletionRequestID != "")
 						@SendButton()
 					</form>
 				</div>
@@ -151,6 +154,128 @@ templ Home(data HomeData) {
 			</div>
 		</main>
 	}
+}
+
+func homeHistory(data HomeData) []llm.Message {
+	if data.CompletionRequestID != "" {
+		return ActiveCompletionView(data.Messages).Messages
+	}
+	return data.Messages
+}
+
+templ PromptInbox(chatID string, items []kritui_db.InboxItem) {
+	<section
+		id="prompt-inbox"
+		class="prompt-inbox"
+		aria-label="Pending inputs"
+		if len(items) == 0 {
+			hidden
+		}
+	>
+		if len(items) > 0 {
+			for _, item := range items {
+				<article class="prompt-inbox-item" data-inbox-id={ strconv.FormatInt(item.ID, 10) }>
+					<div class="prompt-inbox-summary">
+						<span class={ "prompt-inbox-delivery", templ.KV("is-queued", item.Delivery != "steer") }>{ inboxDeliveryLabel(item) }</span>
+						<span class="prompt-inbox-preview">{ inboxPreview(item) }</span>
+						if item.Delivery != "steer" && item.Model != "" {
+							<span class="prompt-inbox-model">{ item.Model }</span>
+						}
+					</div>
+					if len(item.Message.Attachments) > 0 {
+						<div class="prompt-inbox-attachments" aria-label="Pending attachments">
+							<span class="prompt-inbox-attachment-count">{ strconv.Itoa(len(item.Message.Attachments)) + " attachment" + inboxPlural(len(item.Message.Attachments)) }</span>
+							for _, attachment := range item.Message.Attachments {
+								<span class="prompt-inbox-attachment">{ inboxAttachmentLabel(attachment) }</span>
+							}
+						</div>
+					}
+					<div class="prompt-inbox-actions">
+						if item.Delivery == "steer" {
+							<button
+								type="button"
+								class="prompt-inbox-action"
+								hx-patch={ inboxItemURL(chatID, item.ID) }
+								hx-vals={ `{"delivery":"queue"}` }
+								hx-target="#prompt-inbox"
+								hx-swap="outerHTML"
+								hx-sync="#prompt-inbox:drop"
+								hx-disable="this"
+								aria-label="Queue this pending input"
+								title="Queue this pending input"
+							>Queue</button>
+						} else {
+							<button
+								type="button"
+								class="prompt-inbox-action"
+								hx-patch={ inboxItemURL(chatID, item.ID) }
+								hx-vals={ `{"delivery":"steer"}` }
+								hx-target="#prompt-inbox"
+								hx-swap="outerHTML"
+								hx-sync="#prompt-inbox:drop"
+								hx-disable="this"
+								aria-label="Steer this pending input now"
+								title="Steer this pending input after the next model step"
+							>Steer now</button>
+						}
+						<button
+							type="button"
+							class="prompt-inbox-action prompt-inbox-remove"
+							hx-delete={ inboxItemURL(chatID, item.ID) }
+							hx-target="#prompt-inbox"
+							hx-swap="outerHTML"
+							hx-sync="#prompt-inbox:drop"
+							hx-disable="this"
+							aria-label="Remove this pending input"
+							title="Remove this pending input"
+						>Remove</button>
+					</div>
+				</article>
+			}
+		}
+	</section>
+}
+
+func inboxItemURL(chatID string, id int64) string {
+	return "/chats/" + chatID + "/inbox/" + strconv.FormatInt(id, 10)
+}
+
+func inboxDeliveryLabel(item kritui_db.InboxItem) string {
+	if item.Delivery == "steer" {
+		return "Steer"
+	}
+	return "Queued"
+}
+
+func inboxPreview(item kritui_db.InboxItem) string {
+	if strings.TrimSpace(item.Message.Content) == "" {
+		return "Attachment-only message"
+	}
+	return item.Message.Content
+}
+
+func inboxAttachmentLabel(attachment llm.UserAttachment) string {
+	if attachment.Filename != "" {
+		return attachment.Filename
+	}
+	if attachment.MediaType == "application/pdf" {
+		return "PDF"
+	}
+	return "Image"
+}
+
+func inboxPlural(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
+}
+
+templ InboxSubmission(chatID string, items []kritui_db.InboxItem) {
+	<hx-partial hx-target="#prompt-inbox" hx-swap="outerHTML">
+		@PromptInbox(chatID, items)
+	</hx-partial>
+	@MessageInput("", true)
 }
 
 templ ToolPicker(builtinTools []string, mcpServers []kritui_db.MCPServer, enabledTools []string, outOfBand bool) {
@@ -221,8 +346,26 @@ templ PageError(message string) {
 }
 
 templ SendButton() {
-	<button id="send-button" type="submit" aria-label="Send message" title="Send message">
+	<button id="send-button" type="submit" name="delivery" value="steer" aria-label="Send message" title="Send message">
 		@Icon("M22 2 11 13", "M22 2 15 22 11 13 2 9 22 2")
+		<span class="visually-hidden" data-send-label>Send</span>
+	</button>
+}
+
+templ QueueButton(completionActive bool) {
+	<button
+		id="queue-button"
+		type="submit"
+		name="delivery"
+		value="queue"
+		aria-label="Queue after completion"
+		title="Queue after this completion finishes"
+		if !completionActive {
+			hidden
+		}
+	>
+		@Icon("M12 6v6l4 2", "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0")
+		<span class="visually-hidden">Queue</span>
 	</button>
 }
 

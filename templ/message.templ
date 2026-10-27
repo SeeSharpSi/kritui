@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
 	"seesharpsi/kritui/markdown"
 )
@@ -337,25 +339,58 @@ templ CompletedMessage(chatID string, messages ...llm.Message) {
 }
 
 templ PendingSubmission(chatID string, requestID string, message llm.Message, model string, tools []string) {
-	@Messages(chatID, message)
+	<hx-partial hx-target="#message-history" hx-swap="beforeend">
+		@Messages(chatID, message)
+	</hx-partial>
 	@PendingCompletion(chatID, requestID, model, tools)
 	@MessageInput("", true)
 }
 
 templ EditedSubmission(chatID string, requestID string, messages []llm.Message, model string, tools []string) {
-	@Messages(chatID, messages...)
+	<div id="message-history">
+		@Messages(chatID, messages...)
+	</div>
 	@PendingCompletion(chatID, requestID, model, tools)
 }
 
+templ CompletionCheckpoint(chatID string, messages []llm.Message) {
+	<hx-partial hx-target="#message-history" hx-swap="innerHTML">
+		@Messages(chatID, messages...)
+	</hx-partial>
+}
+
+templ CompletionResult(chatID string, messages []llm.Message, items []kritui_db.InboxItem) {
+	@CompletionCheckpoint(chatID, messages)
+	@InboxCheckpoint(chatID, items)
+}
+
+templ ActiveCompletionResult(chatID string, messages []llm.Message, items []kritui_db.InboxItem) {
+	@CompletionResult(chatID, ActiveCompletionView(messages).Messages, items)
+}
+
+templ InboxCheckpoint(chatID string, items []kritui_db.InboxItem) {
+	<hx-partial hx-target="#prompt-inbox" hx-swap="outerHTML">
+		@PromptInbox(chatID, items)
+	</hx-partial>
+}
+
+templ ClearCompletionErrors() {
+	<hx-partial hx-target="#messages > .completion-error" hx-swap="delete"></hx-partial>
+}
+
 templ PendingCompletion(chatID string, requestID string, model string, tools []string) {
-	@pendingCompletion(chatID, requestID, model, tools, true)
+	@pendingCompletion(chatID, requestID, model, tools, true, CompletionView{})
 }
 
 templ ActiveCompletion(chatID string, requestID string, model string, tools []string) {
-	@pendingCompletion(chatID, requestID, model, tools, false)
+	@pendingCompletion(chatID, requestID, model, tools, false, CompletionView{})
 }
 
-templ pendingCompletion(chatID string, requestID string, model string, tools []string, start bool) {
+templ CompletionWithHistory(chatID string, requestID string, model string, tools []string, start bool, messages []llm.Message) {
+	@pendingCompletion(chatID, requestID, model, tools, start, ActiveCompletionView(messages))
+}
+
+templ pendingCompletion(chatID string, requestID string, model string, tools []string, start bool, view CompletionView) {
 	<article
 		class="message loading-message completion-active"
 		id={ "completion-" + requestID }
@@ -364,7 +399,6 @@ templ pendingCompletion(chatID string, requestID string, model string, tools []s
 			hx-trigger="load"
 			hx-include="this"
 			hx-sync="#messages:queue last"
-			hx-disable="#message-form button[type='submit']"
 		}
 		hx-vals={ `js:{client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone}` }
 		hx-target="this"
@@ -382,7 +416,9 @@ templ pendingCompletion(chatID string, requestID string, model string, tools []s
 				class="tool-call-list"
 				role="list"
 				id={ "completion-tools-" + requestID }
-			></div>
+			>
+				@ToolCalls(view.ToolCalls, "", view.ToolErrors)
+			</div>
 			<strong class="thinking-indicator"><span class="braille-spinner" aria-hidden="true"></span>{ model }</strong>
 		</div>
 		<div class="completion-network-error" role="alert" hidden>

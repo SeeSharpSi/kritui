@@ -627,16 +627,69 @@ function restoreExpandedToolCalls(root, expanded) {
 function syncPanelSendButton() {
     const sendButton = document.querySelector('#send-button');
     const attachButton = document.querySelector('#attach-button');
+    const queueButton = document.querySelector('#queue-button');
     if (!sendButton) {
         return;
     }
 
     const panelOpen = document.querySelector('#page-panel > .panel-page:not([hidden])');
-    const requestActive = document.querySelector('#message-form.htmx-request, .loading-message.completion-active:not(.completion-failed)');
-    sendButton.disabled = Boolean(panelOpen || requestActive);
+    const admissionPending = Boolean(document.querySelector('#message-form.htmx-request'));
+    const completionActive = Boolean(document.querySelector('.loading-message.completion-active:not(.completion-failed)'));
+    sendButton.disabled = Boolean(panelOpen || admissionPending);
     if (attachButton) {
-        attachButton.disabled = Boolean(panelOpen || requestActive);
+        attachButton.disabled = Boolean(panelOpen || admissionPending);
     }
+    if (queueButton) {
+        queueButton.hidden = !completionActive;
+        queueButton.disabled = Boolean(panelOpen || admissionPending);
+    }
+
+    const label = completionActive ? 'Steer' : 'Send';
+    sendButton.setAttribute('aria-label', label);
+    sendButton.title = completionActive ? 'Steer after the next model step' : 'Send message';
+    const labelText = sendButton.querySelector('[data-send-label]');
+    if (labelText) {
+        labelText.textContent = label;
+    }
+}
+
+function newSubmissionID() {
+    if (typeof globalThis.crypto?.randomUUID === 'function') {
+        return globalThis.crypto.randomUUID();
+    }
+    return `submission-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function ensureSubmissionID(form, body) {
+    if (!form || !body) {
+        return;
+    }
+    const input = form.querySelector('#message-submission');
+    let submission = '';
+    if (body instanceof FormData || body instanceof URLSearchParams) {
+        submission = String(body.get('submission') || '');
+    }
+    if (!submission) {
+        submission = input?.value || newSubmissionID();
+    }
+    if (input) {
+        input.value = submission;
+    }
+    if (body instanceof FormData || body instanceof URLSearchParams) {
+        body.set('submission', submission);
+    }
+}
+
+function resetSubmissionID(form) {
+    const input = form?.querySelector('#message-submission');
+    if (input) {
+        input.value = '';
+    }
+}
+
+function submitMessageForm(form) {
+    const submitter = form?.querySelector('#send-button');
+    form?.requestSubmit(submitter ?? undefined);
 }
 
 function settingsClearState(button, pending) {
@@ -1190,7 +1243,7 @@ function activateCommandOption(input, option) {
         return;
     }
 
-    input.form?.requestSubmit();
+    submitMessageForm(input.form);
 }
 
 function togglePanel(panelID, panelButton) {
@@ -1407,7 +1460,7 @@ document.addEventListener('keydown', (event) => {
             break;
         } else {
             event.preventDefault();
-            input.form?.requestSubmit();
+            submitMessageForm(input.form);
         }
         break;
     }
@@ -1509,8 +1562,13 @@ document.addEventListener('htmx:config:request', (event) => {
     if (!form) {
         return;
     }
-    const imageInput = form.querySelector('#image-input');
     const body = event.detail?.ctx?.request?.body;
+    ensureSubmissionID(form, body);
+    const submitter = event.detail?.ctx?.request?.submitter;
+    if (submitter?.name && (body instanceof FormData || body instanceof URLSearchParams) && !body.has(submitter.name)) {
+        body.append(submitter.name, submitter.value);
+    }
+    const imageInput = form.querySelector('#image-input');
     if (!imageInput || !(body instanceof FormData)) {
         return;
     }
@@ -1612,6 +1670,7 @@ document.addEventListener('htmx:after:request', (event) => {
         refreshChatSummary();
     }
     if (status >= 200 && status <= 399 && source?.matches?.('#message-form')) {
+        resetSubmissionID(source);
         const input = source.querySelector('#image-input');
         if (input) {
             clearAttachments(input);
