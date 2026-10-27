@@ -187,6 +187,7 @@ templ UserMessage(chatID string, message llm.Message) {
 			<div class="message-content plain-text">{ message.Content }</div>
 			if message.ID > 0 && chatID != "" {
 				<form
+					id={ "message-edit-form-" + strconv.FormatInt(message.ID, 10) }
 					class="message-edit-form"
 					hx-put={ "/chats/" + chatID + "/messages/" + strconv.FormatInt(message.ID, 10) }
 					hx-target={ "#" + messageEditErrorID(message.ID) }
@@ -238,12 +239,21 @@ templ UserMessage(chatID string, message llm.Message) {
 							</span>
 						</button>
 						<button
+							type="submit"
+							class="message-edit-save"
+							form={ "message-edit-form-" + strconv.FormatInt(message.ID, 10) }
+							aria-label="Save message edit"
+							title="Save message edit"
+						>
+							@Icon("M20 6 9 17l-5-5")
+						</button>
+						<button
 							type="button"
 							class="message-edit-cancel"
 							aria-label="Cancel message edit"
 							title="Cancel message edit"
 						>
-							Cancel
+							@Icon("M18 6 6 18", "m6 6 12 12")
 						</button>
 					}
 				</div>

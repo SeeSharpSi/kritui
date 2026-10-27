@@ -1246,6 +1246,17 @@ function activateCommandOption(input, option) {
     submitMessageForm(input.form);
 }
 
+function closeModelOptions() {
+    const chatOptions = document.querySelector('.chat-options[open]');
+    if (!chatOptions) {
+        return;
+    }
+    chatOptions.removeAttribute('open');
+    chatOptions.querySelectorAll('.model-picker[open], .tool-picker[open], .append-picker[open]').forEach((picker) => {
+        picker.removeAttribute('open');
+    });
+}
+
 function togglePanel(panelID, panelButton) {
     const selectedPanel = document.getElementById(panelID);
     if (!selectedPanel) {
@@ -1253,14 +1264,12 @@ function togglePanel(panelID, panelButton) {
     }
 
     const opening = selectedPanel.hidden;
+    if (opening) {
+        closeModelOptions();
+    }
     document.querySelectorAll('#page-panel > .panel-page').forEach((panel) => {
         panel.hidden = !opening || panel !== selectedPanel;
     });
-    const chatOptionsSummary = document.querySelector('.chat-options > summary');
-    if (chatOptionsSummary) {
-        chatOptionsSummary.inert = opening;
-        chatOptionsSummary.setAttribute('aria-disabled', String(opening));
-    }
     document.querySelectorAll('[data-panel-target]').forEach((button) => {
         const active = opening && button.dataset.panelTarget === panelID;
         button.classList.toggle('active', active);
@@ -1849,6 +1858,21 @@ document.addEventListener('click', (event) => {
         }
     } else if (!event.target.closest('#message-form')) {
         closeCommandAutocomplete();
+    }
+
+    const modelSummary = event.target.closest('.chat-options > summary');
+    if (modelSummary) {
+        const openPanel = document.querySelector('#page-panel > .panel-page:not([hidden])');
+        if (openPanel) {
+            event.preventDefault();
+            const openPanelButton = document.querySelector(`[data-panel-target="${CSS.escape(openPanel.id)}"]`);
+            togglePanel(openPanel.id, openPanelButton);
+            const chatOptions = modelSummary.closest('.chat-options');
+            if (chatOptions) {
+                chatOptions.open = true;
+            }
+            modelSummary.focus();
+        }
     }
 
     const panelButton = event.target.closest('[data-panel-target]');

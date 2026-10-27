@@ -113,6 +113,369 @@ async function assertInboxChromeRemoved(page) {
   assert.ok(!/\b\d+\s+pending\b/i.test(text), `pending inbox must not show a pending counter, got: ${text}`);
 }
 
+function assertClose(actual, expected, tolerance, label) {
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    `${label}: got ${actual}, want ${expected} ± ${tolerance}`,
+  );
+}
+
+function colorChannels(value) {
+  const numbers = (value.match(/-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) ?? []).map(Number);
+  assert.ok(numbers.length >= 3, `could not read color channels from ${value}`);
+  const channels = numbers.slice(0, 3);
+  return value.trim().startsWith('color(') ? channels.map((channel) => channel * 255) : channels;
+}
+
+function assertDominantColor(value, dominantIndex, label) {
+  const channels = colorChannels(value);
+  const dominant = channels[dominantIndex];
+  const others = channels.filter((_, index) => index !== dominantIndex);
+  assert.ok(
+    dominant > others[0] + 8 && dominant > others[1] + 8,
+    `${label} must have a dominant ${dominantIndex === 0 ? 'red' : 'green'} channel, got ${value}`,
+  );
+}
+
+async function elementMetrics(locator) {
+  return locator.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return {
+      x: rect.x,
+      y: rect.y,
+      top: rect.top,
+      left: rect.left,
+      width: rect.width,
+      height: rect.height,
+      right: rect.right,
+      bottom: rect.bottom,
+      color: style.color,
+      backgroundColor: style.backgroundColor,
+      font: style.font,
+      padding: style.padding,
+      borderRadius: style.borderRadius,
+      boxSizing: style.boxSizing,
+      borderTopWidth: style.borderTopWidth,
+      borderRightWidth: style.borderRightWidth,
+      borderBottomWidth: style.borderBottomWidth,
+      borderLeftWidth: style.borderLeftWidth,
+      borderTopStyle: style.borderTopStyle,
+      borderRightStyle: style.borderRightStyle,
+      borderBottomStyle: style.borderBottomStyle,
+      borderLeftStyle: style.borderLeftStyle,
+      borderTopColor: style.borderTopColor,
+      borderRightColor: style.borderRightColor,
+      borderBottomColor: style.borderBottomColor,
+      borderLeftColor: style.borderLeftColor,
+    };
+  });
+}
+
+async function waitForStableLayout(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+}
+
+async function useViewport(page, width, height) {
+  await page.setViewportSize({ width, height });
+  await page.waitForFunction((expected) => window.innerWidth === expected, width);
+  await waitForStableLayout(page);
+}
+
+async function iconPaths(locator) {
+  return locator.locator('svg path').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('d')));
+}
+
+async function assertEqualActionChrome(save, logout, label) {
+  const saveMetrics = await elementMetrics(save);
+  const logoutMetrics = await elementMetrics(logout);
+  assertClose(saveMetrics.height, logoutMetrics.height, 0.5, `${label} Save all and Log out height`);
+  for (const property of [
+    'font',
+    'padding',
+    'borderRadius',
+    'boxSizing',
+    'backgroundColor',
+    'borderTopWidth',
+    'borderRightWidth',
+    'borderBottomWidth',
+    'borderLeftWidth',
+    'borderTopStyle',
+    'borderRightStyle',
+    'borderBottomStyle',
+    'borderLeftStyle',
+  ]) {
+    assert.equal(saveMetrics[property], logoutMetrics[property], `${label} ${property} must match between actions`);
+  }
+  assertDominantColor(saveMetrics.color, 1, `${label} Save all text`);
+  assertDominantColor(saveMetrics.borderTopColor, 1, `${label} Save all border`);
+  assertDominantColor(logoutMetrics.color, 0, `${label} Log out text`);
+  assertDominantColor(logoutMetrics.borderTopColor, 0, `${label} Log out border`);
+  assert.notEqual(saveMetrics.color, logoutMetrics.color, `${label} actions must use different semantic colors`);
+  return { save: saveMetrics, logout: logoutMetrics };
+}
+
+async function assertBottomNavigationGeometry(page, label) {
+  const settings = await elementMetrics(page.locator('#settings-button'));
+  const model = await elementMetrics(page.locator('.chat-options > summary'));
+  const history = await elementMetrics(page.locator('#history-button'));
+
+  assertClose(settings.y, model.y, 0.5, `${label} Settings/Model top edges`);
+  assertClose(model.y, history.y, 0.5, `${label} Model/History top edges`);
+  assertClose(settings.height, model.height, 0.5, `${label} Settings/Model heights`);
+  assertClose(model.height, history.height, 0.5, `${label} Model/History heights`);
+  assertClose(settings.width, history.width, 0.5, `${label} Settings/History widths`);
+  assertClose(settings.width - model.width, 1, 0.5, `${label} Model width must fit between shared borders`);
+
+  const settingsModelOverlap = settings.right - model.left;
+  const modelHistoryOverlap = model.right - history.left;
+  assert.ok(
+    settingsModelOverlap >= 0.5 && settingsModelOverlap <= 1.5,
+    `${label} Settings/Model must share one vertical border, overlap was ${settingsModelOverlap}px`,
+  );
+  assert.ok(
+    modelHistoryOverlap >= 0.5 && modelHistoryOverlap <= 1.5,
+    `${label} Model/History must share one vertical border, overlap was ${modelHistoryOverlap}px`,
+  );
+  return { settings, model, history };
+}
+
+async function assertModelMenuGeometry(page, label) {
+  const controls = await assertBottomNavigationGeometry(page, label);
+  const options = await elementMetrics(page.locator('.chat-options'));
+  const list = await elementMetrics(page.locator('.chat-options-list'));
+  const summary = controls.model;
+
+  assertClose(list.left, options.left, 0.5, `${label} model list left edge`);
+  assertClose(list.right, options.right, 0.5, `${label} model list right edge`);
+  assertClose(list.bottom - summary.top, 1, 0.5, `${label} model list bottom border must overlap the nav top border`);
+  assert.equal(list.borderBottomWidth, summary.borderTopWidth, `${label} shared border widths must match`);
+  assert.equal(list.borderBottomStyle, 'solid', `${label} model list bottom border must be solid`);
+  assert.equal(summary.borderTopStyle, 'solid', `${label} nav top border must be solid`);
+  return { list, summary, options };
+}
+
+async function waitForModelOptions(page, open) {
+  await waitUntil(async () => {
+    const isOpen = await page.locator('.chat-options').evaluate((element) => element.open);
+    const listVisible = await page.locator('.chat-options-list').isVisible().catch(() => false);
+    return isOpen === open && listVisible === open;
+  }, {
+    timeout: 5000,
+    label: `model options to be ${open ? 'open' : 'closed'}`,
+  });
+}
+
+async function waitForPanels(page, visiblePanelID) {
+  await waitUntil(async () => {
+    const visible = await page.locator('#page-panel > .panel-page').evaluateAll((panels) => (
+      panels.filter((panel) => !panel.hidden).map((panel) => panel.id)
+    ));
+    if (visiblePanelID === null) {
+      return visible.length === 0;
+    }
+    return visible.length === 1 && visible[0] === visiblePanelID;
+  }, {
+    timeout: 5000,
+    label: visiblePanelID === null ? 'all panels to be closed' : `${visiblePanelID} panel to be open`,
+  });
+}
+
+async function assertSameChat(page, formAction, label) {
+  assert.equal(
+    await page.locator('#message-form').getAttribute('hx-post'),
+    formAction,
+    `${label} must not replace the active chat`,
+  );
+}
+
+async function openModelOptions(page) {
+  const options = page.locator('.chat-options');
+  if (!(await options.evaluate((element) => element.open))) {
+    await options.locator(':scope > summary').click();
+  }
+  await waitForModelOptions(page, true);
+}
+
+async function exercisePanelAndModelNavigation(page, formAction, label) {
+  await openModelOptions(page);
+  await waitForPanels(page, null);
+  await assertModelMenuGeometry(page, `${label} model open`);
+
+  await page.locator('#settings-button').click();
+  await waitForPanels(page, 'settings-page');
+  await waitForModelOptions(page, false);
+  await assertSameChat(page, formAction, `${label} opening Settings`);
+
+  await page.locator('.chat-options > summary').click();
+  await waitForPanels(page, null);
+  await waitForModelOptions(page, true);
+  await assertSameChat(page, formAction, `${label} opening Model from Settings`);
+
+  await page.locator('#history-button').click();
+  await waitForPanels(page, 'history-page');
+  await waitForModelOptions(page, false);
+  await assertSameChat(page, formAction, `${label} opening History`);
+
+  await page.locator('.chat-options > summary').focus();
+  await page.keyboard.press('Enter');
+  await waitForPanels(page, null);
+  await waitForModelOptions(page, true);
+  await assertSameChat(page, formAction, `${label} keyboard opening Model from History`);
+
+  await page.locator('.chat-options > summary').focus();
+  await page.keyboard.press('Enter');
+  await waitForModelOptions(page, false);
+  await page.locator('.chat-options > summary').focus();
+  await page.keyboard.press('Enter');
+  await waitForModelOptions(page, true);
+  await waitForPanels(page, null);
+  await assertModelMenuGeometry(page, `${label} keyboard model open`);
+}
+
+async function openHistoryEditor(page) {
+  await page.locator('#history-page').waitFor({ state: 'visible' });
+  const entry = page.locator('#history-entries .history-entry.current').first();
+  await entry.waitFor({ state: 'visible', timeout: 10000 });
+  await entry.locator('.history-edit').click();
+  await entry.locator('.history-save').waitFor({ state: 'visible' });
+  return entry;
+}
+
+async function assertHistoryRenameActions(entry, label) {
+  const save = entry.locator('.history-save');
+  const cancel = entry.locator('.history-cancel');
+  assert.equal(await save.isVisible(), true, `${label} history save must be visible while editing`);
+  assert.equal(await cancel.isVisible(), true, `${label} history cancel must be visible while editing`);
+  assert.equal(
+    await save.evaluate((button) => button.nextElementSibling?.classList.contains('history-cancel')),
+    true,
+    `${label} history checkmark must sit immediately before the X`,
+  );
+
+  const saveMetrics = await elementMetrics(save);
+  const cancelMetrics = await elementMetrics(cancel);
+  assertClose(saveMetrics.width, cancelMetrics.width, 0.5, `${label} history rename button widths`);
+  assertClose(saveMetrics.height, cancelMetrics.height, 0.5, `${label} history rename button heights`);
+  assertClose(
+    saveMetrics.y + saveMetrics.height / 2,
+    cancelMetrics.y + cancelMetrics.height / 2,
+    0.5,
+    `${label} history rename button vertical centers`,
+  );
+  const gap = cancelMetrics.x - saveMetrics.right;
+  assert.ok(gap >= -0.5 && gap <= 16, `${label} history save/X gap must stay compact, got ${gap}px`);
+  assert.deepEqual(await iconPaths(save), ['M20 6 9 17l-5-5'], `${label} history save icon path`);
+  assert.deepEqual(
+    await iconPaths(cancel),
+    ['M18 6 6 18', 'm6 6 12 12'],
+    `${label} history cancel icon paths`,
+  );
+}
+
+async function renameHistoryWith(page, entry, title, method, label) {
+  const input = entry.locator('.history-rename input');
+  await input.fill(title);
+  const responsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'PUT' && /^\/chats\/\d+$/.test(url.pathname);
+  }, { timeout: 15000 });
+  if (method === 'click') {
+    await entry.locator('.history-save').click();
+  } else {
+    await input.press('Enter');
+  }
+  const response = await responsePromise;
+  const body = response.status() >= 400 ? await response.text().catch(() => '') : '';
+  assert.ok(
+    response.status() >= 200 && response.status() < 300,
+    `${label} history rename returned ${response.status()}${body ? `: ${body}` : ''}`,
+  );
+  await waitUntil(async () => {
+    const titles = await page.locator('#history-entries .history-title-link strong').allTextContents();
+    return titles.some((value) => value.trim() === title);
+  }, {
+    timeout: 10000,
+    label: `${label} history title ${JSON.stringify(title)}`,
+  });
+  assert.equal(await entry.locator('.history-rename input').isVisible(), false, `${label} history editor must close`);
+}
+
+async function openMessageEditor(page) {
+  const message = page.locator('#message-history .message.user').first();
+  await message.scrollIntoViewIfNeeded();
+  await message.locator('.message-edit-toggle').click();
+  await message.locator('.message-edit-input').waitFor({ state: 'visible' });
+  return message;
+}
+
+async function assertMessageEditActions(message, label) {
+  const save = message.locator('.message-edit-save');
+  const cancel = message.locator('.message-edit-cancel');
+  assert.equal(await save.isVisible(), true, `${label} message save must be visible while editing`);
+  assert.equal(await cancel.isVisible(), true, `${label} message cancel must be visible while editing`);
+  assert.equal(await save.getAttribute('type'), 'submit', `${label} message checkmark must submit`);
+  assert.equal(await cancel.getAttribute('type'), 'button', `${label} message X must not submit`);
+  assert.equal(
+    await save.getAttribute('form'),
+    await message.locator('.message-edit-form').getAttribute('id'),
+    `${label} message checkmark must submit the edit form`,
+  );
+  assert.equal(
+    await save.evaluate((button) => button.nextElementSibling?.classList.contains('message-edit-cancel')),
+    true,
+    `${label} message checkmark must sit immediately before the X`,
+  );
+
+  const saveMetrics = await elementMetrics(save);
+  const cancelMetrics = await elementMetrics(cancel);
+  assertClose(saveMetrics.width, cancelMetrics.width, 0.5, `${label} message edit button widths`);
+  assertClose(saveMetrics.height, cancelMetrics.height, 0.5, `${label} message edit button heights`);
+  assertClose(
+    saveMetrics.y + saveMetrics.height / 2,
+    cancelMetrics.y + cancelMetrics.height / 2,
+    0.5,
+    `${label} message edit button vertical centers`,
+  );
+  const gap = cancelMetrics.x - saveMetrics.right;
+  assert.ok(gap >= -0.5 && gap <= 10, `${label} message save/X gap must stay compact, got ${gap}px`);
+  assert.deepEqual(await iconPaths(save), ['M20 6 9 17l-5-5'], `${label} message save icon path`);
+  assert.deepEqual(
+    await iconPaths(cancel),
+    ['M18 6 6 18', 'm6 6 12 12'],
+    `${label} message cancel icon paths`,
+  );
+}
+
+async function submitMessageEdit(page, provider, message, text, method, label) {
+  const input = message.locator('.message-edit-input');
+  await input.fill(text);
+  const callsBefore = provider.calls.length;
+  const responsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'PUT' && /^\/chats\/\d+\/messages\/\d+$/.test(url.pathname);
+  }, { timeout: 15000 });
+  if (method === 'click') {
+    await message.locator('.message-edit-save').click();
+  } else {
+    await input.press('Enter');
+  }
+  const response = await responsePromise;
+  const body = response.status() >= 400 ? await response.text().catch(() => '') : '';
+  assert.ok(
+    response.status() >= 200 && response.status() < 300,
+    `${label} message edit returned ${response.status()}${body ? `: ${body}` : ''}`,
+  );
+  await waitForHistoryText(page, text);
+  await waitCompletionActive(page);
+  await provider.waitForCallCount(callsBefore + 1);
+  await provider.release(callsBefore, finalResponse(`answer after ${label}`));
+  await waitCompletionDone(page);
+  await waitForHistoryText(page, `answer after ${label}`);
+}
+
 before(async () => {
   build = await buildApp();
   browser = await chromium.launch({
@@ -662,6 +1025,189 @@ test('pending inbox sits above the toolbar without visible heading, counter, or 
       await assertNoResumeControl(page);
       await assertInboxChromeRemoved(page);
       await assertInboxAboveToolbar(page);
+    },
+  });
+});
+
+test('settings Save all and Log out actions share geometry with distinct success and danger colors', { timeout: 180000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'settings action consistency',
+    browser,
+    build,
+    async run(env) {
+      const { page } = env;
+      await signup(page, username('actions'), password);
+      await openChat(page);
+
+      await page.locator('#settings-button').click();
+      await page.locator('#settings-page').waitFor({ state: 'visible' });
+
+      const save = page.locator('#settings-page .settings-save');
+      const logout = page.locator('#settings-page .settings-logout-button');
+      assert.equal((await save.innerText()).trim(), 'Save all');
+      assert.equal((await logout.innerText()).trim(), 'Log out');
+
+      for (const viewport of [
+        { label: 'desktop', width: 1280, height: 900 },
+        { label: 'mobile', width: 390, height: 844 },
+      ]) {
+        await useViewport(page, viewport.width, viewport.height);
+        await save.waitFor({ state: 'visible' });
+        await logout.waitFor({ state: 'visible' });
+        await assertEqualActionChrome(save, logout, viewport.label);
+
+        await page.locator('#settings-page').evaluate((panel) => {
+          panel.scrollTop = panel.scrollHeight;
+        });
+        await waitForStableLayout(page);
+        const screenshot = await env.screenshot(`settings-actions-${viewport.label}`);
+        t.diagnostic(`Settings action ${viewport.label} screenshot: ${screenshot}`);
+        console.log(`Settings action ${viewport.label} screenshot: ${screenshot}`);
+      }
+    },
+  });
+});
+
+test('bottom navigation and model options share borders while panels switch without leaving the chat', { timeout: 180000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'bottom navigation boundaries',
+    browser,
+    build,
+    async run(env) {
+      const { page } = env;
+      await signup(page, username('navbounds'), password);
+      await openChat(page);
+      const formAction = await page.locator('#message-form').getAttribute('hx-post');
+
+      await assertBottomNavigationGeometry(page, 'desktop closed');
+      await exercisePanelAndModelNavigation(page, formAction, 'desktop');
+      const desktopScreenshot = await env.screenshot('bottom-navigation-model-desktop');
+      t.diagnostic(`Desktop bottom navigation/model screenshot: ${desktopScreenshot}`);
+      console.log(`Desktop bottom navigation/model screenshot: ${desktopScreenshot}`);
+
+      await useViewport(page, 390, 844);
+      await assertBottomNavigationGeometry(page, 'mobile closed');
+      await exercisePanelAndModelNavigation(page, formAction, 'mobile');
+      const mobileScreenshot = await env.screenshot('bottom-navigation-model-mobile');
+      t.diagnostic(`Mobile bottom navigation/model screenshot: ${mobileScreenshot}`);
+      console.log(`Mobile bottom navigation/model screenshot: ${mobileScreenshot}`);
+    },
+  });
+});
+
+test('history rename checkmark and X align and submit by click and Enter at desktop and mobile widths', { timeout: 180000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'history rename actions',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      await signup(page, username('historyact'), password);
+      await openChat(page);
+
+      await submitPrompt(page, 'history seed message');
+      await waitCompletionActive(page);
+      await provider.waitForCallCount(1);
+      await provider.release(0, finalResponse('history seed answer'));
+      await waitCompletionDone(page);
+      await waitForHistoryText(page, 'history seed answer');
+
+      await page.locator('#history-button').click();
+      await page.locator('#history-page').waitFor({ state: 'visible' });
+      await page.locator('#history-entries .history-entry.current').first().waitFor({ state: 'visible', timeout: 10000 });
+
+      for (const viewport of [
+        { label: 'desktop', width: 1280, height: 900 },
+        { label: 'mobile', width: 390, height: 844 },
+      ]) {
+        await useViewport(page, viewport.width, viewport.height);
+        const clickTitle = `History click ${viewport.label}`;
+        const enterTitle = `History enter ${viewport.label}`;
+
+        let entry = await openHistoryEditor(page);
+        await assertHistoryRenameActions(entry, viewport.label);
+        const screenshot = await env.screenshot(`history-rename-actions-${viewport.label}`);
+        t.diagnostic(`History rename ${viewport.label} screenshot: ${screenshot}`);
+        console.log(`History rename ${viewport.label} screenshot: ${screenshot}`);
+        await renameHistoryWith(page, entry, clickTitle, 'click', `${viewport.label} click`);
+
+        entry = await openHistoryEditor(page);
+        await renameHistoryWith(page, entry, enterTitle, 'enter', `${viewport.label} Enter`);
+      }
+    },
+  });
+});
+
+test('user message edit checkmark and X match history icons and submit by click and Enter while cancel stays local', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'user message edit actions',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      await signup(page, username('messageact'), password);
+      await openChat(page);
+
+      await submitPrompt(page, 'original user message');
+      await waitCompletionActive(page);
+      await provider.waitForCallCount(1);
+      await provider.release(0, finalResponse('initial answer'));
+      await waitCompletionDone(page);
+      await waitForHistoryText(page, 'initial answer');
+
+      const editRequests = [];
+      page.on('request', (request) => {
+        if (request.method() !== 'PUT') {
+          return;
+        }
+        const path = new URL(request.url()).pathname;
+        if (/^\/chats\/\d+\/messages\/\d+$/.test(path)) {
+          editRequests.push(path);
+        }
+      });
+      let currentText = 'original user message';
+
+      for (const viewport of [
+        { label: 'desktop', width: 1280, height: 900 },
+        { label: 'mobile', width: 390, height: 844 },
+      ]) {
+        await useViewport(page, viewport.width, viewport.height);
+
+        let message = await openMessageEditor(page);
+        await assertMessageEditActions(message, viewport.label);
+        const screenshot = await env.screenshot(`message-edit-actions-${viewport.label}`);
+        t.diagnostic(`Message edit ${viewport.label} screenshot: ${screenshot}`);
+        console.log(`Message edit ${viewport.label} screenshot: ${screenshot}`);
+
+        const requestsBeforeCancel = editRequests.length;
+        const callsBeforeCancel = provider.calls.length;
+        await message.locator('.message-edit-input').fill(`cancelled edit ${viewport.label}`);
+        await message.locator('.message-edit-cancel').click();
+        await waitUntil(async () => (await page.locator('#message-history .message.user.editing').count()) === 0, {
+          timeout: 5000,
+          label: `${viewport.label} message editor to close after cancel`,
+        });
+        await page.waitForTimeout(300);
+        assert.equal(editRequests.length, requestsBeforeCancel, `${viewport.label} cancel must not send an edit request`);
+        assert.equal(provider.calls.length, callsBeforeCancel, `${viewport.label} cancel must not start a completion`);
+        assert.equal(
+          await page.locator('.loading-message.completion-active').count(),
+          0,
+          `${viewport.label} cancel must not render an active completion`,
+        );
+        assert.ok(
+          (await message.locator('.message-content').innerText()).includes(currentText),
+          `${viewport.label} cancel must preserve the stored message text`,
+        );
+
+        const clickText = `click edit ${viewport.label}`;
+        await submitMessageEdit(page, provider, await openMessageEditor(page), clickText, 'click', `${viewport.label} click`);
+        currentText = clickText;
+
+        const enterText = `enter edit ${viewport.label}`;
+        await submitMessageEdit(page, provider, await openMessageEditor(page), enterText, 'enter', `${viewport.label} Enter`);
+        currentText = enterText;
+      }
     },
   });
 });

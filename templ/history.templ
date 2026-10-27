@@ -134,6 +134,7 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 					<strong>{ historyTitle(chat) }</strong>
 				</a>
 				<form
+					id={ "history-rename-" + strconv.FormatInt(chat.ID, 10) }
 					class="history-rename"
 					hx-put={ chatURL(chat.ID, chatID) }
 					hx-target="#history-entries"
@@ -147,7 +148,6 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 						required
 						autocomplete="off"
 					/>
-					<button type="submit" class="history-save">Save</button>
 				</form>
 			</span>
 			<time datetime={ chat.UpdatedAt }>{ historyTime(chat.UpdatedAt) }</time>
@@ -159,6 +159,15 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 			title={ "Rename " + historyTitle(chat) }
 		>
 			@Icon("M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z")
+		</button>
+		<button
+			type="submit"
+			class="history-save"
+			form={ "history-rename-" + strconv.FormatInt(chat.ID, 10) }
+			aria-label={ "Save rename for " + historyTitle(chat) }
+			title="Save rename"
+		>
+			@Icon("M20 6 9 17l-5-5")
 		</button>
 		<button
 			type="button"
