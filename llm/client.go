@@ -232,8 +232,9 @@ type FunctionCall struct {
 }
 
 // OpenCodeUsageMetadata is the provider billing metadata nested under usage.
-// Allowance is intentionally omitted because it measures plan consumption,
-// not the model's price.
+// ListCost is the model's list-price equivalent, matching the per-request cost
+// OpenCode clients calculate from their model catalog. Allowance is
+// intentionally omitted because it measures plan-meter consumption, not price.
 type OpenCodeUsageMetadata struct {
 	BillingSource string   `json:"billing_source,omitempty"`
 	ListCost      *float64 `json:"list_cost,omitempty"`

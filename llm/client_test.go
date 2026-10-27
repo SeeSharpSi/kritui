@@ -253,23 +253,23 @@ func TestCompleteUsesOpenCodeGoListCost(t *testing.T) {
 		wantCost   *float64
 	}{
 		{
-			name:     "go source uses list cost despite zero cost",
-			usage:    `{"total_tokens":3,"cost":0,"opencode":{"billing_source":"go","list_cost":0.42}}`,
+			name:     "go source uses list cost despite zero charged cost",
+			usage:    `{"total_tokens":3,"cost":0,"opencode":{"billing_source":"go","list_cost":0.42,"allowance":0.84}}`,
 			wantCost: floatPointer(0.42),
 		},
 		{
-			name:     "go-plus source uses list cost despite zero cost",
-			usage:    `{"total_tokens":3,"cost":0,"opencode":{"billing_source":"go-plus","list_cost":0.42}}`,
+			name:     "go-plus source uses list cost despite zero charged cost",
+			usage:    `{"total_tokens":3,"cost":0,"opencode":{"billing_source":"go-plus","list_cost":0.42,"allowance":0.84}}`,
 			wantCost: floatPointer(0.42),
 		},
 		{
-			name:     "absent list cost falls back to cost",
-			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"go"}}`,
+			name:     "absent list cost falls back to cost rather than allowance",
+			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"go","allowance":0.84}}`,
 			wantCost: floatPointer(0.25),
 		},
 		{
-			name:     "null list cost falls back to cost",
-			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"go-plus","list_cost":null}}`,
+			name:     "null list cost falls back to cost rather than allowance",
+			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"go-plus","list_cost":null,"allowance":0.84}}`,
 			wantCost: floatPointer(0.25),
 		},
 		{
