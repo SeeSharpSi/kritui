@@ -231,10 +231,19 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
+// OpenCodeUsageMetadata is the provider billing metadata nested under usage.
+// Allowance is intentionally omitted because it measures plan consumption,
+// not the model's price.
+type OpenCodeUsageMetadata struct {
+	BillingSource string   `json:"billing_source,omitempty"`
+	ListCost      *float64 `json:"list_cost,omitempty"`
+}
+
 // Usage reports the persisted token accounting returned by the endpoint.
 type Usage struct {
-	TotalTokens int      `json:"total_tokens"`
-	Cost        *float64 `json:"cost,omitempty"`
+	TotalTokens int                   `json:"total_tokens"`
+	Cost        *float64              `json:"cost,omitempty"`
+	OpenCode    OpenCodeUsageMetadata `json:"opencode,omitempty"`
 }
 
 // APIError describes a non-successful response from the endpoint.
@@ -828,14 +837,28 @@ func endpointError(resp *http.Response) error {
 	}
 }
 
-func applyUsage(message *Message, usage Usage) {
+func (c *Client) applyUsage(message *Message, usage Usage) {
 	if usage.TotalTokens != 0 {
 		total := usage.TotalTokens
 		message.TotalTokens = &total
 	}
+	if usage.OpenCode.ListCost != nil && (c.openCodeGo || isGoBillingSource(usage.OpenCode.BillingSource)) {
+		cost := *usage.OpenCode.ListCost
+		message.Cost = &cost
+		return
+	}
 	if usage.Cost != nil {
 		cost := *usage.Cost
 		message.Cost = &cost
+	}
+}
+
+func isGoBillingSource(source string) bool {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "go", "go-plus":
+		return true
+	default:
+		return false
 	}
 }
 

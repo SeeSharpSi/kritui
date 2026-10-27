@@ -104,7 +104,7 @@ func (c *Client) completeChat(ctx context.Context, endpoint endpointCandidate, m
 
 	message := choice.Message
 	message.Model = c.completionModel(response.Model)
-	applyUsage(&message, response.Usage)
+	c.applyUsage(&message, response.Usage)
 	return message, nil
 }
 

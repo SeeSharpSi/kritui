@@ -107,8 +107,9 @@ func (c *Client) completeResponse(ctx context.Context, endpoint endpointCandidat
 		Model  string            `json:"model"`
 		Output []json.RawMessage `json:"output"`
 		Usage  struct {
-			TotalTokens int      `json:"total_tokens"`
-			Cost        *float64 `json:"cost,omitempty"`
+			TotalTokens int                   `json:"total_tokens"`
+			Cost        *float64              `json:"cost,omitempty"`
+			OpenCode    OpenCodeUsageMetadata `json:"opencode,omitempty"`
 		} `json:"usage"`
 	}
 	if err := c.postJSON(ctx, endpoint, payload, &response); err != nil {
@@ -118,6 +119,7 @@ func (c *Client) completeResponse(ctx context.Context, endpoint endpointCandidat
 	usage := Usage{
 		TotalTokens: response.Usage.TotalTokens,
 		Cost:        response.Usage.Cost,
+		OpenCode:    response.Usage.OpenCode,
 	}
 	model := c.completionModel(response.Model)
 	providerMetadata, err := NewResponsesProviderMetadata(response.Output)
@@ -129,7 +131,7 @@ func (c *Client) completeResponse(ctx context.Context, endpoint endpointCandidat
 		Model:            model,
 		ProviderMetadata: providerMetadata,
 	}
-	applyUsage(&message, usage)
+	c.applyUsage(&message, usage)
 	for _, rawOutput := range response.Output {
 		var output struct {
 			Type      string `json:"type"`

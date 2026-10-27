@@ -75,10 +75,11 @@ func (c *Client) completeMessages(ctx context.Context, endpoint endpointCandidat
 		Content    []messagesContentBlock `json:"content"`
 		StopReason string                 `json:"stop_reason"`
 		Usage      struct {
-			InputTokens  int      `json:"input_tokens"`
-			OutputTokens int      `json:"output_tokens"`
-			TotalTokens  int      `json:"total_tokens"`
-			Cost         *float64 `json:"cost,omitempty"`
+			InputTokens  int                   `json:"input_tokens"`
+			OutputTokens int                   `json:"output_tokens"`
+			TotalTokens  int                   `json:"total_tokens"`
+			Cost         *float64              `json:"cost,omitempty"`
+			OpenCode     OpenCodeUsageMetadata `json:"opencode,omitempty"`
 		} `json:"usage"`
 	}
 	if err := c.postJSON(ctx, endpoint, payload, &response); err != nil {
@@ -115,7 +116,11 @@ func (c *Client) completeMessages(ctx context.Context, endpoint endpointCandidat
 	if totalTokens == 0 {
 		totalTokens = response.Usage.InputTokens + response.Usage.OutputTokens
 	}
-	applyUsage(&message, Usage{TotalTokens: totalTokens, Cost: response.Usage.Cost})
+	c.applyUsage(&message, Usage{
+		TotalTokens: totalTokens,
+		Cost:        response.Usage.Cost,
+		OpenCode:    response.Usage.OpenCode,
+	})
 	return message, nil
 }
 

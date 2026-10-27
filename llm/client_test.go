@@ -217,6 +217,141 @@ func TestComplete(t *testing.T) {
 	}
 }
 
+func TestCompleteUsesOpenCodeGoListCost(t *testing.T) {
+	protocols := []struct {
+		name     string
+		path     string
+		response func(string) string
+	}{
+		{
+			name: "chat completions",
+			path: "/v1/chat/completions",
+			response: func(usage string) string {
+				return `{"model":"test-model","choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":` + usage + `}`
+			},
+		},
+		{
+			name: "messages",
+			path: "/v1/chat/messages",
+			response: func(usage string) string {
+				return `{"role":"assistant","model":"test-model","content":[{"type":"text","text":"Hi"}],"stop_reason":"end_turn","usage":` + usage + `}`
+			},
+		},
+		{
+			name: "responses",
+			path: "/v1/responses",
+			response: func(usage string) string {
+				return `{"model":"test-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}],"usage":` + usage + `}`
+			},
+		},
+	}
+
+	scenarios := []struct {
+		name       string
+		usage      string
+		openCodeGo bool
+		wantCost   *float64
+	}{
+		{
+			name:     "go source uses list cost despite zero cost",
+			usage:    `{"total_tokens":3,"cost":0,"opencode":{"billing_source":"go","list_cost":0.42}}`,
+			wantCost: floatPointer(0.42),
+		},
+		{
+			name:     "go-plus source uses list cost despite zero cost",
+			usage:    `{"total_tokens":3,"cost":0,"opencode":{"billing_source":"go-plus","list_cost":0.42}}`,
+			wantCost: floatPointer(0.42),
+		},
+		{
+			name:     "absent list cost falls back to cost",
+			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"go"}}`,
+			wantCost: floatPointer(0.25),
+		},
+		{
+			name:     "null list cost falls back to cost",
+			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"go-plus","list_cost":null}}`,
+			wantCost: floatPointer(0.25),
+		},
+		{
+			name:     "explicit zero list cost stays zero",
+			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"go","list_cost":0}}`,
+			wantCost: floatPointer(0),
+		},
+		{
+			name:  "omitted costs stay nil",
+			usage: `{"total_tokens":3,"opencode":{"billing_source":"go"}}`,
+		},
+		{
+			name:     "balance source preserves cost over list cost",
+			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"balance","list_cost":9.99}}`,
+			wantCost: floatPointer(0.25),
+		},
+		{
+			name:     "free source preserves cost over list cost",
+			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"free","list_cost":9.99}}`,
+			wantCost: floatPointer(0.25),
+		},
+		{
+			name:     "byok source preserves cost over list cost",
+			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"billing_source":"byok","list_cost":9.99}}`,
+			wantCost: floatPointer(0.25),
+		},
+		{
+			name:       "legacy Go endpoint uses list cost without billing source",
+			usage:      `{"total_tokens":3,"cost":0.25,"opencode":{"list_cost":0.42}}`,
+			openCodeGo: true,
+			wantCost:   floatPointer(0.42),
+		},
+		{
+			name:     "missing billing source outside Go endpoint falls back to cost",
+			usage:    `{"total_tokens":3,"cost":0.25,"opencode":{"list_cost":0.42}}`,
+			wantCost: floatPointer(0.25),
+		},
+	}
+
+	for _, protocol := range protocols {
+		for _, scenario := range scenarios {
+			t.Run(protocol.name+"/"+scenario.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != protocol.path {
+						t.Errorf("request path = %q, want %q", r.URL.Path, protocol.path)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(protocol.response(scenario.usage)))
+				}))
+				defer server.Close()
+
+				client, err := New("secret-key", "test-model", server.URL+protocol.path)
+				if err != nil {
+					t.Fatalf("New() error: %v", err)
+				}
+				client.openCodeGo = scenario.openCodeGo
+
+				message, err := client.complete(context.Background(), []Message{{Role: "user", Content: "Hello"}}, nil)
+				if err != nil {
+					t.Fatalf("complete() error: %v", err)
+				}
+				if scenario.wantCost == nil {
+					if message.Cost != nil {
+						t.Fatalf("cost = %v, want nil", *message.Cost)
+					}
+					return
+				}
+				if message.Cost == nil {
+					t.Fatalf("cost = nil, want %v", *scenario.wantCost)
+				}
+				if *message.Cost != *scenario.wantCost {
+					t.Errorf("cost = %v, want %v", *message.Cost, *scenario.wantCost)
+				}
+			})
+		}
+	}
+}
+
+func floatPointer(value float64) *float64 {
+	return &value
+}
+
 func TestCompleteRequiresMessages(t *testing.T) {
 	client, err := New("key", "model", "https://example.com/v1/chat/completions")
 	if err != nil {
