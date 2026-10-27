@@ -1389,7 +1389,7 @@ main {
             background: var(--color-surface-muted);
             border-color: var(--color-accent);
             color: var(--color-accent);
-            z-index: 3;
+            z-index: 4;
 
             &:hover {
                 background: color-mix(in srgb, var(--color-surface-muted) 85%, white);
@@ -2127,7 +2127,7 @@ main {
                 background: var(--color-surface-muted);
                 border-color: var(--color-accent);
                 color: var(--color-accent);
-                z-index: 3;
+                z-index: 5;
 
                 &:hover,
                 &:focus-visible {
