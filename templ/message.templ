@@ -76,11 +76,14 @@ type messageView struct {
 }
 
 // messagesForView merges consecutive assistant tool-call rounds into one group,
-// matching the live completion tracker. Tool role messages stay hidden.
+// matching the live completion tracker. Tool role messages stay hidden. Usage
+// from those rounds is summed onto the following final assistant message.
 func messagesForView(messages []llm.Message) []messageView {
 	var views []messageView
 	var pending []llm.ToolCall
 	var pendingErrors map[string]string
+	var totalTokens *int
+	var cost *float64
 	flush := func() {
 		if len(pending) == 0 {
 			pendingErrors = nil
@@ -89,6 +92,23 @@ func messagesForView(messages []llm.Message) []messageView {
 		views = append(views, messageView{ToolCalls: pending, ToolErrors: pendingErrors})
 		pending = nil
 		pendingErrors = nil
+	}
+	addUsage := func(message *llm.Message) {
+		if message.Role != "assistant" {
+			return
+		}
+		if message.TotalTokens != nil {
+			if totalTokens == nil {
+				totalTokens = new(int)
+			}
+			*totalTokens += *message.TotalTokens
+		}
+		if message.Cost != nil {
+			if cost == nil {
+				cost = new(float64)
+			}
+			*cost += *message.Cost
+		}
 	}
 	for i := range messages {
 		message := &messages[i]
@@ -102,7 +122,17 @@ func messagesForView(messages []llm.Message) []messageView {
 			}
 			continue
 		case message.Role == "assistant" && len(message.ToolCalls) > 0:
+			addUsage(message)
 			pending = append(pending, message.ToolCalls...)
+		case message.Role == "assistant":
+			addUsage(message)
+			flush()
+			view := *message
+			view.TotalTokens = totalTokens
+			view.Cost = cost
+			views = append(views, messageView{Message: &view})
+			totalTokens = nil
+			cost = nil
 		default:
 			flush()
 			views = append(views, messageView{Message: message})
