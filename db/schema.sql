@@ -92,11 +92,12 @@ CREATE TABLE IF NOT EXISTS chats (
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1))
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS chats_user_updated_idx
-    ON chats (user_id, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
+    ON chats (user_id, pinned DESC, updated_at DESC, id DESC);
 
 -- Trusted raw inserts that predate user accounts belong to the legacy owner.
 -- Application paths always write an explicit user_id.
@@ -295,4 +296,4 @@ CREATE TABLE IF NOT EXISTS completion_state_tools (
     PRIMARY KEY (chat_id, position)
 ) STRICT;
 
-PRAGMA user_version = 26;
+PRAGMA user_version = 27;

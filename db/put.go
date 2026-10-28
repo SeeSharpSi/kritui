@@ -119,6 +119,27 @@ func UpsertChat(ctx context.Context, db databaseExecutor, chatID int64, title st
 	})
 }
 
+// SetChatPinned updates a chat's pin state without changing its update time.
+// Foreign and missing chats return ErrChatNotFound.
+func SetChatPinned(ctx context.Context, db databaseExecutor, chatID int64, pinned bool) error {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set chat pinned: %w", err)
+	}
+	result, err := db.ExecContext(ctx, `UPDATE chats SET pinned = ? WHERE id = ? AND user_id = ?`, pinned, chatID, userID)
+	if err != nil {
+		return fmt.Errorf("set chat pinned: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set chat pinned rows affected: %w", err)
+	}
+	if affected == 0 {
+		return ErrChatNotFound
+	}
+	return nil
+}
+
 func replaceChatOptions(ctx context.Context, db databaseExecutor, chatID int64, tools, appendIDs []string) error {
 	if _, err := db.ExecContext(ctx, `DELETE FROM chat_tools WHERE chat_id = ?`, chatID); err != nil {
 		return fmt.Errorf("clear chat tools: %w", err)

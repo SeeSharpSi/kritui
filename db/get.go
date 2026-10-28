@@ -22,6 +22,7 @@ type Chat struct {
 	Tools     []string
 	CreatedAt string
 	UpdatedAt string
+	Pinned    bool
 }
 
 // MessageSnapshot contains ordered messages and the storage version used for
@@ -62,9 +63,10 @@ type messageQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-// GetChatsPage returns chats after the supplied cursor, ordered from most to
-// least recently updated. An empty cursor returns the first page.
-func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, beforeID int64, limit int) ([]Chat, error) {
+// GetChatsPage returns chats after the supplied cursor, ordered with pinned
+// chats first and then from most to least recently updated within each group.
+// An empty cursor returns the first page.
+func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, beforeID int64, beforePinned bool, limit int) ([]Chat, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("get chats page: limit must be positive")
 	}
@@ -78,7 +80,7 @@ func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, befor
 	)
 	if beforeUpdatedAt == "" {
 		rows, err = db.QueryContext(ctx, `
-			SELECT chats.id, chats.title, chats.created_at, chats.updated_at
+			SELECT chats.id, chats.title, chats.created_at, chats.updated_at, chats.pinned
 			FROM chats
 			WHERE chats.user_id = ?
 				AND EXISTS (
@@ -86,12 +88,12 @@ func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, befor
 					FROM messages
 					WHERE messages.chat_id = chats.id
 				)
-			ORDER BY chats.updated_at DESC, chats.id DESC
+			ORDER BY chats.pinned DESC, chats.updated_at DESC, chats.id DESC
 			LIMIT ?
 		`, userID, limit)
 	} else {
 		rows, err = db.QueryContext(ctx, `
-			SELECT chats.id, chats.title, chats.created_at, chats.updated_at
+			SELECT chats.id, chats.title, chats.created_at, chats.updated_at, chats.pinned
 			FROM chats
 			WHERE chats.user_id = ?
 				AND EXISTS (
@@ -99,10 +101,19 @@ func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, befor
 					FROM messages
 					WHERE messages.chat_id = chats.id
 				)
-				AND (chats.updated_at < ? OR (chats.updated_at = ? AND chats.id < ?))
-			ORDER BY chats.updated_at DESC, chats.id DESC
+				AND (
+					chats.pinned < ?
+					OR (
+						chats.pinned = ?
+						AND (
+							chats.updated_at < ?
+							OR (chats.updated_at = ? AND chats.id < ?)
+						)
+					)
+				)
+			ORDER BY chats.pinned DESC, chats.updated_at DESC, chats.id DESC
 			LIMIT ?
-		`, userID, beforeUpdatedAt, beforeUpdatedAt, beforeID, limit)
+		`, userID, beforePinned, beforePinned, beforeUpdatedAt, beforeUpdatedAt, beforeID, limit)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get chats page: %w", err)
@@ -123,9 +134,11 @@ func scanChats(rows *sql.Rows) ([]Chat, error) {
 	var chats []Chat
 	for rows.Next() {
 		chat := Chat{Tools: []string{}}
-		if err := rows.Scan(&chat.ID, &chat.Title, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
+		var pinned int
+		if err := rows.Scan(&chat.ID, &chat.Title, &chat.CreatedAt, &chat.UpdatedAt, &pinned); err != nil {
 			return nil, fmt.Errorf("scan chat: %w", err)
 		}
+		chat.Pinned = pinned != 0
 		chats = append(chats, chat)
 	}
 	if err := rows.Err(); err != nil {

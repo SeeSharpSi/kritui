@@ -134,12 +134,16 @@ func TestForeignChatRequestsReturnNotFoundWithoutChatData(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
+	mux.HandleFunc("PUT /chats/{chat}/pin", pinChatHandler(database))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
 	mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, toolRegistry, toolCalls))
 
 	request = httptest.NewRequest(http.MethodPut, "/chats/"+chat+"?current="+chat, strings.NewReader("title=Stolen"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	check("rename", mux, request)
+	request = httptest.NewRequest(http.MethodPut, "/chats/"+chat+"/pin?current="+chat, strings.NewReader("pinned=1"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	check("pin", mux, request)
 	check("delete", mux, httptest.NewRequest(http.MethodDelete, "/chats/"+chat+"?current="+chat, nil))
 
 	request = httptest.NewRequest(http.MethodPut, "/chats/"+chat+"/messages/1", strings.NewReader("message=Stolen"))

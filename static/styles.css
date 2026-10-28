@@ -1038,6 +1038,10 @@ main {
                     overflow: hidden;
                 }
 
+                .history-pin-form {
+                    display: contents;
+                }
+
                 .history-title-slot {
                     display: grid;
                     grid-template-areas: "title";
@@ -1111,7 +1115,8 @@ main {
                         pointer-events: none;
                     }
 
-                    .history-edit {
+                    .history-edit,
+                    .history-pin-form {
                         display: none;
                     }
 
@@ -1158,6 +1163,24 @@ main {
                 &:focus-visible {
                     background: var(--color-surface);
                     color: var(--color-text);
+                }
+            }
+
+            .history-pin {
+                flex: 0 0 2.5rem;
+                width: 2.5rem;
+                height: 2.5rem;
+                background: transparent;
+                color: var(--color-text-muted);
+
+                &:hover,
+                &:focus-visible {
+                    background: var(--color-surface);
+                    color: var(--color-text);
+                }
+
+                &.pinned {
+                    color: var(--color-accent);
                 }
             }
 

@@ -410,10 +410,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=45`,
-		`/static/hx-sse.js?v=45`,
-		`/static/app.js?v=45`,
-		`/static/styles.css?v=45`,
+		`/static/htmx.min.js?v=47`,
+		`/static/hx-sse.js?v=47`,
+		`/static/app.js?v=47`,
+		`/static/styles.css?v=47`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -1548,6 +1548,12 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 	requireContains(t, response.Body.String(),
+		`class="history-pin-form"`,
+		`class="history-action history-pin"`,
+		`aria-pressed="false"`,
+		`aria-label="Pin Project notes"`,
+		`hx-put="/chats/8/pin?current=8"`,
+		`name="pinned" value="1"`,
 		`class="history-action history-edit"`,
 		`class="history-action history-cancel"`,
 		`class="history-action history-delete"`,
@@ -1601,10 +1607,10 @@ func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
 	body := response.Body.String()
-	requireContains(t, body, "Newest", "Middle", `before_id=2`, `class="history-loader"`, `hx-target="this"`, `hx-vals="js:{limit: Math.min(50, Math.max(1, Math.ceil((this.closest(&#39;.history-page&#39;)?.clientHeight ?? 0) / 80)))}`)
+	requireContains(t, body, "Newest", "Middle", `before_id=2`, `before_pinned=0`, `class="history-loader"`, `hx-target="this"`, `hx-vals="js:{limit: Math.min(50, Math.max(1, Math.ceil((this.closest(&#39;.history-page&#39;)?.clientHeight ?? 0) / 80)))}`)
 	requireNotContains(t, body, "Oldest")
 
-	request = httptest.NewRequest(http.MethodGet, "/history?chat=8&limit=2&before=2026-01-02T00:00:00.000Z&before_id=2", nil)
+	request = httptest.NewRequest(http.MethodGet, "/history?chat=8&limit=2&before=2026-01-02T00:00:00.000Z&before_id=2&before_pinned=0", nil)
 	response = httptest.NewRecorder()
 	historyHandler(database)(response, request)
 
@@ -1614,6 +1620,144 @@ func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 	body = response.Body.String()
 	requireContains(t, body, "Oldest")
 	requireNotContains(t, body, "Newest", "Middle", `class="history-loader"`)
+}
+
+func TestPinChatHandlerUpdatesOrderAndState(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, title, updated_at) VALUES
+			(1, 'Older', '2026-01-01T00:00:00.000Z'),
+			(2, 'Newer', '2026-01-02T00:00:00.000Z'),
+			(3, 'Pinned candidate', '2025-12-31T00:00:00.000Z');
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', 'older'),
+			(2, 0, 'user', 'newer'),
+			(3, 0, 'user', 'pinned');
+		UPDATE chats SET updated_at = CASE id
+			WHEN 1 THEN '2026-01-01T00:00:00.000Z'
+			WHEN 2 THEN '2026-01-02T00:00:00.000Z'
+			WHEN 3 THEN '2025-12-31T00:00:00.000Z'
+		END
+		WHERE id IN (1, 2, 3);
+	`); err != nil {
+		t.Fatalf("insert chats: %v", err)
+	}
+	var updatedAt string
+	if err := database.QueryRow(`SELECT updated_at FROM chats WHERE id = 3`).Scan(&updatedAt); err != nil {
+		t.Fatalf("read update time: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /chats/{chat}/pin", pinChatHandler(database))
+	request := httptest.NewRequest(http.MethodPut, "/chats/3/pin?current=8", strings.NewReader(url.Values{"pinned": {"1"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("pin status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body := response.Body.String()
+	pinnedIndex := strings.Index(body, "Pinned candidate")
+	newerIndex := strings.Index(body, "Newer")
+	olderIndex := strings.Index(body, "Older")
+	if pinnedIndex == -1 || newerIndex == -1 || olderIndex == -1 || pinnedIndex >= newerIndex || newerIndex >= olderIndex {
+		t.Fatalf("pinned history order is incorrect: %s", body)
+	}
+	requireContains(t, body,
+		`class="history-entry pinned"`,
+		`class="history-action history-pin pinned"`,
+		`aria-pressed="true"`,
+		`aria-label="Unpin Pinned candidate"`,
+		`name="pinned" value="0"`,
+	)
+
+	var pinned int
+	var storedUpdatedAt string
+	if err := database.QueryRow(`SELECT pinned, updated_at FROM chats WHERE id = 3`).Scan(&pinned, &storedUpdatedAt); err != nil {
+		t.Fatalf("read pin state: %v", err)
+	}
+	if pinned != 1 || storedUpdatedAt != updatedAt {
+		t.Fatalf("stored pin = %d, updated_at = %q; want 1 and %q", pinned, storedUpdatedAt, updatedAt)
+	}
+
+	request = httptest.NewRequest(http.MethodPut, "/chats/3/pin?current=8", strings.NewReader(url.Values{"pinned": {"0"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("unpin status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body = response.Body.String()
+	newerIndex = strings.Index(body, "Newer")
+	olderIndex = strings.Index(body, "Older")
+	pinnedIndex = strings.Index(body, "Pinned candidate")
+	if newerIndex == -1 || olderIndex == -1 || pinnedIndex == -1 || newerIndex >= olderIndex || olderIndex >= pinnedIndex {
+		t.Fatalf("unpinned history order is incorrect: %s", body)
+	}
+	requireContains(t, body, `aria-pressed="false"`, `aria-label="Pin Pinned candidate"`)
+	if err := database.QueryRow(`SELECT pinned FROM chats WHERE id = 3`).Scan(&pinned); err != nil {
+		t.Fatalf("read unpinned state: %v", err)
+	}
+	if pinned != 0 {
+		t.Fatalf("stored pin = %d, want 0", pinned)
+	}
+}
+
+func TestMigrateDatabaseAddsChatPinsFromVersion26(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+
+	previous := strings.Replace(schema, ",\n    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1))", "", 1)
+	previous = strings.Replace(previous, `CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
+    ON chats (user_id, pinned DESC, updated_at DESC, id DESC);`, `CREATE INDEX IF NOT EXISTS chats_user_updated_idx
+    ON chats (user_id, updated_at DESC, id DESC);`, 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 27;", "PRAGMA user_version = 26;", 1)
+	if previous == schema || strings.Contains(previous, "pinned") {
+		t.Fatal("failed to build version 26 schema fixture")
+	}
+	if _, err := database.Exec(previous); err != nil {
+		t.Fatalf("initialize version 26 database: %v", err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, title, updated_at)
+		VALUES (7, 'Existing chat', '2026-01-02T00:00:00.000Z')
+	`); err != nil {
+		t.Fatalf("insert version 26 chat: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	var version, pinned int
+	var updatedAt string
+	if err := database.QueryRow(`
+		SELECT pinned, updated_at FROM chats WHERE id = 7
+	`).Scan(&pinned, &updatedAt); err != nil {
+		t.Fatalf("read migrated chat: %v", err)
+	}
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != len(databaseMigrations) || pinned != 0 || updatedAt != "2026-01-02T00:00:00.000Z" {
+		t.Fatalf("migrated version = %d, pinned = %d, updated_at = %q", version, pinned, updatedAt)
+	}
+	var index int
+	if err := database.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'chats_user_pinned_updated_idx'
+	`).Scan(&index); err != nil {
+		t.Fatalf("inspect pin index: %v", err)
+	}
+	if index != 1 {
+		t.Fatalf("pinned history index count = %d, want 1", index)
+	}
 }
 
 func TestHistoryHandlerRefreshesCurrentTitlesAndOrdering(t *testing.T) {
@@ -3109,6 +3253,8 @@ func TestHistoryHandlerRejectsInvalidPagination(t *testing.T) {
 		"/history?chat=8&limit=51",
 		"/history?chat=8&before=2026-01-01T00:00:00Z",
 		"/history?chat=8&before_id=2",
+		"/history?chat=8&before=2026-01-01T00:00:00Z&before_id=2",
+		"/history?chat=8&before=2026-01-01T00:00:00Z&before_id=2&before_pinned=2",
 	} {
 		request := httptest.NewRequest(http.MethodGet, target, nil)
 		response := httptest.NewRecorder()
@@ -6216,7 +6362,7 @@ func assertMigratedDatabase(t *testing.T, database *sql.DB) {
 		t.Errorf("schema version = %d, want %d", version, len(databaseMigrations))
 	}
 
-	chats, err := kritui_db.GetChatsPage(ctx, database, "", 0, 100)
+	chats, err := kritui_db.GetChatsPage(ctx, database, "", 0, false, 100)
 	if err != nil {
 		t.Fatalf("get migrated chats: %v", err)
 	}

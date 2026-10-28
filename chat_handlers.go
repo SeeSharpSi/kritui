@@ -343,7 +343,7 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		beforeUpdatedAt := r.URL.Query().Get("before")
-		beforeID, ok := historyCursorID(r, beforeUpdatedAt)
+		beforeID, beforePinned, ok := historyCursor(r, beforeUpdatedAt)
 		if !ok {
 			renderHistoryLoadError(w, r, http.StatusBadRequest, "A valid history cursor is required.")
 			return
@@ -363,7 +363,7 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 			renderHistoryLoadError(w, r, http.StatusNotFound, "Chat not found.")
 			return
 		}
-		if err := renderHistoryEntries(r.Context(), w, database, chat, beforeUpdatedAt, beforeID, limit); err != nil {
+		if err := renderHistoryEntries(r.Context(), w, database, chat, beforeUpdatedAt, beforeID, beforePinned, limit); err != nil {
 			log.Printf("render chat history: %v", err)
 			renderHistoryLoadError(w, r, http.StatusInternalServerError, "Failed to load chat history.")
 		}
@@ -881,7 +881,7 @@ func deleteChatHandler(database *sql.DB) http.HandlerFunc {
 			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to delete chat.")
 			return
 		}
-		if err := renderHistoryEntries(r.Context(), w, database, current, "", 0, defaultHistoryPageSize); err != nil {
+		if err := renderHistoryEntries(r.Context(), w, database, current, "", 0, false, defaultHistoryPageSize); err != nil {
 			log.Printf("render chat history after delete: %v", err)
 			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Chat was deleted, but history could not be refreshed.")
 			return
@@ -956,15 +956,78 @@ func renameChatHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		if err := renderHistoryEntries(r.Context(), w, database, current, "", 0, defaultHistoryPageSize); err != nil {
+		if err := renderHistoryEntries(r.Context(), w, database, current, "", 0, false, defaultHistoryPageSize); err != nil {
 			log.Printf("render chat history after rename: %v", err)
 			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Chat was renamed, but history could not be refreshed.")
 		}
 	}
 }
 
-func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *sql.DB, current, beforeUpdatedAt string, beforeID int64, limit int) error {
-	chats, err := kritui_db.GetChatsPage(ctx, database, beforeUpdatedAt, beforeID, limit+1)
+func pinChatHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		chatID, ok := positiveID(r.PathValue("chat"))
+		if !ok {
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "A valid chat is required.")
+			return
+		}
+		current := r.URL.Query().Get("current")
+		currentChatID, ok := positiveID(current)
+		if !ok {
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "A valid current chat is required.")
+			return
+		}
+
+		if err := parseLimitedForm(w, r, maxRenameBodyBytes); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				renderHistoryMutationError(w, r, http.StatusRequestEntityTooLarge, "Request body is too large.")
+				return
+			}
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "Invalid pin form.")
+			return
+		}
+		var pinned bool
+		switch r.FormValue("pinned") {
+		case "0":
+			pinned = false
+		case "1":
+			pinned = true
+		default:
+			renderHistoryMutationError(w, r, http.StatusBadRequest, "Invalid pin state.")
+			return
+		}
+		for _, id := range []int64{chatID, currentChatID} {
+			owned, err := requireOwnedChat(r.Context(), database, id)
+			if err != nil {
+				log.Printf("check pin chat ownership: %v", err)
+				renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to update chat pin.")
+				return
+			}
+			if !owned {
+				renderHistoryMutationError(w, r, http.StatusNotFound, "Chat not found.")
+				return
+			}
+		}
+
+		if err := kritui_db.SetChatPinned(r.Context(), database, chatID, pinned); err != nil {
+			if errors.Is(err, kritui_db.ErrChatNotFound) {
+				renderHistoryMutationError(w, r, http.StatusNotFound, "Chat not found.")
+				return
+			}
+			log.Printf("set chat pin: %v", err)
+			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to update chat pin.")
+			return
+		}
+
+		if err := renderHistoryEntries(r.Context(), w, database, current, "", 0, false, defaultHistoryPageSize); err != nil {
+			log.Printf("render chat history after pin change: %v", err)
+			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Chat pin was updated, but history could not be refreshed.")
+		}
+	}
+}
+
+func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *sql.DB, current, beforeUpdatedAt string, beforeID int64, beforePinned bool, limit int) error {
+	chats, err := kritui_db.GetChatsPage(ctx, database, beforeUpdatedAt, beforeID, beforePinned, limit+1)
 	if err != nil {
 		return fmt.Errorf("get chats: %w", err)
 	}
@@ -1233,12 +1296,24 @@ func renderHistoryMutationError(w http.ResponseWriter, r *http.Request, status i
 	}
 }
 
-func historyCursorID(r *http.Request, beforeUpdatedAt string) (int64, bool) {
-	value := r.URL.Query().Get("before_id")
+func historyCursor(r *http.Request, beforeUpdatedAt string) (int64, bool, bool) {
+	idValue := r.URL.Query().Get("before_id")
+	pinnedValue := r.URL.Query().Get("before_pinned")
 	if beforeUpdatedAt == "" {
-		return 0, value == ""
+		return 0, false, idValue == "" && pinnedValue == ""
 	}
-	return positiveID(value)
+	id, ok := positiveID(idValue)
+	if !ok {
+		return 0, false, false
+	}
+	switch pinnedValue {
+	case "0":
+		return id, false, true
+	case "1":
+		return id, true, true
+	default:
+		return 0, false, false
+	}
 }
 
 func historyPageLimit(r *http.Request) (int, bool) {

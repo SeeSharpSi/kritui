@@ -116,6 +116,7 @@ func newMux(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *com
 	mux.HandleFunc("POST /settings", settingsHandler(database, toolRegistry))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
+	mux.HandleFunc("PUT /chats/{chat}/pin", pinChatHandler(database))
 	mux.HandleFunc("GET /chats/{chat}/summary", chatSummaryHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, commandRegistry, toolCalls))
 	mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, toolRegistry, toolCalls))
@@ -508,6 +509,24 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateUserAccounts,
 	migrateLegacyAccountIdentity,
 	kritui_db.MigrateInbox,
+	migrateChatPins,
+}
+
+// migrateChatPins adds the durable per-chat pin flag and its history index.
+// Existing chats default to unpinned, and the operation never touches
+// updated_at, so pinning does not reorder chats by recency.
+func migrateChatPins(ctx context.Context, tx *sql.Tx) error {
+	if err := addColumnIfMissing(ctx, tx, "chats", "pinned", `INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1))`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS chats_user_updated_idx`); err != nil {
+		return fmt.Errorf("remove legacy chat history index: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
+		ON chats (user_id, pinned DESC, updated_at DESC, id DESC)`); err != nil {
+		return fmt.Errorf("create pinned chat history index: %w", err)
+	}
+	return nil
 }
 
 // rebuildSettingsThemeConstraint rebuilds the settings table so its theme

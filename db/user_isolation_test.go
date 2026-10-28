@@ -234,7 +234,7 @@ func TestUserChatAndMessageReadsAreIsolated(t *testing.T) {
 	if owns, err := OwnsChat(bobCtx, database, 101); err != nil || owns {
 		t.Fatalf("bob owns alice chat = %v, %v, want false", owns, err)
 	}
-	chats, err := GetChatsPage(aliceCtx, database, "", 0, 100)
+	chats, err := GetChatsPage(aliceCtx, database, "", 0, false, 100)
 	if err != nil || len(chats) != 1 || chats[0].ID != 101 || chats[0].Title != "Alice chat" {
 		t.Fatalf("alice chats = %#v, %v", chats, err)
 	}
@@ -292,6 +292,90 @@ func TestUserChatAndMessageReadsAreIsolated(t *testing.T) {
 	}
 	if messages, err := GetMessages(aliceCtx, database, 101); err != nil || len(messages) != 1 {
 		t.Fatalf("alice messages after foreign writes = %#v, %v", messages, err)
+	}
+}
+
+func TestChatPinsOrderAndPaginatePerUser(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	alice, aliceCtx := createIsolationUser(t, database, "Alice")
+	bob, bobCtx := createIsolationUser(t, database, "Bob")
+
+	if _, err := database.Exec(`
+		INSERT INTO chats (id, user_id, title, updated_at, pinned) VALUES
+			(1, ?, 'Pinned tie first', '2026-01-01T00:00:00.000Z', 1),
+			(2, ?, 'Pinned newest', '2026-01-04T00:00:00.000Z', 1),
+			(3, ?, 'Unpinned newest', '2026-01-05T00:00:00.000Z', 0),
+			(4, ?, 'Unpinned oldest', '2026-01-02T00:00:00.000Z', 0),
+			(5, ?, 'Pinned tie second', '2026-01-01T00:00:00.000Z', 1),
+			(9, ?, 'Bob pinned', '2026-01-09T00:00:00.000Z', 1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', 'one'),
+			(2, 0, 'user', 'two'),
+			(3, 0, 'user', 'three'),
+			(4, 0, 'user', 'four'),
+			(5, 0, 'user', 'five'),
+			(9, 0, 'user', 'nine');
+		UPDATE chats SET updated_at = CASE id
+			WHEN 1 THEN '2026-01-01T00:00:00.000Z'
+			WHEN 2 THEN '2026-01-04T00:00:00.000Z'
+			WHEN 3 THEN '2026-01-05T00:00:00.000Z'
+			WHEN 4 THEN '2026-01-02T00:00:00.000Z'
+			WHEN 5 THEN '2026-01-01T00:00:00.000Z'
+			WHEN 9 THEN '2026-01-09T00:00:00.000Z'
+		END
+		WHERE id IN (1, 2, 3, 4, 5, 9);
+	`, alice.ID, alice.ID, alice.ID, alice.ID, alice.ID, bob.ID); err != nil {
+		t.Fatalf("insert pinned chats: %v", err)
+	}
+
+	wantPages := [][]int64{{2, 5}, {1, 3}, {4}}
+	var cursorUpdatedAt string
+	var cursorID int64
+	var cursorPinned bool
+	for pageIndex, want := range wantPages {
+		chats, err := GetChatsPage(aliceCtx, database, cursorUpdatedAt, cursorID, cursorPinned, 2)
+		if err != nil {
+			t.Fatalf("get pinned page %d: %v", pageIndex, err)
+		}
+		got := make([]int64, len(chats))
+		for index, chat := range chats {
+			got[index] = chat.ID
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("pinned page %d IDs = %v, want %v", pageIndex, got, want)
+		}
+		last := chats[len(chats)-1]
+		cursorUpdatedAt, cursorID, cursorPinned = last.UpdatedAt, last.ID, last.Pinned
+	}
+
+	bobChats, err := GetChatsPage(bobCtx, database, "", 0, false, 10)
+	if err != nil {
+		t.Fatalf("get bob chats: %v", err)
+	}
+	if len(bobChats) != 1 || bobChats[0].ID != 9 || !bobChats[0].Pinned {
+		t.Fatalf("bob chats = %#v, want only pinned chat 9", bobChats)
+	}
+
+	var updatedAt string
+	if err := database.QueryRow(`SELECT updated_at FROM chats WHERE id = 1`).Scan(&updatedAt); err != nil {
+		t.Fatalf("read alice update time: %v", err)
+	}
+	if err := SetChatPinned(bobCtx, database, 1, false); !errors.Is(err, ErrChatNotFound) {
+		t.Fatalf("bob unpin(alice chat) error = %v, want ErrChatNotFound", err)
+	}
+	if err := SetChatPinned(aliceCtx, database, 1, false); err != nil {
+		t.Fatalf("alice unpin(chat 1) error: %v", err)
+	}
+	var pinned int
+	var storedUpdatedAt string
+	if err := database.QueryRow(`SELECT pinned, updated_at FROM chats WHERE id = 1`).Scan(&pinned, &storedUpdatedAt); err != nil {
+		t.Fatalf("read alice pin state: %v", err)
+	}
+	if pinned != 0 || storedUpdatedAt != updatedAt {
+		t.Fatalf("alice chat 1 pin = %d, updated_at = %q; want 0 and %q", pinned, storedUpdatedAt, updatedAt)
+	}
+	if err := SetChatPinned(aliceCtx, database, 999, true); !errors.Is(err, ErrChatNotFound) {
+		t.Fatalf("alice pin(missing chat) error = %v, want ErrChatNotFound", err)
 	}
 }
 
@@ -360,7 +444,7 @@ func TestAllocateChatCleanupStaysPerUser(t *testing.T) {
 	if aliceOld != 0 || bobOld != 1 || ownerID != alice.ID {
 		t.Fatalf("abandoned alice=%d bob=%d new owner=%d, want 0,1,%d", aliceOld, bobOld, ownerID, alice.ID)
 	}
-	if chats, err := GetChatsPage(bobCtx, database, "", 0, 100); err != nil || len(chats) != 0 {
+	if chats, err := GetChatsPage(bobCtx, database, "", 0, false, 100); err != nil || len(chats) != 0 {
 		t.Fatalf("bob chats after alice cleanup = %#v, %v", chats, err)
 	}
 }
@@ -574,7 +658,7 @@ func TestUsernamePolicyAndInvalidUserContext(t *testing.T) {
 	if _, err := GetTheme(invalidCtx, database); !errors.Is(err, ErrInvalidUser) {
 		t.Fatalf("GetTheme(invalid context) error = %v, want ErrInvalidUser", err)
 	}
-	if _, err := GetChatsPage(invalidCtx, database, "", 0, 10); !errors.Is(err, ErrInvalidUser) {
+	if _, err := GetChatsPage(invalidCtx, database, "", 0, false, 10); !errors.Is(err, ErrInvalidUser) {
 		t.Fatalf("GetChatsPage(invalid context) error = %v, want ErrInvalidUser", err)
 	}
 	if _, err := OwnsChat(invalidCtx, database, 1); !errors.Is(err, ErrInvalidUser) {
