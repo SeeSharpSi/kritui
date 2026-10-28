@@ -111,3 +111,53 @@ func TestUpsertChatRunsInsideTransaction(t *testing.T) {
 		t.Errorf("committed chat count = %d, want 1", count)
 	}
 }
+
+func TestUpdateChatTitleIfUnchangedPreservesRename(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	if err := UpsertChat(ctx, database, 1, "First fallback", nil, nil); err != nil {
+		t.Fatalf("seed chat: %v", err)
+	}
+
+	updated, err := UpdateChatTitleIfUnchanged(ctx, database, 1, "First fallback", "Generated title")
+	if err != nil || !updated {
+		t.Fatalf("conditional update = %v, %v, want true", updated, err)
+	}
+	if _, err := database.Exec(`UPDATE chats SET title = 'Manual rename' WHERE id = 1`); err != nil {
+		t.Fatalf("rename chat: %v", err)
+	}
+	updated, err = UpdateChatTitleIfUnchanged(ctx, database, 1, "Generated title", "Late title")
+	if err != nil {
+		t.Fatalf("conditional update after rename error: %v", err)
+	}
+	if updated {
+		t.Fatal("conditional update overwrote a manual rename")
+	}
+	title, err := GetChatTitle(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("GetChatTitle() error: %v", err)
+	}
+	if title != "Manual rename" {
+		t.Fatalf("chat title = %q, want Manual rename", title)
+	}
+}
+
+func TestUpdateChatTitleIfUnchangedRejectsForeignChat(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	ownerCtx := WithUser(context.Background(), LegacyOwnerID)
+	if err := UpsertChat(ownerCtx, database, 1, "Owner title", nil, nil); err != nil {
+		t.Fatalf("seed owned chat: %v", err)
+	}
+	_, otherCtx := createIsolationUser(t, database, "TitleOther")
+
+	updated, err := UpdateChatTitleIfUnchanged(otherCtx, database, 1, "Owner title", "Stolen title")
+	if err != nil {
+		t.Fatalf("foreign conditional update error: %v", err)
+	}
+	if updated {
+		t.Fatal("foreign conditional update changed the title")
+	}
+	if _, err := GetChatTitle(otherCtx, database, 1); err == nil {
+		t.Fatal("foreign GetChatTitle() error = nil, want ErrChatNotFound")
+	}
+}

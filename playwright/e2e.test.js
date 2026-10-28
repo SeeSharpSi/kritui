@@ -31,6 +31,12 @@ const { waitUntil } = require('./lib/wait');
 
 const password = 'kritui-playwright-password';
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || '/usr/bin/chromium';
+const titleGenerationSystemPrompt = `You are a model that generates chat titles based on the user's first chat message.
+You will be given the user's message, and must generate a title with these rules:
+1. Concise; 10 words max
+2. No trailing period
+3. No markdown; just plain text
+4. Clearly shows what the message was requesting and what the chat will be about`;
 
 let browser;
 let build;
@@ -475,6 +481,710 @@ async function submitMessageEdit(page, provider, message, text, method, label) {
   await waitCompletionDone(page);
   await waitForHistoryText(page, `answer after ${label}`);
 }
+
+function isTitleGenerationCall(call) {
+  return call.messages[0]?.role === 'system' &&
+    call.messages[0]?.content === titleGenerationSystemPrompt;
+}
+
+async function enableChatTitleGeneration(page, chatID) {
+  await page.locator('#settings-button').click();
+  await waitForPanels(page, 'settings-page');
+
+  const titleToggle = page.locator('#title-generation-enabled');
+  await titleToggle.waitFor({ state: 'visible' });
+  assert.equal(await titleToggle.isChecked(), false, 'title generation must default to unchecked');
+
+  const defaultModel = page.locator('#default-model');
+  const titleModel = page.locator('#title-generation-model');
+  assert.equal(await defaultModel.count(), 1, 'default model control is missing');
+  assert.equal(await titleModel.count(), 1, 'title model control is missing');
+
+  const optionValues = (locator) => locator.locator('option').evaluateAll(
+    (options) => options.map((option) => option.value.trim()).filter(Boolean),
+  );
+  const defaultModels = await optionValues(defaultModel);
+  const titleModels = await optionValues(titleModel);
+  assert.ok(defaultModels.length > 0, 'default model list must not be empty');
+  assert.deepEqual(titleModels, defaultModels, 'title model options must match the default model options');
+  const configuredTitleModel = titleModels[0];
+
+  await titleModel.selectOption(configuredTitleModel);
+  await titleToggle.check();
+  assert.equal(await titleToggle.isChecked(), true, 'title generation toggle did not turn on');
+
+  await page.locator('#settings-page .settings-save').click();
+  await page.locator('[data-settings-saved]').waitFor({ state: 'visible', timeout: 15000 });
+  await page.locator('#settings-button').click();
+  await waitForPanels(page, null);
+
+  await reloadChat(page, chatID);
+  await page.locator('#settings-button').click();
+  await waitForPanels(page, 'settings-page');
+  assert.equal(
+    await page.locator('#title-generation-enabled').isChecked(),
+    true,
+    'enabled title generation did not persist across reload',
+  );
+  assert.equal(
+    await page.locator('#title-generation-model').inputValue(),
+    configuredTitleModel,
+    'configured title model did not persist across reload',
+  );
+  await page.locator('#settings-button').click();
+  await waitForPanels(page, null);
+  return configuredTitleModel;
+}
+
+async function waitForConcurrentCompletionCalls(provider) {
+  const startedAt = Date.now();
+  const calls = await waitUntil(() => {
+    const title = provider.calls.find(isTitleGenerationCall);
+    const primary = provider.calls.find((call) => !isTitleGenerationCall(call));
+    return title !== undefined && primary !== undefined ? { title, primary } : false;
+  }, {
+    timeout: 15000,
+    label: 'primary completion and independent title provider requests to run concurrently before the primary response is released',
+  });
+  return { ...calls, elapsed: Date.now() - startedAt };
+}
+
+function trackChatTitleHTTPRequests(page) {
+  const state = { started: [], finished: [], failed: [], responses: [] };
+  const isTitleRequest = (request) => {
+    if (request.method() !== 'POST') {
+      return false;
+    }
+    return /^\/chats\/\d+\/title$/.test(new URL(request.url()).pathname);
+  };
+  page.on('request', (request) => {
+    if (isTitleRequest(request)) {
+      state.started.push(request);
+    }
+  });
+  page.on('requestfinished', (request) => {
+    if (isTitleRequest(request)) {
+      state.finished.push(request);
+    }
+  });
+  page.on('requestfailed', (request) => {
+    if (isTitleRequest(request)) {
+      state.failed.push(request);
+    }
+  });
+  page.on('response', (response) => {
+    if (isTitleRequest(response.request())) {
+      state.responses.push(response);
+    }
+  });
+  return state;
+}
+
+async function chatSummaryHTML(env, chatID, label) {
+  const response = await env.page.request.get(`${env.baseURL}/chats/${chatID}/summary`);
+  const html = await response.text();
+  assert.equal(response.status(), 200, `${label} summary returned ${response.status()}`);
+  return html;
+}
+
+function assertTitleGenerationRequest(call, { model, prompt }) {
+  assert.equal(call.model, model, 'title request did not use the configured title model');
+  assert.deepEqual(
+    call.messages.map((message) => message.role),
+    ['system', 'user'],
+    'title request must contain only the title system prompt and the first user message',
+  );
+  assert.equal(call.messages[0].content, titleGenerationSystemPrompt, 'title request system prompt changed');
+  assert.equal(call.messages[1].content, prompt, 'title request must use the first user message verbatim');
+  assert.equal(call.tools.length, 0, 'title request must not send any tools');
+}
+
+function currentHistoryTitleState(page) {
+  return page.locator('#history-entries .history-entry.current').evaluate((entry) => {
+    const text = entry.querySelector('.history-title-link .history-title-text');
+    const spinner = entry.querySelector('.history-title-link .history-title-spinner');
+    const braille = entry.querySelector('.history-title-link .history-title-spinner .braille-spinner');
+    return {
+      text: text?.textContent?.trim() ?? '',
+      textVisible: Boolean(text?.getClientRects().length),
+      spinnerVisible: Boolean(spinner?.getClientRects().length),
+      animationName: braille ? getComputedStyle(braille, '::before').animationName : '',
+    };
+  });
+}
+
+async function assertNoGlobalRequestOverlay(page, label) {
+  const overlay = page.locator('#request-overlay');
+  await waitUntil(async () => {
+    return overlay.evaluate((element) => !element.classList.contains('htmx-request')).catch(() => false);
+  }, {
+    timeout: 10000,
+    label: `${label}: global request overlay must not be active for the independent title request`,
+  });
+  assert.equal(await overlay.isVisible(), false, `${label}: global request overlay must stay hidden while the title is pending`);
+}
+
+async function assertHistoryTitlePending(page, fallbackTitle, label) {
+  await waitUntil(async () => {
+    const state = await currentHistoryTitleState(page).catch(() => null);
+    return state && state.text === fallbackTitle && !state.textVisible &&
+      state.spinnerVisible && state.animationName === 'braille-spinner' ? state : false;
+  }, {
+    timeout: 10000,
+    label: `${label}: current History title to replace ${JSON.stringify(fallbackTitle)} with the braille pending spinner`,
+  });
+  await assertNoGlobalRequestOverlay(page, label);
+}
+
+async function assertHistoryTitleResolved(page, expectedTitle, label) {
+  await waitUntil(async () => {
+    const state = await currentHistoryTitleState(page).catch(() => null);
+    return state && state.text === expectedTitle && state.textVisible && !state.spinnerVisible ? state : false;
+  }, {
+    timeout: 10000,
+    label: `${label}: current History title to show ${JSON.stringify(expectedTitle)} after the title request`,
+  });
+  const strongText = (
+    await page.locator('#history-entries .history-entry.current .history-title-link strong').first().innerText()
+  ).trim();
+  assert.equal(strongText, expectedTitle, `${label}: resolved History title strong innerText changed`);
+  await assertNoGlobalRequestOverlay(page, label);
+}
+
+test('chat title generation updates open History without reopening the panel', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'chat title generation history refresh',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      const firstPrompt = 'Help me plan a vegetable garden this spring';
+      const assistantReply = 'Here is your garden plan.';
+      const generatedTitle = 'Spring vegetable garden plan';
+
+      await signup(page, username('titlehist'), password);
+      const { chatID } = await openChat(page);
+      const configuredTitleModel = await enableChatTitleGeneration(page, chatID);
+
+      const submittedAt = Date.now();
+      await submitPrompt(page, firstPrompt);
+      await waitCompletionActive(page);
+      const concurrent = await waitForConcurrentCompletionCalls(provider);
+      const bothRequestsElapsed = Date.now() - submittedAt;
+      const titleRequestOffset = concurrent.title.receivedAt - concurrent.primary.receivedAt;
+
+      assert.equal(
+        provider.calls.length,
+        2,
+        `expected the primary and title requests only, saw ${provider.calls.length} provider calls`,
+      );
+      assert.notEqual(concurrent.primary.index, concurrent.title.index, 'primary and title calls must be distinct');
+      assert.equal(
+        concurrent.primary.released,
+        false,
+        'primary response must remain gated when both concurrent requests are observed',
+      );
+      assert.equal(concurrent.primary.done, false, 'primary response must not have completed before release');
+      assert.equal(concurrent.title.released, false, 'title response must remain gated for the History assertions');
+      assert.equal(lastUser(concurrent.primary), firstPrompt, 'primary request must use the submitted first prompt');
+      assertTitleGenerationRequest(concurrent.title, { model: configuredTitleModel, prompt: firstPrompt });
+
+      const historyRequests = [];
+      page.on('request', (request) => {
+        if (request.method() !== 'GET') {
+          return;
+        }
+        const path = new URL(request.url()).pathname;
+        if (path === '/history') {
+          historyRequests.push(request.url());
+        }
+      });
+
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      const currentHistoryTitle = page.locator('#history-entries .history-entry.current .history-title-link strong');
+      await currentHistoryTitle.first().waitFor({ state: 'visible', timeout: 10000 });
+      await assertHistoryTitlePending(page, firstPrompt, 'open History title gated by the independent title request');
+      assert.equal(historyRequests.length, 1, `opening History should request /history once, saw ${historyRequests.length}`);
+      assert.equal(
+        concurrent.primary.done,
+        false,
+        'primary provider response must still be gated while History shows the fallback title',
+      );
+      assert.equal(
+        concurrent.title.done,
+        false,
+        'title provider response must still be gated while History shows the fallback title',
+      );
+      const requestsWhileTitleGated = historyRequests.length;
+      const gatedScreenshot = await env.screenshot('chat-title-history-gated');
+      t.diagnostic(`Title-gated History screenshot: ${gatedScreenshot}`);
+      console.log(`Title-gated History screenshot: ${gatedScreenshot}`);
+
+      const titleResponseStartedAt = Date.now();
+      await provider.release(concurrent.title.index, finalResponse(generatedTitle));
+      const titleUpdate = await waitUntil(async () => {
+        const text = (await currentHistoryTitle.first().innerText().catch(() => '')).trim();
+        return text === generatedTitle ? { elapsed: Date.now() - titleResponseStartedAt, text } : false;
+      }, {
+        timeout: 5000,
+        label: 'open History title to become the generated title before the primary response completes',
+      });
+      await assertHistoryTitleResolved(page, generatedTitle, 'open History title after the independent title release');
+
+      assert.equal(
+        historyRequests.length,
+        requestsWhileTitleGated,
+        'an independent title HTTP refresh must not refetch /history',
+      );
+      assert.equal(await page.locator('#history-page').isVisible(), true, 'History panel must remain open during the title HTTP refresh');
+      assert.ok(titleUpdate.elapsed <= 5000, `generated title reached open History after ${titleUpdate.elapsed}ms`);
+      assert.equal(
+        concurrent.primary.released,
+        false,
+        'primary provider response must remain gated after the title update',
+      );
+      assert.equal(
+        concurrent.primary.done,
+        false,
+        'primary provider response must not complete while the title is applied',
+      );
+      assert.equal(provider.calls.length, 2, `title refresh must not start another provider call, saw ${provider.calls.length}`);
+      assert.equal(
+        await page.locator('.loading-message.completion-active:not(.completion-failed)').count(),
+        1,
+        'completion must remain active while the generated title is shown',
+      );
+
+      const summaryResponse = await page.request.get(`${env.baseURL}/chats/${chatID}/summary`);
+      const summaryHTML = await summaryResponse.text();
+      assert.equal(summaryResponse.status(), 200, `chat summary returned ${summaryResponse.status()}`);
+      assert.ok(
+        summaryHTML.includes(generatedTitle),
+        `stored chat summary did not contain the generated title: ${summaryHTML}`,
+      );
+
+      const updatedScreenshot = await env.screenshot('chat-title-history-updated');
+      t.diagnostic(
+        `Title concurrency before primary release: both requests observed ${bothRequestsElapsed}ms after submit, ` +
+        `title request offset ${titleRequestOffset}ms; title DOM update ${titleUpdate.elapsed}ms after release; ` +
+        `/history requests while open ${historyRequests.length}; summary contains ${generatedTitle}.`,
+      );
+      t.diagnostic(`Updated History screenshot: ${updatedScreenshot}`);
+      console.log(
+        `Title concurrency before primary release: both requests observed ${bothRequestsElapsed}ms after submit, ` +
+        `title request offset ${titleRequestOffset}ms; title DOM update ${titleUpdate.elapsed}ms after release.`,
+      );
+      console.log(`Updated History screenshot: ${updatedScreenshot}`);
+
+      const primaryReleaseStartedAt = Date.now();
+      await provider.release(concurrent.primary.index, finalResponse(assistantReply));
+      await waitCompletionDone(page);
+      const completionElapsed = Date.now() - primaryReleaseStartedAt;
+      assert.equal(
+        await page.locator('.loading-message.completion-active').count(),
+        0,
+        'completion spinner must disappear after the primary response finishes',
+      );
+
+      await page.locator('#history-button').click();
+      await waitForPanels(page, null);
+      assert.equal(
+        await page.locator('#message-history .message').filter({ hasText: assistantReply }).count(),
+        1,
+        'final assistant response must remain visible exactly once after title generation',
+      );
+
+      await reloadChat(page, chatID);
+      await waitForHistoryText(page, assistantReply);
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      await waitUntil(async () => {
+        const text = (await page.locator('#history-entries .history-entry.current .history-title-link strong').first().innerText()).trim();
+        return text === generatedTitle;
+      }, {
+        timeout: 10000,
+        label: 'generated title to persist after reload',
+      });
+
+      assert.equal(provider.calls.length, 2, `reload and History reopen must not start another provider call, saw ${provider.calls.length}`);
+      const totalElapsed = Date.now() - submittedAt;
+      t.diagnostic(
+        `Title completion: primary settled ${completionElapsed}ms after release; total ${totalElapsed}ms; ` +
+        `provider calls ${provider.calls.length}.`,
+      );
+      console.log(
+        `Title completion: primary settled ${completionElapsed}ms after release; total ${totalElapsed}ms; ` +
+        `provider calls ${provider.calls.length}.`,
+      );
+    },
+  });
+});
+
+test('chat title generation survives a failed first response', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'chat title generation after failed response',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      const firstPrompt = 'Build a checklist for a rainy weekend';
+      const generatedTitle = 'Rainy weekend checklist';
+
+      await signup(page, username('titlefail'), password);
+      const { chatID } = await openChat(page);
+      const configuredTitleModel = await enableChatTitleGeneration(page, chatID);
+      const titleHTTP = trackChatTitleHTTPRequests(page);
+
+      const submittedAt = Date.now();
+      await submitPrompt(page, firstPrompt);
+      await waitCompletionActive(page);
+      const concurrent = await waitForConcurrentCompletionCalls(provider);
+      assert.equal(
+        provider.calls.length,
+        2,
+        `expected the primary and title requests only, saw ${provider.calls.length} provider calls`,
+      );
+      assert.notEqual(concurrent.primary.index, concurrent.title.index, 'primary and title calls must be distinct');
+      assert.equal(
+        concurrent.primary.released,
+        false,
+        'primary response must remain gated when both concurrent requests are observed',
+      );
+      assert.equal(concurrent.primary.done, false, 'primary response must not have completed before release');
+      assert.equal(concurrent.title.released, false, 'title response must remain gated for the History assertions');
+      assert.equal(lastUser(concurrent.primary), firstPrompt, 'primary request must use the submitted first prompt');
+      assertTitleGenerationRequest(concurrent.title, { model: configuredTitleModel, prompt: firstPrompt });
+      await waitUntil(() => titleHTTP.started.length === 1, {
+        timeout: 10000,
+        label: 'independent title HTTP request to start for the initial message',
+      });
+
+      const historyRequests = [];
+      page.on('request', (request) => {
+        if (request.method() !== 'GET') {
+          return;
+        }
+        const path = new URL(request.url()).pathname;
+        if (path === '/history') {
+          historyRequests.push(request.url());
+        }
+      });
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      const currentHistoryTitle = page.locator('#history-entries .history-entry.current .history-title-link strong');
+      await currentHistoryTitle.first().waitFor({ state: 'visible', timeout: 10000 });
+      await assertHistoryTitlePending(page, firstPrompt, 'open History title gated before the primary failure');
+      assert.equal(historyRequests.length, 1, `opening History should request /history once, saw ${historyRequests.length}`);
+      assert.equal(titleHTTP.finished.length, 0, 'independent title HTTP request must still be active before the primary failure');
+      assert.equal(titleHTTP.failed.length, 0, 'independent title HTTP request must not fail while the primary is gated');
+      const requestsWhileTitleGated = historyRequests.length;
+      const gatedScreenshot = await env.screenshot('chat-title-failure-history-gated');
+      t.diagnostic(`Title-gated failure History screenshot: ${gatedScreenshot}`);
+      console.log(`Title-gated failure History screenshot: ${gatedScreenshot}`);
+
+      const failureReleaseStartedAt = Date.now();
+      await provider.release(concurrent.primary.index, errorResponse(400, 'fixture first response failure'));
+      const failureSettle = await waitUntil(async () => {
+        const errors = await page.locator('.completion-error, .loading-message.completion-failed').count();
+        return errors === 1 ? { elapsed: Date.now() - failureReleaseStartedAt, errors } : false;
+      }, {
+        timeout: 5000,
+        label: 'completion error to render while the independent title request remains gated',
+      });
+      assert.ok(
+        failureSettle.elapsed <= 3000,
+        `completion error rendered ${failureSettle.elapsed}ms after the primary failure release`,
+      );
+      assert.equal(concurrent.primary.status, 400, `primary provider call finished with status ${concurrent.primary.status}`);
+      assert.equal(provider.calls.length, 2, 'the failed primary response must not trigger protocol fallback or another provider call');
+      assert.equal(concurrent.title.released, false, 'title response must remain gated after the primary failure');
+      assert.equal(concurrent.title.done, false, 'title provider response must not complete after the primary failure');
+      assert.equal(titleHTTP.finished.length, 0, 'independent title HTTP request must remain active after the primary failure');
+      assert.equal(
+        await page.locator('.loading-message.completion-active').count(),
+        0,
+        'completion must not stay active after the primary failure while the title is gated',
+      );
+      const failedSummary = await chatSummaryHTML(env, chatID, 'failed completion');
+      assert.ok(failedSummary.includes(firstPrompt), `failed completion summary lost the fallback title: ${failedSummary}`);
+      assert.ok(!failedSummary.includes(generatedTitle), `failed completion summary unexpectedly contained the title: ${failedSummary}`);
+
+      const failureScreenshot = await env.screenshot('chat-title-failure-history-failed');
+      t.diagnostic(
+        `Primary error settled ${failureSettle.elapsed}ms after release while the title provider remained gated; ` +
+        `summary still showed the fallback title.`,
+      );
+      t.diagnostic(`Failed-completion History screenshot: ${failureScreenshot}`);
+      console.log(
+        `Primary error settled ${failureSettle.elapsed}ms after release while the title provider remained gated; ` +
+        `summary still showed the fallback title.`,
+      );
+      console.log(`Failed-completion History screenshot: ${failureScreenshot}`);
+
+      const titleResponseStartedAt = Date.now();
+      await provider.release(concurrent.title.index, finalResponse(generatedTitle));
+      const titleUpdate = await waitUntil(async () => {
+        const text = (await currentHistoryTitle.first().innerText().catch(() => '')).trim();
+        return text === generatedTitle ? { elapsed: Date.now() - titleResponseStartedAt, text } : false;
+      }, {
+        timeout: 5000,
+        label: 'open History title to become the generated title after the primary failure',
+      });
+      await assertHistoryTitleResolved(page, generatedTitle, 'open History title after release despite the primary failure');
+      assert.equal(historyRequests.length, requestsWhileTitleGated, 'an independent title HTTP refresh must not refetch /history');
+      assert.equal(await page.locator('#history-page').isVisible(), true, 'History panel must remain open during the title HTTP refresh');
+      assert.ok(titleUpdate.elapsed <= 5000, `generated title reached open History after ${titleUpdate.elapsed}ms`);
+      await waitUntil(() => titleHTTP.finished.length === 1, {
+        timeout: 5000,
+        label: 'independent title HTTP request to finish after release',
+      });
+      assert.equal(titleHTTP.failed.length, 0, 'independent title HTTP request must not fail after release');
+      assert.equal(provider.calls.length, 2, `title HTTP refresh must not start another provider call, saw ${provider.calls.length}`);
+      const titleSummary = await chatSummaryHTML(env, chatID, 'completed title after failure');
+      assert.ok(titleSummary.includes(generatedTitle), `failed first response did not persist the generated title: ${titleSummary}`);
+
+      const updatedScreenshot = await env.screenshot('chat-title-failure-history-updated');
+      t.diagnostic(
+        `Title after primary failure: request offset ${concurrent.title.receivedAt - concurrent.primary.receivedAt}ms, ` +
+        `DOM update ${titleUpdate.elapsed}ms after title release; /history requests while open ${historyRequests.length}.`,
+      );
+      t.diagnostic(`Updated failure History screenshot: ${updatedScreenshot}`);
+      console.log(
+        `Title after primary failure: request offset ${concurrent.title.receivedAt - concurrent.primary.receivedAt}ms, ` +
+        `DOM update ${titleUpdate.elapsed}ms after title release.`,
+      );
+      console.log(`Updated failure History screenshot: ${updatedScreenshot}`);
+
+      await page.locator('#history-button').click();
+      await waitForPanels(page, null);
+      await waitCompletionError(page);
+      assert.equal(
+        await page.locator('.completion-error, .loading-message.completion-failed').count(),
+        1,
+        'failed primary response must render exactly one completion error',
+      );
+
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      await waitUntil(async () => (await currentHistoryTitle.first().innerText().catch(() => '')).trim() === generatedTitle, {
+        timeout: 5000,
+        label: 'generated title to remain in History while the completion error is rendered',
+      });
+
+      await reloadChat(page, chatID);
+      await waitCompletionError(page);
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      await waitUntil(async () => {
+        const text = (await page.locator('#history-entries .history-entry.current .history-title-link strong').first().innerText()).trim();
+        return text === generatedTitle;
+      }, {
+        timeout: 10000,
+        label: 'generated title to survive a failed first response and reload',
+      });
+      assert.equal(provider.calls.length, 2, `reload after the failed response must not start another provider call, saw ${provider.calls.length}`);
+      assert.equal(
+        provider.calls.filter(isTitleGenerationCall).length,
+        1,
+        'the failed completion and reload must not issue another title request',
+      );
+      assert.equal(titleHTTP.started.length, 1, 'reload must not issue another independent title HTTP request');
+      const totalElapsed = Date.now() - submittedAt;
+      t.diagnostic(
+        `Failure path: primary error settled ${failureSettle.elapsed}ms after release; title DOM update ` +
+        `${titleUpdate.elapsed}ms after independent title release; total ${totalElapsed}ms; ` +
+        `provider calls ${provider.calls.length}.`,
+      );
+      console.log(
+        `Failure path: primary error settled ${failureSettle.elapsed}ms after release; title DOM update ` +
+        `${titleUpdate.elapsed}ms after independent title release; total ${totalElapsed}ms; ` +
+        `provider calls ${provider.calls.length}.`,
+      );
+    },
+  });
+});
+
+test('chat completion finishes while title generation remains pending', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'completion independent of pending title',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      const firstPrompt = 'Plan a weeknight dinner rotation for two';
+      const assistantReply = 'Here is your weeknight dinner rotation.';
+      const generatedTitle = 'Weeknight dinner rotation';
+      const followupPrompt = 'Add one vegetarian option';
+      const followupReply = 'Added a vegetarian option.';
+
+      await signup(page, username('titleind'), password);
+      const { chatID } = await openChat(page);
+      const configuredTitleModel = await enableChatTitleGeneration(page, chatID);
+      const titleHTTP = trackChatTitleHTTPRequests(page);
+
+      const submittedAt = Date.now();
+      await submitPrompt(page, firstPrompt);
+      await waitCompletionActive(page);
+      const concurrent = await waitForConcurrentCompletionCalls(provider);
+      assert.equal(
+        provider.calls.length,
+        2,
+        `expected the primary and title requests only, saw ${provider.calls.length} provider calls`,
+      );
+      assert.notEqual(concurrent.primary.index, concurrent.title.index, 'primary and title calls must be distinct');
+      assert.equal(concurrent.primary.released, false, 'primary response must remain gated when the title is pending');
+      assert.equal(concurrent.primary.done, false, 'primary response must not have completed before release');
+      assert.equal(concurrent.title.released, false, 'title response must remain gated for the completion regression');
+      assert.equal(concurrent.title.done, false, 'title provider response must not complete before release');
+      assert.equal(lastUser(concurrent.primary), firstPrompt, 'primary request must use the submitted first prompt');
+      assertTitleGenerationRequest(concurrent.title, { model: configuredTitleModel, prompt: firstPrompt });
+      await waitUntil(() => titleHTTP.started.length === 1, {
+        timeout: 10000,
+        label: 'independent title HTTP request to start for the initial message',
+      });
+      assert.equal(titleHTTP.finished.length, 0, 'independent title HTTP request must still be active');
+      assert.equal(titleHTTP.failed.length, 0, 'independent title HTTP request must not fail while gated');
+
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      const currentHistoryTitle = page.locator('#history-entries .history-entry.current .history-title-link strong');
+      await currentHistoryTitle.first().waitFor({ state: 'visible', timeout: 10000 });
+      await assertHistoryTitlePending(page, firstPrompt, 'open History title gated during the main completion');
+      const fallbackSummary = await chatSummaryHTML(env, chatID, 'gated title');
+      assert.ok(fallbackSummary.includes(firstPrompt), `gated summary lost the fallback title: ${fallbackSummary}`);
+      assert.ok(!fallbackSummary.includes(generatedTitle), `gated summary unexpectedly contained the title: ${fallbackSummary}`);
+      const gatedScreenshot = await env.screenshot('chat-title-independent-completion-gated');
+      t.diagnostic(`Title-gated independent completion screenshot: ${gatedScreenshot}`);
+      console.log(`Title-gated independent completion screenshot: ${gatedScreenshot}`);
+
+      const primaryReleaseStartedAt = Date.now();
+      await provider.release(concurrent.primary.index, finalResponse(assistantReply));
+      await waitUntil(async () => (await page.locator('.loading-message.completion-active').count()) === 0, {
+        timeout: 2000,
+        label: 'completion spinner to disappear within 2s while the title request remains gated',
+      });
+      const completionElapsed = Date.now() - primaryReleaseStartedAt;
+      assert.ok(completionElapsed <= 2000, `completion settled ${completionElapsed}ms after primary release`);
+      assert.equal(
+        await page.locator('.loading-message.completion-active').count(),
+        0,
+        'completion spinner must disappear after the primary response without waiting for the title',
+      );
+      assert.equal(
+        await page.locator('#message-history .message').filter({ hasText: assistantReply }).count(),
+        1,
+        'final assistant response must be visible exactly once',
+      );
+      const transcript = await page.locator('#message-history').textContent();
+      assert.equal(
+        transcript.split(assistantReply).length - 1,
+        1,
+        'final assistant response text must appear exactly once in the transcript',
+      );
+      assert.equal(concurrent.title.released, false, 'title provider response must remain gated after completion');
+      assert.equal(concurrent.title.done, false, 'title provider response must not complete with the primary');
+      await assertHistoryTitlePending(page, firstPrompt, 'History title to remain pending after the main completion');
+      assert.equal(titleHTTP.finished.length, 0, 'independent title HTTP request must remain active after completion');
+      assert.equal(titleHTTP.failed.length, 0, 'independent title HTTP request must not fail after completion');
+      const summaryAfterMain = await chatSummaryHTML(env, chatID, 'completed main with pending title');
+      assert.ok(summaryAfterMain.includes(firstPrompt), `completion summary lost the fallback title: ${summaryAfterMain}`);
+      assert.ok(!summaryAfterMain.includes(generatedTitle), `completion summary unexpectedly contained the title: ${summaryAfterMain}`);
+      const completedScreenshot = await env.screenshot('chat-title-independent-completion-finished');
+      t.diagnostic(
+        `Main completion settled ${completionElapsed}ms after primary release with the title provider still gated; ` +
+        `independent title HTTP request remained active and the summary kept the fallback title.`,
+      );
+      t.diagnostic(`Completed-main pending-title screenshot: ${completedScreenshot}`);
+      console.log(
+        `Main completion settled ${completionElapsed}ms after primary release with the title provider still gated; ` +
+        `independent title HTTP request remained active and the summary kept the fallback title.`,
+      );
+      console.log(`Completed-main pending-title screenshot: ${completedScreenshot}`);
+
+      const titleReleaseStartedAt = Date.now();
+      await provider.release(concurrent.title.index, finalResponse(generatedTitle));
+      const titleUpdate = await waitUntil(async () => {
+        const text = (await currentHistoryTitle.first().innerText().catch(() => '')).trim();
+        return text === generatedTitle ? { elapsed: Date.now() - titleReleaseStartedAt, text } : false;
+      }, {
+        timeout: 5000,
+        label: 'open History title to update after the main completion already finished',
+      });
+      await assertHistoryTitleResolved(page, generatedTitle, 'open History title after release following the main completion');
+      await waitUntil(() => titleHTTP.finished.length === 1, {
+        timeout: 5000,
+        label: 'independent title HTTP request to finish after release',
+      });
+      assert.equal(titleHTTP.failed.length, 0, 'independent title HTTP request must not fail after release');
+      assert.equal(await page.locator('#history-page').isVisible(), true, 'History must remain open for the independent title update');
+      assert.ok(titleUpdate.elapsed <= 5000, `generated title reached open History after ${titleUpdate.elapsed}ms`);
+      assert.equal(provider.calls.length, 2, `the independent title refresh must not start another provider call, saw ${provider.calls.length}`);
+      const titleSummary = await chatSummaryHTML(env, chatID, 'title after main completion');
+      assert.ok(titleSummary.includes(generatedTitle), `independent title was not persisted after main completion: ${titleSummary}`);
+
+      const updatedScreenshot = await env.screenshot('chat-title-independent-completion-updated');
+      t.diagnostic(
+        `Title DOM updated ${titleUpdate.elapsed}ms after title release, after the main completion had already finished; ` +
+        `title HTTP started ${concurrent.title.receivedAt - submittedAt}ms after submit.`,
+      );
+      t.diagnostic(`Updated independent-title screenshot: ${updatedScreenshot}`);
+      console.log(
+        `Title DOM updated ${titleUpdate.elapsed}ms after title release, after the main completion had already finished; ` +
+        `title HTTP started ${concurrent.title.receivedAt - submittedAt}ms after submit.`,
+      );
+      console.log(`Updated independent-title screenshot: ${updatedScreenshot}`);
+
+      await reloadChat(page, chatID);
+      await waitForHistoryText(page, assistantReply);
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      await waitUntil(async () => {
+        const text = (await page.locator('#history-entries .history-entry.current .history-title-link strong').first().innerText()).trim();
+        return text === generatedTitle;
+      }, {
+        timeout: 10000,
+        label: 'generated title to persist after reload following main completion',
+      });
+      assert.equal(provider.calls.length, 2, `reload after completion must not start another provider call, saw ${provider.calls.length}`);
+      assert.equal(provider.calls.filter(isTitleGenerationCall).length, 1, 'reload must not issue another title request');
+
+      await page.locator('#history-button').click();
+      await waitForPanels(page, null);
+      await submitPrompt(page, followupPrompt);
+      await waitCompletionActive(page);
+      const followup = await waitUntil(() => {
+        return provider.calls.find((call) => !isTitleGenerationCall(call) && lastUser(call) === followupPrompt) ?? false;
+      }, {
+        timeout: 15000,
+        label: 'follow-up completion provider request',
+      });
+      await provider.release(followup.index, finalResponse(followupReply));
+      await waitCompletionDone(page);
+      await waitForHistoryText(page, followupReply);
+      assert.equal(provider.calls.length, 3, `follow-up completion should make the third provider call, saw ${provider.calls.length}`);
+      assert.equal(
+        provider.calls.filter(isTitleGenerationCall).length,
+        1,
+        'the follow-up message must not issue another title provider request',
+      );
+      assert.equal(titleHTTP.started.length, 1, 'the follow-up message must not issue another title HTTP request');
+      assert.equal(titleHTTP.finished.length, 1, 'the initial independent title HTTP request must be the only one');
+
+      const totalElapsed = Date.now() - submittedAt;
+      t.diagnostic(
+        `Independent title: primary completion settled ${completionElapsed}ms after release with title pending; ` +
+        `title DOM updated ${titleUpdate.elapsed}ms after later title release; follow-up completion added only ` +
+        `a primary provider call; total ${totalElapsed}ms.`,
+      );
+      console.log(
+        `Independent title: primary completion settled ${completionElapsed}ms after release with title pending; ` +
+        `title DOM updated ${titleUpdate.elapsed}ms after later title release; follow-up completion added only ` +
+        `a primary provider call; total ${totalElapsed}ms.`,
+      );
+    },
+  });
+});
 
 before(async () => {
   build = await buildApp();

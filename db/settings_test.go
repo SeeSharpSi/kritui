@@ -876,3 +876,81 @@ func TestSaveSettingsWithNilLLMPreservesExistingConfig(t *testing.T) {
 		t.Errorf("LLM config after nil save = %#v, want preserved config", got)
 	}
 }
+
+func TestTitleGenerationDefaultsToDisabled(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	settings, err := GetTitleGenerationSettings(context.Background(), database)
+	if err != nil {
+		t.Fatalf("GetTitleGenerationSettings() error: %v", err)
+	}
+	if settings.Enabled || settings.Model != "" {
+		t.Fatalf("default title generation settings = %#v, want disabled and empty", settings)
+	}
+}
+
+func TestSaveSettingsPersistsTitleGeneration(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "default-model",
+		MaxToolRounds: 16,
+		TitleGeneration: &TitleGenerationSettingsUpdate{
+			Enabled: true,
+			Model:   "title-model",
+		},
+	}); err != nil {
+		t.Fatalf("SaveSettings() error: %v", err)
+	}
+	settings, err := GetTitleGenerationSettings(ctx, database)
+	if err != nil {
+		t.Fatalf("GetTitleGenerationSettings() error: %v", err)
+	}
+	if !settings.Enabled || settings.Model != "title-model" {
+		t.Fatalf("title generation settings = %#v, want enabled with title-model", settings)
+	}
+}
+
+func TestSaveSettingsPreservesTitleModelWhileDisabled(t *testing.T) {
+	ctx := context.Background()
+	database := openMessagesTestDatabase(t, "")
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "default-model",
+		MaxToolRounds: 16,
+		TitleGeneration: &TitleGenerationSettingsUpdate{
+			Enabled: false,
+			Model:   "kept-model",
+		},
+	}); err != nil {
+		t.Fatalf("SaveSettings() error: %v", err)
+	}
+	settings, err := GetTitleGenerationSettings(ctx, database)
+	if err != nil {
+		t.Fatalf("GetTitleGenerationSettings() error: %v", err)
+	}
+	if settings.Enabled || settings.Model != "kept-model" {
+		t.Fatalf("title generation settings = %#v, want disabled with kept-model", settings)
+	}
+}
+
+func TestValidateTitleGenerationSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		update  TitleGenerationSettingsUpdate
+		wantErr bool
+	}{
+		{name: "disabled empty model", update: TitleGenerationSettingsUpdate{}},
+		{name: "disabled with model", update: TitleGenerationSettingsUpdate{Model: "model"}},
+		{name: "enabled with model", update: TitleGenerationSettingsUpdate{Enabled: true, Model: "model"}},
+		{name: "enabled without model", update: TitleGenerationSettingsUpdate{Enabled: true}, wantErr: true},
+		{name: "enabled with spaces only", update: TitleGenerationSettingsUpdate{Enabled: true, Model: "   "}, wantErr: true},
+		{name: "model too long", update: TitleGenerationSettingsUpdate{Model: strings.Repeat("m", 513)}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateTitleGenerationSettings(test.update)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("ValidateTitleGenerationSettings() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}

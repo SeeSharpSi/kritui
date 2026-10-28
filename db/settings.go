@@ -20,8 +20,8 @@ type settingWriter interface {
 }
 
 // SettingsUpdate describes the desired settings for one atomic save.
-// Nil PromptAppends, MCPServers, Ntfy, LLM, or ToolResultElision values, and
-// an empty Theme, leave those settings untouched.
+// Nil PromptAppends, MCPServers, Ntfy, LLM, ToolResultElision, or
+// TitleGeneration values, and an empty Theme, leave those settings untouched.
 type SettingsUpdate struct {
 	Model             string
 	MaxToolRounds     int
@@ -31,7 +31,21 @@ type SettingsUpdate struct {
 	Ntfy              *NtfySettingsUpdate
 	LLM               *LLMSettingsUpdate
 	ToolResultElision *llm.ToolResultElisionConfig
+	TitleGeneration   *TitleGenerationSettingsUpdate
 	Theme             string
+}
+
+// TitleGenerationSettings contains the persisted chat-title generation choice.
+type TitleGenerationSettings struct {
+	Enabled bool
+	Model   string
+}
+
+// TitleGenerationSettingsUpdate changes chat-title generation. A disabled
+// update may still carry a model so the selection is preserved.
+type TitleGenerationSettingsUpdate struct {
+	Enabled bool
+	Model   string
 }
 
 // NtfySettings contains values safe to render in the settings page.
@@ -151,6 +165,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 			return err
 		}
 	}
+	if update.TitleGeneration != nil {
+		if err := setTitleGeneration(ctx, tx, *update.TitleGeneration); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(update.Theme) != "" {
 		if err := setTheme(ctx, tx, update.Theme); err != nil {
 			return err
@@ -232,6 +251,63 @@ func setToolResultElision(ctx context.Context, db settingWriter, config llm.Tool
 		WHERE id = ?
 	`, string(config.Mode), userTurns, tokenBudget, summaryModel, userID); err != nil {
 		return fmt.Errorf("set tool result elision: %w", err)
+	}
+	return nil
+}
+
+// GetTitleGenerationSettings returns the stored chat-title generation choice.
+func GetTitleGenerationSettings(ctx context.Context, db *sql.DB) (TitleGenerationSettings, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return TitleGenerationSettings{}, fmt.Errorf("get title generation settings: %w", err)
+	}
+	var enabled bool
+	var model sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT title_generation_enabled, title_generation_model
+		FROM settings
+		WHERE id = ?
+	`, userID).Scan(&enabled, &model); err != nil {
+		return TitleGenerationSettings{}, fmt.Errorf("get title generation settings: %w", err)
+	}
+	return TitleGenerationSettings{
+		Enabled: enabled,
+		Model:   nullSettingString(model),
+	}, nil
+}
+
+// ValidateTitleGenerationSettings checks a title generation update without
+// writing it.
+func ValidateTitleGenerationSettings(update TitleGenerationSettingsUpdate) error {
+	model := strings.TrimSpace(update.Model)
+	if len(model) > 512 {
+		return fmt.Errorf("set title generation settings: model must not exceed 512 bytes")
+	}
+	if update.Enabled && model == "" {
+		return fmt.Errorf("set title generation settings: model is required when enabled")
+	}
+	return nil
+}
+
+func setTitleGeneration(ctx context.Context, db settingWriter, update TitleGenerationSettingsUpdate) error {
+	if err := ValidateTitleGenerationSettings(update); err != nil {
+		return err
+	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set title generation settings: %w", err)
+	}
+	model := strings.TrimSpace(update.Model)
+	var modelValue any
+	if model != "" {
+		modelValue = model
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE settings
+		SET title_generation_enabled = ?, title_generation_model = ?
+		WHERE id = ?
+	`, update.Enabled, modelValue, userID); err != nil {
+		return fmt.Errorf("set title generation settings: %w", err)
 	}
 	return nil
 }

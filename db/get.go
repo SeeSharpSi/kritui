@@ -190,6 +190,22 @@ func loadChatTools(ctx context.Context, db *sql.DB, chats []Chat) error {
 	return nil
 }
 
+// GetChatTitle returns the stored title for an owned chat.
+func GetChatTitle(ctx context.Context, db *sql.DB, chatID int64) (string, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get chat title: %w", err)
+	}
+	var title string
+	if err := db.QueryRowContext(ctx, `SELECT title FROM chats WHERE id = ? AND user_id = ?`, chatID, userID).Scan(&title); err != nil {
+		if err == sql.ErrNoRows {
+			return "", ErrChatNotFound
+		}
+		return "", fmt.Errorf("get chat title: %w", err)
+	}
+	return title, nil
+}
+
 // GetChatTools returns enabled tool names for a chat.
 // Missing chats return an empty list.
 func GetChatTools(ctx context.Context, db *sql.DB, chatID int64) ([]string, error) {

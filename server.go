@@ -118,6 +118,7 @@ func newMux(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *com
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
 	mux.HandleFunc("PUT /chats/{chat}/pin", pinChatHandler(database))
 	mux.HandleFunc("GET /chats/{chat}/summary", chatSummaryHandler(database))
+	mux.HandleFunc("POST /chats/{chat}/title", chatTitleHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, commandRegistry, toolCalls))
 	mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, toolRegistry, toolCalls))
 	mux.HandleFunc("GET /chats/{chat}/messages/{message}/attachments/{position}", messageAttachmentHandler(database))
@@ -510,6 +511,19 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateLegacyAccountIdentity,
 	kritui_db.MigrateInbox,
 	migrateChatPins,
+	migrateTitleGenerationSettings,
+}
+
+// migrateTitleGenerationSettings adds the opt-in chat-title generation toggle
+// and its selected model. Existing accounts default to disabled.
+func migrateTitleGenerationSettings(ctx context.Context, tx *sql.Tx) error {
+	if err := addColumnIfMissing(ctx, tx, "settings", "title_generation_enabled", `INTEGER NOT NULL DEFAULT 0 CHECK (title_generation_enabled IN (0, 1))`); err != nil {
+		return err
+	}
+	return addColumnIfMissing(ctx, tx, "settings", "title_generation_model", `TEXT CHECK (
+		title_generation_model IS NULL OR
+		(trim(title_generation_model) <> '' AND length(CAST(title_generation_model AS BLOB)) <= 512)
+	)`)
 }
 
 // migrateChatPins adds the durable per-chat pin flag and its history index.

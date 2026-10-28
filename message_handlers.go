@@ -208,6 +208,14 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 			_ = templates.ClearCompletionErrors().Render(r.Context(), w)
 			_ = templates.ActiveCompletionResult(request.chat, admission.messages, admission.inbox).Render(r.Context(), w)
 			_ = templates.CompletionWithHistory(request.chat, admission.requestID, admission.model, admission.tools, true, admission.messages).Render(r.Context(), w)
+			if isInitialUserTurn(admission.messages) {
+				settings, titleErr := kritui_db.GetTitleGenerationSettings(r.Context(), database)
+				if titleErr != nil {
+					log.Printf("load title generation settings: %v", titleErr)
+				} else if settings.Enabled && strings.TrimSpace(settings.Model) != "" {
+					_ = templates.ChatTitleRequest(request.chat).Render(r.Context(), w)
+				}
+			}
 			_ = templates.MessageInput("", true).Render(r.Context(), w)
 		} else if err := templates.InboxSubmission(request.chat, admission.inbox).Render(r.Context(), w); err != nil {
 			log.Printf("render prompt inbox: %v", err)

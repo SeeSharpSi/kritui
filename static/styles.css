@@ -1076,6 +1076,12 @@ main {
                     white-space: nowrap;
                 }
 
+                .history-title-spinner {
+                    display: none;
+                    align-items: center;
+                    line-height: 18px;
+                }
+
                 .history-rename {
                     position: relative;
                     z-index: 1;
@@ -3021,6 +3027,16 @@ main {
             0.4em 0.4em 0 transparent,
             0.4em 0.8em 0 transparent,
             0.4em 1.2em 0 transparent;
+    }
+}
+
+body:has(#chat-title-request.htmx-request) #history-entries .history-entry.current .history-title-link {
+    .history-title-text {
+        display: none;
+    }
+
+    .history-title-spinner {
+        display: inline-flex;
     }
 }
 

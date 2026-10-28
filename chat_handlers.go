@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -164,6 +165,9 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 		if renderSettings.defaultModel != "" && !slices.Contains(models, renderSettings.defaultModel) {
 			models = append([]string{renderSettings.defaultModel}, models...)
 		}
+		if model := renderSettings.titleGeneration.Model; model != "" && !slices.Contains(models, model) {
+			models = append(models, model)
+		}
 
 		var page bytes.Buffer
 		home := templates.HomeData{
@@ -174,6 +178,8 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			SelectedModel:            selectedModel,
 			DefaultModel:             renderSettings.defaultModel,
 			MaxToolRounds:            renderSettings.maxToolRounds,
+			TitleGenerationEnabled:   renderSettings.titleGeneration.Enabled,
+			TitleGenerationModel:     renderSettings.titleGeneration.Model,
 			ToolResultElision:        renderSettings.toolResultElision,
 			Tools:                    toolRegistry.Names(),
 			EnabledTools:             enabledTools,
@@ -207,6 +213,7 @@ type homeRenderSettings struct {
 	promptAppends     []kritui_db.PromptAppend
 	defaultModel      string
 	maxToolRounds     int
+	titleGeneration   kritui_db.TitleGenerationSettings
 	toolResultElision llm.ToolResultElisionConfig
 	defaultTools      []string
 	mcpServers        []kritui_db.MCPServer
@@ -243,6 +250,10 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 	if settings.toolResultElision, err = kritui_db.GetToolResultElision(ctx, database); err != nil {
 		log.Printf("get tool result elision: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load tool result elision: %w", err)
+	}
+	if settings.titleGeneration, err = kritui_db.GetTitleGenerationSettings(ctx, database); err != nil {
+		log.Printf("get title generation settings: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load title generation settings: %w", err)
 	}
 	if !defaultToolsLoaded {
 		if settings.defaultTools, err = kritui_db.GetDefaultEnabledTools(ctx, database, nil); err != nil {
@@ -425,6 +436,14 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.ToolResultElision = toolResultElision
+		titleGeneration, err := kritui_db.GetTitleGenerationSettings(r.Context(), database)
+		if err != nil {
+			log.Printf("get title generation settings: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.TitleGenerationEnabled = titleGeneration.Enabled
+		page.TitleGenerationModel = titleGeneration.Model
 		defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 		if err != nil {
 			log.Printf("get default tools: %v", err)
@@ -486,6 +505,8 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			if toolResultElisionSubmitted {
 				page.ToolResultElision = toolResultElisionFromForm(r)
 			}
+			page.TitleGenerationEnabled = r.FormValue("title_generation_enabled") == "1"
+			page.TitleGenerationModel = strings.TrimSpace(r.FormValue("title_generation_model"))
 
 			submittedModel := strings.TrimSpace(r.FormValue("model"))
 			submittedRounds, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("max_tool_rounds")))
@@ -667,6 +688,14 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				}
 				toolResultElisionUpdate = &page.ToolResultElision
 			}
+			titleGenerationUpdate := kritui_db.TitleGenerationSettingsUpdate{
+				Enabled: page.TitleGenerationEnabled,
+				Model:   page.TitleGenerationModel,
+			}
+			if err := kritui_db.ValidateTitleGenerationSettings(titleGenerationUpdate); err != nil {
+				render(http.StatusBadRequest, fmt.Sprintf("Title generation settings are invalid: %v.", err))
+				return
+			}
 			if r.FormValue("append_form") == "1" {
 				if err := kritui_db.ValidatePromptAppends(submittedAppends); err != nil {
 					render(http.StatusBadRequest, fmt.Sprintf("Prompt append settings are invalid: %v.", err))
@@ -750,6 +779,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				Ntfy:              ntfyUpdate,
 				LLM:               llmUpdate,
 				ToolResultElision: toolResultElisionUpdate,
+				TitleGeneration:   &titleGenerationUpdate,
 				Theme:             submittedTheme,
 			}
 			if r.FormValue("append_form") == "1" {
@@ -1027,9 +1057,21 @@ func pinChatHandler(database *sql.DB) http.HandlerFunc {
 }
 
 func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *sql.DB, current, beforeUpdatedAt string, beforeID int64, beforePinned bool, limit int) error {
+	fragment, err := historyEntriesFragment(ctx, database, current, beforeUpdatedAt, beforeID, beforePinned, limit)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if _, err := io.WriteString(w, fragment); err != nil {
+		return fmt.Errorf("write history entries: %w", err)
+	}
+	return nil
+}
+
+func historyEntriesFragment(ctx context.Context, database *sql.DB, current, beforeUpdatedAt string, beforeID int64, beforePinned bool, limit int) (string, error) {
 	chats, err := kritui_db.GetChatsPage(ctx, database, beforeUpdatedAt, beforeID, beforePinned, limit+1)
 	if err != nil {
-		return fmt.Errorf("get chats: %w", err)
+		return "", fmt.Errorf("get chats: %w", err)
 	}
 	hasMore := len(chats) > limit
 	if hasMore {
@@ -1038,25 +1080,52 @@ func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *
 
 	var fragment bytes.Buffer
 	if err := templates.HistoryEntries(current, chats, beforeUpdatedAt == "", hasMore).Render(ctx, &fragment); err != nil {
-		return fmt.Errorf("render history entries: %w", err)
+		return "", fmt.Errorf("render history entries: %w", err)
 	}
 	if err := templates.HistoryError("", true).Render(ctx, &fragment); err != nil {
-		return fmt.Errorf("render history status: %w", err)
+		return "", fmt.Errorf("render history status: %w", err)
 	}
+	count, err := chatHistoryCount(ctx, database)
+	if err != nil {
+		return "", err
+	}
+	if err := templates.HistoryCount(count).Render(ctx, &fragment); err != nil {
+		return "", fmt.Errorf("render history count: %w", err)
+	}
+	return fragment.String(), nil
+}
+
+// renderHistoryRefresh renders an account-scoped history list for a completion
+// SSE update, targeting the same #history-entries node used by panel reloads.
+func renderHistoryRefresh(ctx context.Context, database *sql.DB, current string) (string, error) {
+	const limit = defaultHistoryPageSize
+	chats, err := kritui_db.GetChatsPage(ctx, database, "", 0, false, limit+1)
+	if err != nil {
+		return "", fmt.Errorf("get chats: %w", err)
+	}
+	hasMore := len(chats) > limit
+	if hasMore {
+		chats = chats[:limit]
+	}
+	count, err := chatHistoryCount(ctx, database)
+	if err != nil {
+		return "", err
+	}
+	var fragment bytes.Buffer
+	if err := templates.HistoryRefresh(current, chats, true, hasMore, count).Render(ctx, &fragment); err != nil {
+		return "", fmt.Errorf("render history refresh: %w", err)
+	}
+	return fragment.String(), nil
+}
+
+func chatHistoryCount(ctx context.Context, database *sql.DB) (int, error) {
 	var count int
 	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE user_id = ? AND EXISTS (
 		SELECT 1 FROM messages WHERE messages.chat_id = chats.id
 	)`, kritui_db.UserID(ctx)).Scan(&count); err != nil {
-		return fmt.Errorf("count chat history: %w", err)
+		return 0, fmt.Errorf("count chat history: %w", err)
 	}
-	if err := templates.HistoryCount(count).Render(ctx, &fragment); err != nil {
-		return fmt.Errorf("render history count: %w", err)
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if _, err := w.Write(fragment.Bytes()); err != nil {
-		return fmt.Errorf("write history entries: %w", err)
-	}
-	return nil
+	return count, nil
 }
 
 func renderPageError(w http.ResponseWriter, r *http.Request, status int, message string) {
@@ -1229,6 +1298,9 @@ func newMCPServerID() (string, error) {
 func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data templates.SettingsPanelData, database *sql.DB) {
 	data.Visible = true
 	data.Models, data.SelectedModel = availableModels(r, database, data.SelectedModel)
+	if model := data.TitleGenerationModel; model != "" && !slices.Contains(data.Models, model) {
+		data.Models = append(data.Models, model)
+	}
 	var page bytes.Buffer
 	if err := templates.SettingsPage(data).Render(r.Context(), &page); err != nil {
 		log.Printf("render settings: %v", err)

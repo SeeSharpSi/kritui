@@ -363,6 +363,21 @@ templ EditedSubmission(chatID string, requestID string, messages []llm.Message, 
 	@PendingCompletion(chatID, requestID, model, tools)
 }
 
+templ ChatTitleRequest(chatID string) {
+	<div
+		id="chat-title-request"
+		hx-post={ "/chats/" + chatID + "/title" }
+		hx-trigger="load"
+		hx-indicator="this"
+		hx-target="this"
+		hx-swap="outerHTML"
+	></div>
+}
+
+templ ChatTitleComplete() {
+	<div id="chat-title-request" hidden></div>
+}
+
 templ CompletionCheckpoint(chatID string, messages []llm.Message) {
 	<hx-partial hx-target="#message-history" hx-swap="innerHTML">
 		@Messages(chatID, messages...)

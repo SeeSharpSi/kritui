@@ -140,6 +140,29 @@ func SetChatPinned(ctx context.Context, db databaseExecutor, chatID int64, pinne
 	return nil
 }
 
+// UpdateChatTitleIfUnchanged replaces a title only when it still matches
+// expectedTitle. A concurrent rename or deletion reports false without an
+// error, and chat recency is left untouched.
+func UpdateChatTitleIfUnchanged(ctx context.Context, db databaseExecutor, chatID int64, expectedTitle, title string) (bool, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return false, fmt.Errorf("update chat title: %w", err)
+	}
+	result, err := db.ExecContext(ctx, `
+		UPDATE chats
+		SET title = ?
+		WHERE id = ? AND user_id = ? AND title = ?
+	`, title, chatID, userID, expectedTitle)
+	if err != nil {
+		return false, fmt.Errorf("update chat title: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("update chat title rows affected: %w", err)
+	}
+	return affected > 0, nil
+}
+
 func replaceChatOptions(ctx context.Context, db databaseExecutor, chatID int64, tools, appendIDs []string) error {
 	if _, err := db.ExecContext(ctx, `DELETE FROM chat_tools WHERE chat_id = ?`, chatID); err != nil {
 		return fmt.Errorf("clear chat tools: %w", err)

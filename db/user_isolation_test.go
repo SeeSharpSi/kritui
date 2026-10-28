@@ -724,3 +724,28 @@ func TestNewUserStartsWithBuiltInDefaults(t *testing.T) {
 		t.Fatalf("new user mcp servers = %#v, %v, want empty", servers, err)
 	}
 }
+
+func TestTitleGenerationSettingsAreIsolated(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	_, aliceCtx := createIsolationUser(t, database, "TitleAlice")
+	_, bobCtx := createIsolationUser(t, database, "TitleBob")
+
+	if err := SaveSettings(aliceCtx, database, SettingsUpdate{
+		Model:         "alice-model",
+		MaxToolRounds: 8,
+		TitleGeneration: &TitleGenerationSettingsUpdate{
+			Enabled: true,
+			Model:   "alice-title-model",
+		},
+	}); err != nil {
+		t.Fatalf("save alice title settings: %v", err)
+	}
+	aliceSettings, err := GetTitleGenerationSettings(aliceCtx, database)
+	if err != nil || !aliceSettings.Enabled || aliceSettings.Model != "alice-title-model" {
+		t.Fatalf("alice title settings = %#v, %v", aliceSettings, err)
+	}
+	bobSettings, err := GetTitleGenerationSettings(bobCtx, database)
+	if err != nil || bobSettings.Enabled || bobSettings.Model != "" {
+		t.Fatalf("bob title settings = %#v, %v, want defaults", bobSettings, err)
+	}
+}

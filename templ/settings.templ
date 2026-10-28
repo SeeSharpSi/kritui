@@ -16,6 +16,8 @@ type SettingsPanelData struct {
 	Models                      []string
 	SelectedModel               string
 	MaxToolRounds               int
+	TitleGenerationEnabled      bool
+	TitleGenerationModel        string
 	ToolResultElision           llm.ToolResultElisionConfig
 	ToolNames                   []string
 	DefaultTools                []string
@@ -200,6 +202,36 @@ templ SettingsPage(data SettingsPanelData) {
 									</select>
 								}
 							</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="title-generation-enabled">Generate chat titles</label>
+							<p class="settings-help">Generate a short title from your first message while the response is being prepared. Manually renamed titles stay unchanged.</p>
+						</div>
+						<div class="settings-control">
+							<label class="settings-tool-option">
+								<input id="title-generation-enabled" type="checkbox" role="switch" name="title_generation_enabled" value="1" if data.TitleGenerationEnabled { checked }/>
+								<span>Enabled</span>
+							</label>
+						</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="title-generation-model">Title model</label>
+							<p class="settings-help">Required when title generation is enabled. Uses the stored model connection.</p>
+						</div>
+						<div class="settings-control">
+							if len(data.Models) == 0 {
+								<input id="title-generation-model" type="text" name="title_generation_model" value={ data.TitleGenerationModel } maxlength="512" placeholder="Provider model ID"/>
+							} else {
+								<select id="title-generation-model" name="title_generation_model">
+									<option value=""></option>
+									for _, model := range data.Models {
+										<option value={ model } if model == data.TitleGenerationModel { selected }>{ model }</option>
+									}
+								</select>
+							}
+						</div>
 					</div>
 					<div class="settings-field">
 						<div class="settings-field-copy">

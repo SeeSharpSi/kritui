@@ -84,6 +84,14 @@ templ HistoryError(message string, outOfBand bool) {
 	>{ message }</p>
 }
 
+templ HistoryRefresh(chatID string, chats []kritui_db.Chat, firstPage bool, hasMore bool, count int) {
+	<hx-partial hx-target="#history-entries" hx-swap="innerHTML">
+		@HistoryEntries(chatID, chats, firstPage, hasMore)
+		@HistoryError("", true)
+		@HistoryCount(count)
+	</hx-partial>
+}
+
 templ HistoryEntries(chatID string, chats []kritui_db.Chat, firstPage bool, hasMore bool) {
 	if firstPage && len(chats) == 0 {
 		<li class="history-empty">No saved chats yet.</li>
@@ -132,7 +140,10 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 						aria-current="page"
 					}
 				>
-					<strong>{ historyTitle(chat) }</strong>
+					<strong>
+						<span class="history-title-text">{ historyTitle(chat) }</span>
+						<span class="history-title-spinner" role="status" aria-label="Generating chat title"><span class="braille-spinner" aria-hidden="true"></span></span>
+					</strong>
 				</a>
 				<form
 					id={ "history-rename-" + strconv.FormatInt(chat.ID, 10) }

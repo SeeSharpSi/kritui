@@ -410,10 +410,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=47`,
-		`/static/hx-sse.js?v=47`,
-		`/static/app.js?v=47`,
-		`/static/styles.css?v=47`,
+		`/static/htmx.min.js?v=48`,
+		`/static/hx-sse.js?v=48`,
+		`/static/app.js?v=48`,
+		`/static/styles.css?v=48`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -1295,6 +1295,532 @@ func TestMessagesWithPromptAppendTextsExpandsCopyForCompletion(t *testing.T) {
 	}
 }
 
+func TestChatTitleHandlerUpdatesTitleAndRendersHistoryRefresh(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	seedCurrentChat(t, database, 1)
+	if _, err := persistUserMessage(ctx, database, 1, "Help me plan a small garden", nil, []string{}, nil); err != nil {
+		t.Fatalf("seed first user message: %v", err)
+	}
+	if err := kritui_db.SaveSettings(ctx, database, kritui_db.SettingsUpdate{
+		Model:         "default-model",
+		MaxToolRounds: 16,
+		TitleGeneration: &kritui_db.TitleGenerationSettingsUpdate{
+			Enabled: true,
+			Model:   "title-model",
+		},
+	}); err != nil {
+		t.Fatalf("save title generation settings: %v", err)
+	}
+
+	type titleRequest struct {
+		Model    string        `json:"model"`
+		Messages []llm.Message `json:"messages"`
+		Tools    []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	requests := make(chan titleRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request titleRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		requests <- request
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"\"Garden planning\""},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	request := httptest.NewRequest(http.MethodPost, "/chats/1/title", nil)
+	request.SetPathValue("chat", "1")
+	response := httptest.NewRecorder()
+	chatTitleHandler(database).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body := response.Body.String()
+	requireContains(t, body,
+		`id="chat-title-request"`,
+		`hidden`,
+		`<hx-partial hx-target="#history-entries" hx-swap="innerHTML">`,
+		"Garden planning",
+		`id="history-count"`,
+	)
+	title, err := kritui_db.GetChatTitle(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("get generated title: %v", err)
+	}
+	if title != "Garden planning" {
+		t.Fatalf("generated title = %q, want Garden planning", title)
+	}
+
+	captured := <-requests
+	if captured.Model != "title-model" {
+		t.Errorf("title request model = %q, want title-model", captured.Model)
+	}
+	if len(captured.Tools) != 0 {
+		t.Errorf("title request tools = %#v, want none", captured.Tools)
+	}
+	if len(captured.Messages) != 2 || captured.Messages[0].Role != "system" || captured.Messages[1].Role != "user" {
+		t.Fatalf("title request messages = %#v, want exactly system and user", captured.Messages)
+	}
+	if captured.Messages[0].Content != titleGenerationSystemPrompt {
+		t.Errorf("title request system message = %q, want exact title prompt", captured.Messages[0].Content)
+	}
+	if captured.Messages[1].Content != "Help me plan a small garden" {
+		t.Errorf("title request user message = %q, want first user content", captured.Messages[1].Content)
+	}
+}
+
+func TestChatTitleHandlerKeepsFallbackOnProviderFailure(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	seedCurrentChat(t, database, 1)
+	if _, err := persistUserMessage(ctx, database, 1, "Fallback title source", nil, []string{}, nil); err != nil {
+		t.Fatalf("seed user message: %v", err)
+	}
+	if err := kritui_db.SaveSettings(ctx, database, kritui_db.SettingsUpdate{
+		Model:         "default-model",
+		MaxToolRounds: 16,
+		TitleGeneration: &kritui_db.TitleGenerationSettingsUpdate{
+			Enabled: true,
+			Model:   "title-model",
+		},
+	}); err != nil {
+		t.Fatalf("save title generation settings: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "provider failed", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	request := httptest.NewRequest(http.MethodPost, "/chats/1/title", nil)
+	request.SetPathValue("chat", "1")
+	response := httptest.NewRecorder()
+	chatTitleHandler(database).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	body := response.Body.String()
+	requireContains(t, body, `id="chat-title-request"`, `hidden`)
+	requireNotContains(t, body, `hx-target="#history-entries"`, "data-completion-error-message")
+
+	title, err := kritui_db.GetChatTitle(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("get fallback title: %v", err)
+	}
+	if title != "Fallback title source" {
+		t.Fatalf("fallback title = %q, want unchanged", title)
+	}
+}
+
+func TestChatTitleHandlerRejectsForeignAndMalformedChat(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 1)
+	if _, err := database.Exec(`UPDATE chats SET title = 'Secret title' WHERE id = 1`); err != nil {
+		t.Fatalf("seed secret title: %v", err)
+	}
+	encoded, err := hashPassword("foreign-password")
+	if err != nil {
+		t.Fatalf("hash foreign password: %v", err)
+	}
+	user, err := kritui_db.CreateUser(context.Background(), database, "titleforeign", encoded)
+	if err != nil {
+		t.Fatalf("create foreign user: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/chats/1/title", nil)
+	request.SetPathValue("chat", "1")
+	request = request.WithContext(kritui_db.WithUser(context.Background(), user.ID))
+	response := httptest.NewRecorder()
+	chatTitleHandler(database).ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Errorf("foreign title status = %d, want %d; body = %q", response.Code, http.StatusNotFound, response.Body.String())
+	}
+	requireNotContains(t, response.Body.String(), "Secret title")
+
+	request = httptest.NewRequest(http.MethodPost, "/chats/not-a-number/title", nil)
+	request.SetPathValue("chat", "not-a-number")
+	response = httptest.NewRecorder()
+	chatTitleHandler(database).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Errorf("malformed title status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+}
+
+func TestMessageHandlerRequestsTitleOnlyForInitialUserTurn(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	if err := kritui_db.SaveSettings(ctx, database, kritui_db.SettingsUpdate{
+		Model:         "default-model",
+		MaxToolRounds: 16,
+		TitleGeneration: &kritui_db.TitleGenerationSettingsUpdate{
+			Enabled: true,
+			Model:   "title-model",
+		},
+	}); err != nil {
+		t.Fatalf("save title generation settings: %v", err)
+	}
+	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())
+
+	chatID := seedChat(t, database, "", nil, nil)
+	response := postForm(t, handler, inboxTestChatTarget(chatID), url.Values{
+		"message":    {"Initial question"},
+		"model":      {"default-model"},
+		"submission": {"initial-submission"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("initial message status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(),
+		`id="chat-title-request"`,
+		`hx-post="/chats/`+strconv.FormatInt(chatID, 10)+`/title"`,
+		`hx-trigger="load"`,
+		`hx-target="this"`,
+		`hx-swap="outerHTML"`,
+	)
+
+	followupChatID := seedChat(t, database, "", nil, nil)
+	if _, err := persistUserMessage(ctx, database, followupChatID, "Previous question", nil, []string{}, nil); err != nil {
+		t.Fatalf("seed previous user message: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO messages (chat_id, position, role, content) VALUES (?, 1, 'assistant', 'Previous answer')`, followupChatID); err != nil {
+		t.Fatalf("seed previous assistant message: %v", err)
+	}
+	followup := postForm(t, handler, inboxTestChatTarget(followupChatID), url.Values{
+		"message":    {"Follow-up question"},
+		"model":      {"default-model"},
+		"submission": {"followup-submission"},
+	})
+	if followup.Code != http.StatusOK {
+		t.Fatalf("follow-up status = %d, want %d; body = %q", followup.Code, http.StatusOK, followup.Body.String())
+	}
+	requireNotContains(t, followup.Body.String(), `id="chat-title-request"`)
+}
+
+func TestMessageCompletionFinishesWhileTitleRequestBlocked(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	const mainModel = "main-model"
+	const titleModel = "title-model"
+	chatID := seedChat(t, database, "", nil, nil)
+	if err := kritui_db.SaveSettings(ctx, database, kritui_db.SettingsUpdate{
+		Model:         mainModel,
+		MaxToolRounds: 16,
+		TitleGeneration: &kritui_db.TitleGenerationSettingsUpdate{
+			Enabled: true,
+			Model:   titleModel,
+		},
+	}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	titleStarted := make(chan struct{})
+	var titleOnce sync.Once
+	titleGate := newInboxTestGate()
+	defer titleGate.releaseNow()
+	provider := newInboxTestProvider(t, func(_ int, request inboxTestProviderRequest, r *http.Request, w http.ResponseWriter) {
+		if request.Model == titleModel {
+			titleOnce.Do(func() { close(titleStarted) })
+			titleGate.wait(r)
+			inboxTestWriteFinal(w, "Generated title")
+			return
+		}
+		inboxTestWriteFinal(w, "Completed answer.")
+	})
+	inboxTestUseProvider(t, provider, mainModel)
+
+	toolCalls := newToolCallStore()
+	message := messageHandler(database, inboxTestRegistry(t), newTestCommandRegistry(t, database), toolCalls)
+	completion := messageCompletionHandler(database, inboxTestRegistry(t), toolCalls, nil)
+	requestID := inboxTestSubmitInitial(t, message, chatID, url.Values{
+		"message":    {"Question A"},
+		"model":      {mainModel},
+		"submission": {"submission-a"},
+	})
+
+	titleResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		request := httptest.NewRequest(http.MethodPost, "/chats/"+strconv.FormatInt(chatID, 10)+"/title", nil)
+		request.SetPathValue("chat", strconv.FormatInt(chatID, 10))
+		response := httptest.NewRecorder()
+		chatTitleHandler(database).ServeHTTP(response, request)
+		titleResponse <- response
+	}()
+	waitForTestSignal(t, titleStarted, "blocked title provider request")
+
+	inboxTestStartCompletion(t, completion, chatID, requestID, mainModel)
+	terminal := waitForCompletionResult(t, toolCalls, requestID)
+	requireContains(t, terminal, "Completed answer.")
+	requireNotContains(t, terminal, "Generated title", `hx-target="#history-entries"`, "completion-error")
+	select {
+	case response := <-titleResponse:
+		t.Fatalf("title request finished before it was released: %q", response.Body.String())
+	default:
+	}
+
+	titleGate.releaseNow()
+	select {
+	case response := <-titleResponse:
+		if response.Code != http.StatusOK {
+			t.Fatalf("title status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+		}
+		requireContains(t, response.Body.String(), "Generated title", `<hx-partial hx-target="#history-entries" hx-swap="innerHTML">`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for independent title response")
+	}
+	title, err := kritui_db.GetChatTitle(ctx, database, chatID)
+	if err != nil {
+		t.Fatalf("get generated title: %v", err)
+	}
+	if title != "Generated title" {
+		t.Fatalf("chat title = %q, want Generated title", title)
+	}
+}
+
+func TestNewTitleSessionIDIsIndependent(t *testing.T) {
+	first, err := newTitleSessionID()
+	if err != nil {
+		t.Fatalf("newTitleSessionID() error: %v", err)
+	}
+	second, err := newTitleSessionID()
+	if err != nil {
+		t.Fatalf("newTitleSessionID() error: %v", err)
+	}
+	if !strings.HasPrefix(first, "title-") || !strings.HasPrefix(second, "title-") {
+		t.Fatalf("title session IDs = %q, %q; want title- prefix", first, second)
+	}
+	if first == second {
+		t.Fatalf("title session IDs = %q, %q; want independent values", first, second)
+	}
+}
+
+func TestGenerateChatTitleUsesConfiguredModelAndPreservesRename(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	seedCurrentChat(t, database, 1)
+	if _, err := persistUserMessage(ctx, database, 1, "Help me plan a small garden", nil, []string{}, nil); err != nil {
+		t.Fatalf("seed first user message: %v", err)
+	}
+	seedCurrentChat(t, database, 2)
+	if _, err := persistUserMessage(ctx, database, 2, "Explain database indexes", nil, []string{}, nil); err != nil {
+		t.Fatalf("seed second user message: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE chats SET title = 'Manual title' WHERE id = 2`); err != nil {
+		t.Fatalf("rename second chat: %v", err)
+	}
+	if err := kritui_db.SaveSettings(ctx, database, kritui_db.SettingsUpdate{
+		Model:         "default-model",
+		MaxToolRounds: 16,
+		TitleGeneration: &kritui_db.TitleGenerationSettingsUpdate{
+			Enabled: true,
+			Model:   "title-model",
+		},
+	}); err != nil {
+		t.Fatalf("save title generation settings: %v", err)
+	}
+
+	type titleRequest struct {
+		Model    string        `json:"model"`
+		Messages []llm.Message `json:"messages"`
+		Tools    []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	requests := make(chan titleRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request titleRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		requests <- request
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model":"response-model",
+			"choices":[{"message":{"role":"assistant","content":"\"Garden planning\""},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	updated, err := generateChatTitle(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("generateChatTitle() error: %v", err)
+	}
+	if !updated {
+		t.Fatal("generateChatTitle() updated = false, want true")
+	}
+	title, err := kritui_db.GetChatTitle(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("get generated title: %v", err)
+	}
+	if title != "Garden planning" {
+		t.Fatalf("generated title = %q, want Garden planning", title)
+	}
+	request := <-requests
+	if request.Model != "title-model" {
+		t.Errorf("title request model = %q, want title-model", request.Model)
+	}
+	if len(request.Tools) != 0 {
+		t.Errorf("title request tools = %#v, want none", request.Tools)
+	}
+	if len(request.Messages) != 2 || request.Messages[0].Role != "system" || request.Messages[1].Role != "user" {
+		t.Fatalf("title request messages = %#v, want system and user message", request.Messages)
+	}
+	const wantSystemPrompt = "You are a model that generates chat titles based on the user's first chat message.\n" +
+		"You will be given the user's message, and must generate a title with these rules:\n" +
+		"1. Concise; 10 words max\n" +
+		"2. No trailing period\n" +
+		"3. No markdown; just plain text\n" +
+		"4. Clearly shows what the message was requesting and what the chat will be about"
+	if request.Messages[0].Content != wantSystemPrompt {
+		t.Errorf("title request system message = %q, want exact title prompt", request.Messages[0].Content)
+	}
+	if request.Messages[1].Content != "Help me plan a small garden" {
+		t.Errorf("title request user message = %q, want original first-user content", request.Messages[1].Content)
+	}
+
+	updated, err = generateChatTitle(ctx, database, 2)
+	if err != nil {
+		t.Fatalf("generateChatTitle(renamed) error: %v", err)
+	}
+	if updated {
+		t.Fatal("generateChatTitle(renamed) updated = true, want false")
+	}
+	select {
+	case request := <-requests:
+		t.Fatalf("renamed chat made a title request: %#v", request)
+	default:
+	}
+	title, err = kritui_db.GetChatTitle(ctx, database, 2)
+	if err != nil {
+		t.Fatalf("get renamed title: %v", err)
+	}
+	if title != "Manual title" {
+		t.Fatalf("renamed title = %q, want Manual title", title)
+	}
+}
+
+func TestGenerateChatTitleDisabledDoesNotUpdate(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	seedCurrentChat(t, database, 1)
+	if _, err := persistUserMessage(ctx, database, 1, "Disabled title source", nil, []string{}, nil); err != nil {
+		t.Fatalf("seed user message: %v", err)
+	}
+
+	updated, err := generateChatTitle(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("generateChatTitle() error: %v", err)
+	}
+	if updated {
+		t.Fatal("generateChatTitle() updated = true with disabled settings, want false")
+	}
+	title, err := kritui_db.GetChatTitle(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("get fallback title: %v", err)
+	}
+	if title != "Disabled title source" {
+		t.Fatalf("fallback title = %q, want unchanged", title)
+	}
+}
+
+func TestGenerateChatTitleKeepsFallbackOnProviderFailure(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	seedCurrentChat(t, database, 1)
+	if _, err := persistUserMessage(ctx, database, 1, "Fallback title source", nil, []string{}, nil); err != nil {
+		t.Fatalf("seed user message: %v", err)
+	}
+	if err := kritui_db.SaveSettings(ctx, database, kritui_db.SettingsUpdate{
+		Model:         "default-model",
+		MaxToolRounds: 16,
+		TitleGeneration: &kritui_db.TitleGenerationSettingsUpdate{
+			Enabled: true,
+			Model:   "title-model",
+		},
+	}); err != nil {
+		t.Fatalf("save title generation settings: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "provider failed", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	updated, err := generateChatTitle(ctx, database, 1)
+	if err == nil {
+		t.Fatal("generateChatTitle() error = nil, want provider failure")
+	}
+	if updated {
+		t.Fatal("generateChatTitle() updated = true after provider failure, want false")
+	}
+	title, err := kritui_db.GetChatTitle(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("get fallback title: %v", err)
+	}
+	if title != "Fallback title source" {
+		t.Fatalf("fallback title = %q, want unchanged", title)
+	}
+}
+
+func TestGenerateChatTitleKeepsFallbackOnBlankOutput(t *testing.T) {
+	database := openTestDatabase(t)
+	ctx := context.Background()
+	seedCurrentChat(t, database, 1)
+	if _, err := persistUserMessage(ctx, database, 1, "Fallback title source", nil, []string{}, nil); err != nil {
+		t.Fatalf("seed user message: %v", err)
+	}
+	if err := kritui_db.SaveSettings(ctx, database, kritui_db.SettingsUpdate{
+		Model:         "default-model",
+		MaxToolRounds: 16,
+		TitleGeneration: &kritui_db.TitleGenerationSettingsUpdate{
+			Enabled: true,
+			Model:   "title-model",
+		},
+	}); err != nil {
+		t.Fatalf("save title generation settings: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"title-model","choices":[{"message":{"role":"assistant","content":"   "},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	updated, err := generateChatTitle(ctx, database, 1)
+	if err == nil {
+		t.Fatal("generateChatTitle() error = nil, want blank response rejection")
+	}
+	if updated {
+		t.Fatal("generateChatTitle() updated = true after blank output, want false")
+	}
+	title, err := kritui_db.GetChatTitle(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("get fallback title: %v", err)
+	}
+	if title != "Fallback title source" {
+		t.Fatalf("fallback title = %q, want unchanged", title)
+	}
+}
+
 func TestChatTitleNormalizationPreservesMessageContent(t *testing.T) {
 	database := openTestDatabase(t)
 	seedCurrentChat(t, database, 3)
@@ -1718,7 +2244,7 @@ func TestMigrateDatabaseAddsChatPinsFromVersion26(t *testing.T) {
 	previous = strings.Replace(previous, `CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
     ON chats (user_id, pinned DESC, updated_at DESC, id DESC);`, `CREATE INDEX IF NOT EXISTS chats_user_updated_idx
     ON chats (user_id, updated_at DESC, id DESC);`, 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 27;", "PRAGMA user_version = 26;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 28;", "PRAGMA user_version = 26;", 1)
 	if previous == schema || strings.Contains(previous, "pinned") {
 		t.Fatal("failed to build version 26 schema fixture")
 	}
@@ -1760,6 +2286,58 @@ func TestMigrateDatabaseAddsChatPinsFromVersion26(t *testing.T) {
 	}
 }
 
+func TestMigrateDatabaseAddsTitleGenerationSettingsFromVersion27(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+
+	const firstNewColumn = "    title_generation_enabled"
+	start := strings.Index(schema, firstNewColumn)
+	if start < 0 {
+		t.Fatal("schema does not contain title generation columns")
+	}
+	relativeEnd := strings.Index(schema[start:], "\n) STRICT;")
+	if relativeEnd < 0 {
+		t.Fatal("schema settings table terminator is missing")
+	}
+	prefix := strings.TrimSuffix(schema[:start], ",\n")
+	previous := prefix + schema[start+relativeEnd:]
+	previous = strings.Replace(previous, "PRAGMA user_version = 28;", "PRAGMA user_version = 27;", 1)
+	if previous == schema || strings.Contains(previous, "title_generation") {
+		t.Fatal("failed to build version 27 schema fixture")
+	}
+	if _, err := database.Exec(previous); err != nil {
+		t.Fatalf("initialize version 27 database: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE settings SET default_model = 'existing-model' WHERE id = 1`); err != nil {
+		t.Fatalf("seed version 27 settings: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	var version int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != len(databaseMigrations) {
+		t.Fatalf("migrated schema version = %d, want %d", version, len(databaseMigrations))
+	}
+	settings, err := kritui_db.GetTitleGenerationSettings(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get migrated title generation settings: %v", err)
+	}
+	if settings.Enabled || settings.Model != "" {
+		t.Fatalf("migrated title generation settings = %#v, want disabled defaults", settings)
+	}
+	if got, err := kritui_db.GetDefaultModel(context.Background(), database, "fallback"); err != nil || got != "existing-model" {
+		t.Fatalf("migrated default model = %q, %v, want existing-model", got, err)
+	}
+}
+
 func TestHistoryHandlerRefreshesCurrentTitlesAndOrdering(t *testing.T) {
 	database := openTestDatabase(t)
 	seedCurrentChat(t, database, 1)
@@ -1787,6 +2365,112 @@ func TestHistoryHandlerRefreshesCurrentTitlesAndOrdering(t *testing.T) {
 	if newestIndex == -1 || firstIndex == -1 || newestIndex >= firstIndex {
 		t.Errorf("refreshed history ordering is stale: %s", refreshed)
 	}
+}
+
+func TestSettingsHandlerStoresTitleGenerationSettings(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":                    {"saved-model"},
+		"max_tool_rounds":          {"16"},
+		"title_generation_enabled": {"1"},
+		"title_generation_model":   {"title-model"},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	settings, err := kritui_db.GetTitleGenerationSettings(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get title generation settings: %v", err)
+	}
+	if !settings.Enabled || settings.Model != "title-model" {
+		t.Fatalf("title generation settings = %#v, want enabled with title-model", settings)
+	}
+	requireContains(t, response.Body.String(),
+		`id="title-generation-enabled"`,
+		`name="title_generation_enabled" value="1" checked`,
+		`id="title-generation-model"`,
+		`<option value="title-model" selected>title-model</option>`,
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
+	homeResponse := httptest.NewRecorder()
+	homeHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(homeResponse, request)
+	if homeResponse.Code != http.StatusOK {
+		t.Fatalf("home status = %d, want %d; body = %q", homeResponse.Code, http.StatusOK, homeResponse.Body.String())
+	}
+	requireContains(t, homeResponse.Body.String(),
+		`name="title_generation_enabled" value="1" checked`,
+		`<option value="title-model" selected>title-model</option>`,
+	)
+}
+
+func TestSettingsHandlerPreservesTitleModelWhileDisabled(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":                  {"saved-model"},
+		"max_tool_rounds":        {"16"},
+		"title_generation_model": {"kept-model"},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	settings, err := kritui_db.GetTitleGenerationSettings(context.Background(), database)
+	if err != nil {
+		t.Fatalf("get title generation settings: %v", err)
+	}
+	if settings.Enabled || settings.Model != "kept-model" {
+		t.Fatalf("title generation settings = %#v, want disabled with kept-model", settings)
+	}
+	requireContains(t, response.Body.String(), `<option value="kept-model" selected>kept-model</option>`)
+}
+
+func TestSettingsHandlerRejectsEnabledTitleGenerationWithoutModel(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":                    {"saved-model"},
+		"max_tool_rounds":          {"16"},
+		"title_generation_enabled": {"1"},
+		"title_generation_model":   {""},
+	})
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "Title generation settings are invalid")
+}
+
+func TestSettingsHandlerPreservesTitleGenerationDuringAppendAction(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
+	t.Setenv("LLM_MODEL", "env-model")
+	t.Setenv("LLM_ENDPOINT", "")
+	response := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
+		"model":                    {"saved-model"},
+		"max_tool_rounds":          {"16"},
+		"title_generation_enabled": {"1"},
+		"title_generation_model":   {"title-model"},
+		"append_form":              {"1"},
+		"append_action":            {"add"},
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(),
+		`name="title_generation_enabled" value="1" checked`,
+		`<option value="title-model" selected>title-model</option>`,
+	)
 }
 
 func TestSettingsHandlerRendersSettingsPage(t *testing.T) {

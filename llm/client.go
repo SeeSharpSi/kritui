@@ -398,6 +398,32 @@ func (c *Client) applyProviderHeaders(req *http.Request) {
 	}
 }
 
+// CompleteText performs one stateless provider request with exactly the given
+// system prompt and user content. It sends no tools and returns the assistant
+// text, rejecting tool-call responses.
+func (c *Client) CompleteText(ctx context.Context, systemPrompt, userContent string) (string, error) {
+	if c == nil {
+		return "", errors.New("llm: client is required")
+	}
+	if strings.TrimSpace(systemPrompt) == "" {
+		return "", errors.New("llm: system prompt is required")
+	}
+	completion, err := c.complete(ctx, []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userContent},
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	if err := validateAssistantMessage(completion); err != nil {
+		return "", err
+	}
+	if len(completion.ToolCalls) > 0 {
+		return "", errors.New("llm: text completion returned tool calls")
+	}
+	return completion.Content, nil
+}
+
 func (c *Client) complete(ctx context.Context, messages []Message, definitions []tools.Definition) (Message, error) {
 	if len(messages) == 0 {
 		return Message{}, errors.New("llm: at least one message is required")

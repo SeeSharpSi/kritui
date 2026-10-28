@@ -46,7 +46,12 @@ CREATE TABLE IF NOT EXISTS settings (
         CHECK (tool_result_elision_token_budget IS NULL OR tool_result_elision_token_budget BETWEEN 1 AND 10000000),
     tool_result_elision_summary_model TEXT
         CHECK (tool_result_elision_summary_model IS NULL OR
-            (trim(tool_result_elision_summary_model) <> '' AND length(CAST(tool_result_elision_summary_model AS BLOB)) <= 512))
+            (trim(tool_result_elision_summary_model) <> '' AND length(CAST(tool_result_elision_summary_model AS BLOB)) <= 512)),
+    title_generation_enabled INTEGER NOT NULL DEFAULT 0
+        CHECK (title_generation_enabled IN (0, 1)),
+    title_generation_model TEXT
+        CHECK (title_generation_model IS NULL OR
+            (trim(title_generation_model) <> '' AND length(CAST(title_generation_model AS BLOB)) <= 512))
 ) STRICT;
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -296,4 +301,4 @@ CREATE TABLE IF NOT EXISTS completion_state_tools (
     PRIMARY KEY (chat_id, position)
 ) STRICT;
 
-PRAGMA user_version = 27;
+PRAGMA user_version = 28;

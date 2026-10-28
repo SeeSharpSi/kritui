@@ -21,6 +21,8 @@ type HomeData struct {
 	SelectedModel            string
 	DefaultModel             string
 	MaxToolRounds            int
+	TitleGenerationEnabled   bool
+	TitleGenerationModel     string
 	ToolResultElision        llm.ToolResultElisionConfig
 	Tools                    []string
 	EnabledTools             []string
@@ -59,6 +61,8 @@ templ Home(data HomeData) {
 									Models:                   data.Models,
 									SelectedModel:            data.DefaultModel,
 									MaxToolRounds:            data.MaxToolRounds,
+									TitleGenerationEnabled:   data.TitleGenerationEnabled,
+									TitleGenerationModel:     data.TitleGenerationModel,
 									ToolResultElision:        data.ToolResultElision,
 									ToolNames:                data.Tools,
 									DefaultTools:             data.DefaultTools,
