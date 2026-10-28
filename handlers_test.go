@@ -31,6 +31,7 @@ import (
 	"seesharpsi/kritui/commands"
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
+	"seesharpsi/kritui/templ"
 	"seesharpsi/kritui/tools"
 )
 
@@ -409,10 +410,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=44`,
-		`/static/hx-sse.js?v=44`,
-		`/static/app.js?v=44`,
-		`/static/styles.css?v=44`,
+		`/static/htmx.min.js?v=45`,
+		`/static/hx-sse.js?v=45`,
+		`/static/app.js?v=45`,
+		`/static/styles.css?v=45`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -4588,8 +4589,8 @@ func TestMessageCompletionHandlerRendersToolCallLimitError(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	requireContains(t, response.Body.String(), "llm: reached maximum of 16 consecutive tool-call rounds")
-	requireNotContains(t, response.Body.String(), "Failed to complete message.")
+	requireContains(t, response.Body.String(), "The model reached the limit of 16 consecutive tool-call rounds.", "Settings → Chat defaults")
+	requireNotContains(t, response.Body.String(), "llm: reached maximum", "Failed to complete message.")
 	if requestNumber != 17 {
 		t.Errorf("model request count = %d, want 17", requestNumber)
 	}
@@ -4603,8 +4604,17 @@ func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
 	}{
 		{
 			name: "transport error",
-			err:  errors.New(`llm: send request: Post "https://secret-token@internal.example/v1": connection refused`),
-			want: "Failed to complete message.",
+			err: fmt.Errorf("llm: send request: %w", &url.Error{
+				Op:  "Post",
+				URL: "https://secret-token@internal.example/v1",
+				Err: errors.New("connection refused"),
+			}),
+			want: "Could not reach the model endpoint. Check its URL, DNS/TLS, network access, and provider availability.",
+		},
+		{
+			name: "malformed JSON response",
+			err:  fmt.Errorf("llm: decode response: %w", &json.SyntaxError{Offset: 12}),
+			want: "The model endpoint returned a malformed JSON response. Check the endpoint URL and whether it supports the selected API protocol.",
 		},
 		{
 			name: "provider error",
@@ -4614,6 +4624,33 @@ func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
 				Body:       `{"secret":"provider credential"}`,
 			},
 			want: "Model endpoint returned HTTP 502: provider secret detail.",
+		},
+		{
+			name: "provider message already punctuated",
+			err: &llm.APIError{
+				StatusCode: http.StatusBadGateway,
+				Message:    "provider secret detail.",
+				Body:       `{"secret":"provider credential"}`,
+			},
+			want: "Model endpoint returned HTTP 502: provider secret detail.",
+		},
+		{
+			name: "provider message control characters",
+			err: &llm.APIError{
+				StatusCode: http.StatusBadRequest,
+				Message:    " bad\x00\nresponse\ttext ",
+				Body:       `{"secret":"provider credential"}`,
+			},
+			want: "Model endpoint returned HTTP 400: bad response text.",
+		},
+		{
+			name: "provider message is truncated",
+			err: &llm.APIError{
+				StatusCode: http.StatusBadGateway,
+				Message:    strings.Repeat("x", 300),
+				Body:       `{"secret":"provider credential"}`,
+			},
+			want: "Model endpoint returned HTTP 502: " + strings.Repeat("x", 240) + "...",
 		},
 		{
 			name: "unknown provider status",
@@ -4626,7 +4663,12 @@ func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
 		{
 			name: "tool call limit",
 			err:  &llm.MaxToolRoundsError{Limit: 16},
-			want: "llm: reached maximum of 16 consecutive tool-call rounds",
+			want: "The model reached the limit of 16 consecutive tool-call rounds. Increase Max tool-call rounds in Settings → Chat defaults, or retry with a simpler request.",
+		},
+		{
+			name: "unknown error",
+			err:  errors.New(`llm: provider response contained "unexpected" data`),
+			want: "An unexpected provider or server error occurred while completing the message. Check the server logs and retry the completion.",
 		},
 	}
 
@@ -4637,6 +4679,17 @@ func TestCompletionErrorMessageDoesNotExposeErrorDetails(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCompletionErrorWithReferenceRendersEscapedDiagnosticID(t *testing.T) {
+	var fragment bytes.Buffer
+	requestID := `abc123"><script>alert(1)</script>`
+	if err := templates.CompletionErrorWithReference("7", "Completion failed.", requestID, "test-model", []string{"webfetch"}).Render(context.Background(), &fragment); err != nil {
+		t.Fatalf("render completion error: %v", err)
+	}
+	body := fragment.String()
+	requireContains(t, body, "Diagnostic ID:", "Completion failed.", `hx-post="/messages/retry?chat=7"`, `name="tool" value="webfetch"`)
+	requireNotContains(t, body, requestID, "<script>")
 }
 
 func TestMessageCompletionHandlerRejectsTrackerFromAnotherChat(t *testing.T) {

@@ -137,8 +137,8 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, registry *tools
 	terminal := ""
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			log.Printf("complete message panic: %v", recovered)
-			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to complete message.", request.model, request.toolNames))
+			log.Printf("completion %s: complete message panic: %v", requestID, recovered)
+			terminal = renderCompletionFragment(ctx, templates.CompletionErrorWithReference(request.chat, "The server encountered an unexpected error while completing this message. Check the server logs and retry the completion.", requestID, request.model, request.toolNames))
 		}
 		if !settled {
 			store.workMu.Lock()
@@ -154,7 +154,7 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, registry *tools
 	}
 	for {
 		var succeeded bool
-		terminal, succeeded = runMessageCompletionTurn(ctx, database, request, tracker, store, logger, timezone)
+		terminal, succeeded = runMessageCompletionTurn(ctx, database, request, requestID, tracker, store, logger, timezone)
 		if !succeeded {
 			return
 		}

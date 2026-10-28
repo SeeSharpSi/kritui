@@ -1603,7 +1603,7 @@ document.addEventListener('htmx:before:swap', (event) => {
     if (swapRoot?.querySelectorAll) pendingExpandedToolCalls.set(ctx.target, snapshotExpandedToolCalls(swapRoot));
     if (ctx.sourceElement?.matches?.('.loading-message') && ctx.response?.status >= 500) {
         event.preventDefault();
-        showCompletionNetworkError(event, 'Failed to complete message. Check your connection and retry.');
+        showCompletionNetworkError(event, `Completion failed: the server returned HTTP ${ctx.response.status}. Check the server logs and retry the completion.`);
         return;
     }
     if (Array.isArray(event.detail.tasks)) {
@@ -1750,7 +1750,7 @@ document.addEventListener('htmx:sse:close', (event) => {
     }
 });
 document.addEventListener('htmx:error', (event) => {
-    showCompletionNetworkError(event, 'Failed to complete message. Check your connection and retry.');
+    showCompletionNetworkError(event, 'Could not reach the server. Check your connection and retry the completion.');
 });
 
 document.addEventListener('htmx:confirm', (event) => {

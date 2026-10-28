@@ -1753,6 +1753,17 @@ main {
                 color: var(--color-text-muted);
             }
 
+            .completion-error-reference {
+                margin: .45rem 0 0;
+                color: var(--color-text-muted);
+                font: 400 11px/16px var(--font-mono);
+                opacity: .7;
+            }
+
+            .completion-error-reference code {
+                font: inherit;
+            }
+
             .completion-retry-button {
                 min-height: 32px;
                 padding: 0 12px;

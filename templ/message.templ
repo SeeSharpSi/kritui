@@ -452,6 +452,16 @@ templ CompletionError(chatID string, message string, model string, tools []strin
 	</article>
 }
 
+templ CompletionErrorWithReference(chatID string, message string, requestID string, model string, tools []string) {
+	<article class="message completion-error" role="alert">
+		@CompletionErrorDetails(message, model)
+		if requestID != "" {
+			<p class="completion-error-reference">Diagnostic ID: <code>{ requestID }</code></p>
+		}
+		@CompletionRetry(chatID, model, tools)
+	</article>
+}
+
 templ CompletionErrorDetails(message string, model string) {
 	<strong class="completion-error-model">{ model }</strong>
 	<div class="message-content plain-text completion-error-message" data-completion-error-message>{ message }</div>

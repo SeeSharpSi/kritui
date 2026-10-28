@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -13,6 +14,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -422,7 +424,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 	}
 }
 
-func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request messageRequest, tracker *toolCallTracker, toolCalls *toolCallStore, toolCallLogger *log.Logger, clientTimezone string) (terminal string, succeeded bool) {
+func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request messageRequest, requestID string, tracker *toolCallTracker, toolCalls *toolCallStore, toolCallLogger *log.Logger, clientTimezone string) (terminal string, succeeded bool) {
 	selectedTools := request.toolNames
 	terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to complete message.", request.model, selectedTools))
 
@@ -603,12 +605,12 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 	}
 	completionErr := conversation.Complete(completionContext)
 	if completionErr != nil {
-		log.Printf("complete message: %v", completionErr)
+		log.Printf("completion %s: complete message: %v", requestID, completionErr)
 		message := completionErrorMessage(completionErr)
 		if errors.Is(completionErr, kritui_db.ErrConversationConflict) {
 			message = "Conversation changed while the response was being generated. Retry the completion."
 		}
-		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, message, request.model, selectedTools))
+		terminal = renderCompletionFragment(ctx, templates.CompletionErrorWithReference(request.chat, message, requestID, request.model, selectedTools))
 		return
 	}
 	scheduleNtfyCompletion(ctx, database, request.chatID)
@@ -1186,36 +1188,88 @@ func renderMessageEditError(w http.ResponseWriter, r *http.Request, status int, 
 }
 
 func completionErrorMessage(err error) string {
-	const fallback = "Failed to complete message."
+	const fallback = "An unexpected provider or server error occurred while completing the message. Check the server logs and retry the completion."
 
 	if err == nil {
 		return fallback
 	}
 	if errors.Is(err, context.Canceled) {
-		return "Completion request was canceled."
+		return "Completion request was canceled. Retry the completion."
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return "Completion request timed out."
+		return "Completion request timed out. Check the model endpoint and retry the completion."
+	}
+	var urlError *url.Error
+	if errors.As(err, &urlError) {
+		return "Could not reach the model endpoint. Check its URL, DNS/TLS, network access, and provider availability."
+	}
+	var syntaxError *json.SyntaxError
+	if errors.As(err, &syntaxError) {
+		return "The model endpoint returned a malformed JSON response. Check the endpoint URL and whether it supports the selected API protocol."
 	}
 	var apiError *llm.APIError
 	if errors.As(err, &apiError) && apiError != nil {
-		message := strings.TrimSpace(apiError.Message)
+		message := sanitizeProviderMessage(apiError.Message)
 		if message == "" {
 			message = http.StatusText(apiError.StatusCode)
 		}
 		if message == "" {
-			return "Model endpoint returned an error."
+			if apiError.StatusCode > 0 {
+				return fmt.Sprintf("Model endpoint returned HTTP %d.", apiError.StatusCode)
+			}
+			return "Model endpoint returned an error without details."
 		}
 		if apiError.StatusCode > 0 {
-			return fmt.Sprintf("Model endpoint returned HTTP %d: %s.", apiError.StatusCode, message)
+			return fmt.Sprintf("Model endpoint returned HTTP %d: %s", apiError.StatusCode, endSentence(message))
 		}
-		return fmt.Sprintf("Model endpoint returned an error: %s.", message)
+		return fmt.Sprintf("Model endpoint returned an error: %s", endSentence(message))
 	}
 	var limitError *llm.MaxToolRoundsError
 	if errors.As(err, &limitError) {
-		return limitError.Error()
+		return fmt.Sprintf("The model reached the limit of %d consecutive tool-call rounds. Increase Max tool-call rounds in Settings → Chat defaults, or retry with a simpler request.", limitError.Limit)
 	}
 	return fallback
+}
+
+// sanitizeProviderMessage keeps provider text readable without exposing control
+// characters or an unbounded amount of detail. Provider response bodies are
+// never included.
+func sanitizeProviderMessage(message string) string {
+	var builder strings.Builder
+	builder.Grow(len(message))
+	for _, character := range message {
+		switch {
+		case character == '\n' || character == '\r' || character == '\t':
+			builder.WriteRune(' ')
+		case character < 0x20 || character == 0x7f:
+			// Drop other control characters.
+		default:
+			builder.WriteRune(character)
+		}
+	}
+	sanitized := strings.Join(strings.Fields(builder.String()), " ")
+	const maxRunes = 240
+	runes := []rune(sanitized)
+	if len(runes) > maxRunes {
+		sanitized = strings.TrimSpace(string(runes[:maxRunes])) + "..."
+	}
+	return sanitized
+}
+
+// endSentence ensures provider text ends with one sentence terminator. Text
+// already ending in terminal punctuation, including a truncation ellipsis, is
+// left unchanged.
+func endSentence(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return message
+	}
+	runes := []rune(message)
+	switch runes[len(runes)-1] {
+	case '.', '!', '?', '…':
+		return message
+	}
+	return message + "."
 }
 
 func renderCompletionError(w http.ResponseWriter, r *http.Request, status int, chatID string, message string, model string, tools []string) {
