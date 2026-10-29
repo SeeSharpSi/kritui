@@ -895,9 +895,9 @@ func version22SchemaFixture(t *testing.T) string {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	fixture := prefix + schema[start+relativeEnd:]
-	const currentVersion = "PRAGMA user_version = 28;"
+	const currentVersion = "PRAGMA user_version = 30;"
 	if !strings.Contains(fixture, currentVersion) {
-		t.Fatalf("schema version marker is not 28: %s", currentVersion)
+		t.Fatalf("schema version marker is not 30: %s", currentVersion)
 	}
 	return strings.Replace(fixture, currentVersion, "PRAGMA user_version = 22;", 1)
 }

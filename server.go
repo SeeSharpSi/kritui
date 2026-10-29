@@ -110,6 +110,7 @@ func main() {
 func newMux(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *commands.Registry, toolCalls *toolCallStore, toolCallLogger *log.Logger, auth *authService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(database))
+	mux.HandleFunc("GET /s/{token}", sharedResponseHandler(database))
 	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry, commandRegistry, toolCalls))
 	mux.HandleFunc("GET /history", historyHandler(database))
 	mux.HandleFunc("GET /settings", settingsHandler(database, toolRegistry))
@@ -121,6 +122,8 @@ func newMux(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *com
 	mux.HandleFunc("POST /chats/{chat}/title", chatTitleHandler(database))
 	mux.HandleFunc("POST /messages", messageHandler(database, toolRegistry, commandRegistry, toolCalls))
 	mux.HandleFunc("PUT /chats/{chat}/messages/{message}", messageEditHandler(database, toolRegistry, toolCalls))
+	mux.HandleFunc("POST /chats/{chat}/messages/{message}/share", messageShareHandler(database))
+	mux.HandleFunc("POST /chats/{chat}/messages/{message}/share/publish", messageSharePublishHandler(database))
 	mux.HandleFunc("GET /chats/{chat}/messages/{message}/attachments/{position}", messageAttachmentHandler(database))
 	mux.HandleFunc("POST /messages/retry", messageRetryHandler(database, toolRegistry, toolCalls))
 	mux.HandleFunc("POST /messages/complete", messageCompletionHandler(database, toolRegistry, toolCalls, toolCallLogger))
@@ -512,6 +515,8 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	kritui_db.MigrateInbox,
 	migrateChatPins,
 	migrateTitleGenerationSettings,
+	kritui_db.MigrateSharedResponses,
+	kritui_db.MigrateEncryptedSharedResponses,
 }
 
 // migrateTitleGenerationSettings adds the opt-in chat-title generation toggle

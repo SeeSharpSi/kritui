@@ -1503,7 +1503,115 @@ function closeMessageEditor(message, restoreFocus = true) {
     }
 }
 
+async function writeClipboardText(text) {
+    if (navigator.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch {
+            // Fall back for browsers that expose Clipboard API but deny access.
+        }
+    }
+
+    const activeElement = document.activeElement;
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.readOnly = true;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+    document.body.append(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    let copied = false;
+    try {
+        copied = document.execCommand('copy');
+    } catch {
+        copied = false;
+    }
+    textarea.remove();
+    if (activeElement instanceof HTMLElement) {
+        activeElement.focus({ preventScroll: true });
+    }
+    return copied;
+}
+
 const messageCopyResetTimers = new WeakMap();
+const shareCopyBusy = new WeakSet();
+const shareStatusResetTimers = new WeakMap();
+
+function shareActionsFor(element) {
+    return element?.closest?.('.message-share-actions') ?? null;
+}
+
+function clearShareStatusTimer(actions) {
+    const timer = shareStatusResetTimers.get(actions);
+    if (timer === undefined) {
+        return;
+    }
+    clearTimeout(timer);
+    shareStatusResetTimers.delete(actions);
+}
+
+function setShareStatus(actions, message, state = '') {
+    const status = actions?.querySelector('.message-share-status');
+    if (!status) {
+        return;
+    }
+    clearShareStatusTimer(actions);
+    status.textContent = message;
+    status.classList.toggle('is-copied', state === 'copied');
+    status.classList.toggle('is-error', state === 'error');
+    if (message && state === 'copied') {
+        shareStatusResetTimers.set(actions, setTimeout(() => {
+            setShareStatus(actions, '');
+        }, 4000));
+    }
+}
+
+async function copyShareLink(button) {
+    const shareURL = button?.dataset?.shareUrl;
+    const actions = shareActionsFor(button);
+    if (!shareURL || !actions || shareCopyBusy.has(button)) {
+        return false;
+    }
+
+    let url;
+    try {
+        url = new URL(shareURL, window.location.origin).href;
+    } catch {
+        setShareStatus(actions, 'Copy failed. Try again.', 'error');
+        return false;
+    }
+
+    shareCopyBusy.add(button);
+    setShareStatus(actions, 'Copying link...');
+    const copied = await writeClipboardText(url);
+    shareCopyBusy.delete(button);
+    setShareStatus(
+        actions,
+        copied ? 'Link copied' : 'Copy failed. Try again.',
+        copied ? 'copied' : 'error',
+    );
+    return copied;
+}
+
+function autoCopyShareLinks(root) {
+    if (!root) {
+        return;
+    }
+    const buttons = [];
+    if (root.matches?.('.message-share-copy-button[data-share-copy-pending]')) {
+        buttons.push(root);
+    }
+    root.querySelectorAll?.('.message-share-copy-button[data-share-copy-pending]').forEach((button) => {
+        buttons.push(button);
+    });
+    buttons.forEach((button) => {
+        button.removeAttribute('data-share-copy-pending');
+        copyShareLink(button);
+    });
+}
 
 async function copyMessage(button) {
     const text = button.closest('.message.user')?.querySelector('.message-content')?.textContent;
@@ -1511,37 +1619,7 @@ async function copyMessage(button) {
         return;
     }
 
-    let copied = false;
-    if (navigator.clipboard?.writeText) {
-        try {
-            await navigator.clipboard.writeText(text);
-            copied = true;
-        } catch {
-            // Fall back for browsers that expose Clipboard API but deny access.
-        }
-    }
-
-    if (!copied) {
-        const activeElement = document.activeElement;
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.readOnly = true;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        textarea.style.pointerEvents = 'none';
-        document.body.append(textarea);
-        textarea.select();
-        textarea.setSelectionRange(0, textarea.value.length);
-        try {
-            copied = document.execCommand('copy');
-        } catch {
-            copied = false;
-        }
-        textarea.remove();
-        if (activeElement instanceof HTMLElement) {
-            activeElement.focus({ preventScroll: true });
-        }
-    }
+    const copied = await writeClipboardText(text);
 
     const label = copied ? 'Copied' : 'Copy failed';
     button.classList.remove('copied', 'copy-failed');
@@ -1658,6 +1736,7 @@ function applySettingsTheme(root) {
 
 document.addEventListener('htmx:after:settle', (event) => {
     restoreMessageScroll(event.detail?.task?.target);
+    autoCopyShareLinks(event.detail?.task?.target ?? event.target);
     initializeShell(event.detail?.task?.target ?? event.target);
     applySettingsTheme(event.detail?.task?.target);
     syncToolResultElisionControls(event.target);
@@ -1749,7 +1828,17 @@ document.addEventListener('htmx:sse:close', (event) => {
         showCompletionNetworkError(event, 'Completion status expired. Retry the completion.');
     }
 });
+document.addEventListener('htmx:response:error', (event) => {
+    const actions = shareActionsFor(event.detail?.ctx?.sourceElement);
+    if (actions) {
+        setShareStatus(actions, 'Could not create share link. Try Share again.', 'error');
+    }
+});
 document.addEventListener('htmx:error', (event) => {
+    const actions = shareActionsFor(event.detail?.ctx?.sourceElement);
+    if (actions) {
+        setShareStatus(actions, 'Could not create share link. Try Share again.', 'error');
+    }
     showCompletionNetworkError(event, 'Could not reach the server. Check your connection and retry the completion.');
 });
 
@@ -1916,6 +2005,11 @@ document.addEventListener('click', (event) => {
     const messageCopyButton = event.target.closest('.message-copy-button');
     if (messageCopyButton) {
         copyMessage(messageCopyButton);
+    }
+
+    const shareCopyButton = event.target.closest('.message-share-copy-button');
+    if (shareCopyButton) {
+        copyShareLink(shareCopyButton);
     }
 
     const messageCancelButton = event.target.closest('.message-edit-cancel');

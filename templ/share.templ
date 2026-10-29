@@ -1,0 +1,348 @@
+package templates
+
+import (
+	"time"
+
+	"seesharpsi/kritui/markdown"
+	"seesharpsi/kritui/themes"
+)
+
+// SharedResponsePage renders one complete, standalone public snapshot. It has
+// no scripts, external styles, or application assets; the theme values are
+// frozen into the document at creation time.
+templ SharedResponsePage(title, userContent, content string, createdAt time.Time, theme themes.Theme) {
+	<!DOCTYPE html>
+	<html
+		lang="en"
+		data-theme={ theme.ID }
+		style={ templ.SafeCSS(theme.Style) }
+	>
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="theme-color" content={ theme.Colors["background"] }/>
+			<meta name="robots" content="noindex, nofollow"/>
+			<title>{ title }</title>
+			<style>
+				* {
+					box-sizing: border-box;
+				}
+
+				html {
+					background: var(--color-background);
+				}
+
+				body {
+					margin: 0;
+					background: var(--color-background);
+					color: var(--color-text);
+					font-family: -apple-system, BlinkMacSystemFont, "Aptos", "Roboto", "Segoe UI", Helvetica, Arial, sans-serif;
+					font-size: 20px;
+					line-height: 1.55;
+					-webkit-font-smoothing: antialiased;
+					text-rendering: optimizeLegibility;
+				}
+
+				.shared-page {
+					width: 100%;
+					max-width: 873px;
+					margin: 0 auto;
+					padding: clamp(24px, 5vw, 40px) clamp(16px, 4vw, 24px) clamp(64px, 10vw, 104px);
+				}
+
+				.shared-eyebrow {
+					margin: 0 0 12px;
+					color: var(--color-text-muted);
+					font-size: 0.62rem;
+					font-weight: 650;
+					letter-spacing: 0.16em;
+					text-align: center;
+					text-transform: uppercase;
+				}
+
+				.shared-eyebrow a {
+					color: inherit;
+					text-decoration: underline;
+					text-decoration-thickness: 0.08em;
+					text-underline-offset: 0.18em;
+				}
+
+				.shared-eyebrow a:hover {
+					text-decoration-thickness: 0.16em;
+				}
+
+				.shared-date {
+					display: block;
+					margin: 0 0 18px;
+					color: var(--color-text-muted);
+					font-size: 0.82rem;
+					font-weight: 500;
+					letter-spacing: 0.02em;
+					text-align: center;
+				}
+
+				.shared-title {
+					margin: 0 auto;
+					font-size: clamp(2.3rem, 5vw, 2.75rem);
+					font-weight: 750;
+					letter-spacing: -0.035em;
+					line-height: 1.08;
+					overflow-wrap: anywhere;
+					text-align: center;
+					text-wrap: balance;
+				}
+
+				.shared-prompt {
+					margin-top: clamp(28px, 5vw, 40px);
+					padding: 18px 20px;
+					border: 1px solid var(--color-border);
+					background: var(--color-surface);
+					overflow-wrap: anywhere;
+				}
+
+				.shared-prompt-label {
+					margin: 0 0 8px;
+					color: var(--color-text-muted);
+					font-size: 0.62rem;
+					font-weight: 650;
+					letter-spacing: 0.16em;
+					text-transform: uppercase;
+				}
+
+				.shared-prompt-text {
+					margin: 0;
+					font-size: inherit;
+					line-height: inherit;
+					white-space: pre-wrap;
+				}
+
+				.shared-prompt + .shared-article {
+					margin-top: clamp(32px, 5vw, 44px);
+				}
+
+				.shared-article {
+					margin-top: clamp(40px, 7vw, 64px);
+					overflow-wrap: anywhere;
+				}
+
+				.shared-article > :first-child {
+					margin-top: 0;
+				}
+
+				.shared-article > :last-child {
+					margin-bottom: 0;
+				}
+
+				.shared-article p {
+					margin: 0 0 1.25em;
+				}
+
+				.shared-article h1,
+				.shared-article h2,
+				.shared-article h3,
+				.shared-article h4,
+				.shared-article h5,
+				.shared-article h6 {
+					margin: 1.8em 0 0.6em;
+					font-weight: 700;
+					letter-spacing: -0.02em;
+					line-height: 1.2;
+				}
+
+				.shared-article h1 {
+					font-size: 1.65em;
+				}
+
+				.shared-article h2 {
+					font-size: 1.4em;
+				}
+
+				.shared-article h3 {
+					font-size: 1.18em;
+				}
+
+				.shared-article h4,
+				.shared-article h5,
+				.shared-article h6 {
+					font-size: 1em;
+				}
+
+				.shared-article strong {
+					font-weight: 650;
+				}
+
+				.shared-article a {
+					color: var(--color-accent);
+					overflow-wrap: anywhere;
+					text-decoration: underline;
+					text-decoration-thickness: 0.06em;
+					text-underline-offset: 0.15em;
+				}
+
+				.shared-article a:hover {
+					text-decoration-thickness: 0.12em;
+				}
+
+				.shared-article ul,
+				.shared-article ol {
+					margin: 1em 0 1.3em;
+					padding-left: 1.45em;
+				}
+
+				.shared-article li + li {
+					margin-top: 0.35em;
+				}
+
+				.shared-article blockquote {
+					margin: 1.6em 0;
+					padding: 0.1em 0 0.1em 1.1em;
+					border-left: 3px solid var(--color-accent);
+					color: var(--color-text-muted);
+				}
+
+				.shared-article blockquote p:last-child {
+					margin-bottom: 0;
+				}
+
+				.shared-article hr {
+					margin: 2.4em 0;
+					border: 0;
+					border-top: 1px solid var(--color-border);
+				}
+
+				.shared-article img {
+					display: block;
+					max-width: 100%;
+					height: auto;
+					margin: 2em auto;
+					border: 1px solid var(--color-border);
+				}
+
+				.shared-article figure {
+					max-width: 100%;
+					margin: 2em 0;
+				}
+
+				.shared-article pre {
+					max-width: 100%;
+					margin: 1.6em 0;
+					padding: 1em 1.1em;
+					overflow-x: auto;
+					border: 1px solid var(--color-border);
+					background: var(--color-surface);
+					font-size: 0.78em;
+					line-height: 1.5;
+					tab-size: 2;
+				}
+
+				.shared-article code {
+					padding: 0.12em 0.3em;
+					border: 1px solid var(--color-border);
+					background: var(--color-surface);
+					font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+					font-size: 0.84em;
+					overflow-wrap: anywhere;
+				}
+
+				.shared-article pre code {
+					padding: 0;
+					border: 0;
+					background: none;
+					font-size: 1em;
+					overflow-wrap: normal;
+					white-space: pre;
+				}
+
+				.shared-article table {
+					display: block;
+					width: max-content;
+					max-width: 100%;
+					margin: 1.6em 0;
+					overflow-x: auto;
+					border-collapse: collapse;
+					font-size: 0.88em;
+				}
+
+				.shared-article th,
+				.shared-article td {
+					padding: 0.45em 0.7em;
+					border: 1px solid var(--color-border);
+					overflow-wrap: normal;
+					text-align: left;
+					vertical-align: top;
+				}
+
+				.shared-article th {
+					background: var(--color-surface);
+					font-weight: 650;
+				}
+
+				.shared-footer {
+					margin-top: clamp(56px, 10vw, 96px);
+					padding-top: 24px;
+					border-top: 1px solid var(--color-border);
+					color: var(--color-text-muted);
+					font-size: 0.68rem;
+					font-weight: 600;
+					letter-spacing: 0.12em;
+					text-align: center;
+					text-transform: uppercase;
+				}
+
+				.shared-footer a {
+					color: inherit;
+					text-decoration: underline;
+					text-decoration-thickness: 0.08em;
+					text-underline-offset: 0.18em;
+				}
+
+				.shared-footer a:hover {
+					text-decoration-thickness: 0.16em;
+				}
+
+				@media (max-width: 600px) {
+					body {
+						font-size: 18px;
+						line-height: 1.6;
+					}
+
+					.shared-page {
+						padding: 24px 16px 64px;
+					}
+
+					.shared-title {
+						font-size: 2.3rem;
+						letter-spacing: -0.03em;
+					}
+
+					.shared-date {
+						font-size: 0.78rem;
+					}
+
+					.shared-article table {
+						font-size: 0.82em;
+					}
+				}
+			</style>
+		</head>
+		<body>
+			<main class="shared-page">
+				<header>
+					<p class="shared-eyebrow"><a href="https://kritui.skrittle.net" target="_blank" rel="noopener noreferrer">Kritui</a></p>
+					<time class="shared-date" datetime={ createdAt.UTC().Format(time.RFC3339) }>{ createdAt.UTC().Format("January 2, 2006") }</time>
+					<h1 class="shared-title">{ title }</h1>
+				</header>
+				if userContent != "" {
+					<section class="shared-prompt" aria-label="User message">
+						<p class="shared-prompt-label">Prompt</p>
+						<p class="shared-prompt-text">{ userContent }</p>
+					</section>
+				}
+				<article class="shared-article">
+					@markdown.Render(content)
+				</article>
+				<footer class="shared-footer">Shared from <a href="https://kritui.skrittle.net" target="_blank" rel="noopener noreferrer">Kritui</a></footer>
+			</main>
+		</body>
+	</html>
+}

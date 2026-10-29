@@ -86,10 +86,10 @@ func (a *authService) registerRoutes(mux *http.ServeMux) {
 }
 
 // middleware requires a live session for every route except public assets,
-// health checks, and the account pages themselves. A valid session installs
-// the actual stored user ID in the request context. Unauthenticated navigation
-// is redirected to the sign-in page; htmx requests receive HX-Redirect instead
-// of an HTML login page that could be swapped into an application panel.
+// health checks, shared-response views, and the account pages themselves. A valid
+// session installs the actual stored user ID in the request context.
+// Unauthenticated navigation redirects to the sign-in page; htmx requests receive
+// HX-Redirect instead of an HTML login page swapped into an application panel.
 func (a *authService) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if authPublicRequest(r) {
@@ -123,7 +123,7 @@ func authPublicRequest(r *http.Request) bool {
 		case "/sw.js", "/logo.png", "/favicon.ico", "/healthz":
 			return true
 		}
-		if strings.HasPrefix(path, "/static/") {
+		if strings.HasPrefix(path, "/static/") || strings.HasPrefix(path, "/s/") {
 			return true
 		}
 	}

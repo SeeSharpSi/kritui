@@ -1,0 +1,51 @@
+package templates
+
+import "strconv"
+
+// MessageShareActions renders the share control for one persisted assistant
+// response. An empty sharePath shows the create action; a completed share shows
+// an icon that copies the public link returned by the share handler.
+templ MessageShareActions(chatID string, messageID int64, sharePath string) {
+	{{
+		messageIDText := strconv.FormatInt(messageID, 10)
+		action := "/chats/" + chatID + "/messages/" + messageIDText + "/share"
+		formID := "message-share-actions-" + messageIDText
+	}}
+	<form
+		id={ formID }
+		class="message-share-actions"
+		action={ action }
+		method="post"
+		hx-post={ action }
+		hx-target="this"
+		hx-swap="outerHTML"
+		hx-disable="find button"
+		hx-status:4xx="swap:none"
+		hx-status:5xx="swap:none"
+	>
+		if sharePath != "" {
+			<button
+				type="button"
+				class="message-share-button message-share-copy-button"
+				data-share-url={ sharePath }
+				data-share-copy-pending
+				aria-label="Copy share link"
+				title="Copy share link"
+			>
+				@Icon("M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M8.6 13.5l6.8 4", "M15.4 6.5l-6.8 4")
+			</button>
+			<span class="message-share-status" role="status" aria-live="polite"></span>
+		} else {
+			<button
+				type="submit"
+				class="message-share-button"
+				aria-label="Share response"
+				title="Share response"
+			>
+				@Icon("M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M8.6 13.5l6.8 4", "M15.4 6.5l-6.8 4")
+			</button>
+			<span class="message-share-pending" role="status" aria-live="polite">Creating link...</span>
+			<span class="message-share-status" role="status" aria-live="polite"></span>
+		}
+	</form>
+}

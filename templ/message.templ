@@ -158,6 +158,9 @@ templ Messages(chatID string, messages ...llm.Message) {
 						<div class="message-content markdown">
 							@markdown.Render(view.Message.Content)
 						</div>
+						if view.Message.ID > 0 && chatID != "" && len(view.Message.ToolCalls) == 0 {
+							@MessageShareActions(chatID, view.Message.ID, "")
+						}
 					} else {
 						<div class="message-content plain-text">{ view.Message.Content }</div>
 					}

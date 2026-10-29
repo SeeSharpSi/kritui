@@ -1,0 +1,373 @@
+package templates
+
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"strconv"
+)
+
+// sharedResponseDecryptScript is the only executable code served by the public
+// viewer. It never fetches the ciphertext or key; both arrive with the document
+// and the URL fragment. SharedResponseCSP authorizes these exact bytes.
+const sharedResponseDecryptScript = `(function () {
+  "use strict";
+
+  var frame = document.getElementById("shared-response-frame");
+  var status = document.getElementById("shared-response-status");
+  var payload = document.getElementById("shared-response-payload");
+  var root = document.querySelector("[data-share-root]");
+  var objectURL = null;
+  var attempt = 0;
+
+  function setState(state) {
+    if (root) {
+      root.setAttribute("data-share-state", state);
+    }
+  }
+
+  function revoke() {
+    if (objectURL) {
+      URL.revokeObjectURL(objectURL);
+      objectURL = null;
+    }
+  }
+
+  function hideFrame() {
+    if (frame) {
+      frame.hidden = true;
+      frame.removeAttribute("src");
+    }
+  }
+
+  function fail(current, message) {
+    if (current !== attempt) {
+      return;
+    }
+    attempt += 1;
+    revoke();
+    hideFrame();
+    if (status) {
+      status.hidden = false;
+      status.textContent = message;
+    }
+    setState("error");
+  }
+
+  function encodeBase64URL(bytes) {
+    var binary = "";
+    for (var index = 0; index < bytes.length; index += 1) {
+      binary += String.fromCharCode(bytes[index]);
+    }
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function decodeBase64URL(value) {
+    if (typeof value !== "string" || value.length === 0 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+      return null;
+    }
+    if (value.length % 4 === 1) {
+      return null;
+    }
+    var padded = value.replace(/-/g, "+").replace(/_/g, "/");
+    while (padded.length % 4 !== 0) {
+      padded += "=";
+    }
+    var binary;
+    try {
+      binary = atob(padded);
+    } catch (error) {
+      return null;
+    }
+    var bytes = new Uint8Array(binary.length);
+    for (var index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+
+  function decodeCanonical(value, byteLength) {
+    var bytes = decodeBase64URL(value);
+    if (!bytes || bytes.length !== byteLength) {
+      return null;
+    }
+    if (encodeBase64URL(bytes) !== value) {
+      return null;
+    }
+    return bytes;
+  }
+
+  function prepareDocument(doc) {
+    var inert = doc.querySelectorAll("script, base");
+    for (var index = 0; index < inert.length; index += 1) {
+      inert[index].remove();
+    }
+    var metas = doc.querySelectorAll("meta");
+    for (var metaIndex = 0; metaIndex < metas.length; metaIndex += 1) {
+      var meta = metas[metaIndex];
+      var equiv = (meta.getAttribute("http-equiv") || "").toLowerCase();
+      if (equiv === "refresh") {
+        meta.remove();
+      }
+    }
+    var originBase = window.location.origin + "/";
+    var anchors = doc.querySelectorAll("a[href]");
+    for (var anchorIndex = 0; anchorIndex < anchors.length; anchorIndex += 1) {
+      var anchor = anchors[anchorIndex];
+      var href = (anchor.getAttribute("href") || "").trim();
+      if (href === "" || href.charAt(0) === "#") {
+        continue;
+      }
+      var resolved;
+      try {
+        resolved = new URL(href, originBase);
+      } catch (error) {
+        anchor.removeAttribute("href");
+        continue;
+      }
+      if (resolved.protocol !== "http:" && resolved.protocol !== "https:" && resolved.protocol !== "mailto:" && resolved.protocol !== "tel:") {
+        anchor.removeAttribute("href");
+        continue;
+      }
+      anchor.setAttribute("href", resolved.href);
+      anchor.setAttribute("target", "_blank");
+      anchor.setAttribute("rel", "noopener noreferrer");
+    }
+    return doc;
+  }
+
+  function serializeDocument(doc) {
+    var markup = doc.documentElement ? doc.documentElement.outerHTML : "";
+    if (doc.doctype) {
+      return "<!DOCTYPE html>\n" + markup;
+    }
+    return markup;
+  }
+
+  function applyDocumentMetadata(doc) {
+    var title = (doc.title || "").replace(/\s+/g, " ").trim();
+    if (title) {
+      document.title = title.slice(0, 200);
+    }
+    var source = doc.querySelector("meta[name=\"theme-color\"]");
+    if (!source) {
+      return;
+    }
+    var value = (source.getAttribute("content") || "").trim();
+    if (!/^#[0-9a-fA-F]{6}$/.test(value)) {
+      return;
+    }
+    var target = document.querySelector("meta[name=\"theme-color\"]");
+    if (!target) {
+      target = document.createElement("meta");
+      target.setAttribute("name", "theme-color");
+      document.head.appendChild(target);
+    }
+    target.setAttribute("content", value);
+  }
+
+  async function start() {
+    var current = ++attempt;
+    hideFrame();
+    revoke();
+    setState("loading");
+    if (status) {
+      status.hidden = false;
+      status.textContent = "Decrypting shared response...";
+    }
+    if (!window.isSecureContext || !window.crypto || !window.crypto.subtle) {
+      fail(current, "Decryption requires a secure HTTPS connection.");
+      return;
+    }
+    if (!payload) {
+      fail(current, "This shared response is missing its encrypted content.");
+      return;
+    }
+    if ((payload.getAttribute("data-format-version") || "") !== "1") {
+      fail(current, "This shared response uses an unsupported format.");
+      return;
+    }
+    var keyValue = null;
+    try {
+      keyValue = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("key");
+    } catch (error) {
+      keyValue = null;
+    }
+    if (!keyValue) {
+      fail(current, "This shared link is missing its decryption key.");
+      return;
+    }
+    var key = decodeCanonical(keyValue, 32);
+    if (!key) {
+      fail(current, "The decryption key in this link is not valid.");
+      return;
+    }
+    var nonce = decodeCanonical(payload.getAttribute("data-nonce") || "", 12);
+    if (!nonce) {
+      fail(current, "This shared response is damaged and cannot be decrypted.");
+      return;
+    }
+    var ciphertext = decodeBase64URL(payload.getAttribute("data-ciphertext") || "");
+    if (!ciphertext || ciphertext.length < 16) {
+      fail(current, "This shared response is damaged and cannot be decrypted.");
+      return;
+    }
+    var plaintextBytes;
+    try {
+      var keyHandle = await window.crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["decrypt"]);
+      plaintextBytes = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce, tagLength: 128 }, keyHandle, ciphertext);
+    } catch (error) {
+      fail(current, "The shared response could not be decrypted. The link may be wrong, incomplete, or altered.");
+      return;
+    }
+    if (current !== attempt) {
+      return;
+    }
+    var plaintext;
+    try {
+      plaintext = new TextDecoder("utf-8", { fatal: true }).decode(plaintextBytes);
+    } catch (error) {
+      fail(current, "The decrypted shared response is not valid text.");
+      return;
+    }
+    var doc;
+    try {
+      doc = new DOMParser().parseFromString(plaintext, "text/html");
+      prepareDocument(doc);
+      applyDocumentMetadata(doc);
+    } catch (error) {
+      fail(current, "The decrypted shared response could not be prepared.");
+      return;
+    }
+    if (current !== attempt) {
+      return;
+    }
+    var blobURL;
+    try {
+      blobURL = URL.createObjectURL(new Blob([serializeDocument(doc)], { type: "text/html;charset=utf-8" }));
+    } catch (error) {
+      fail(current, "The decrypted shared response could not be displayed.");
+      return;
+    }
+    if (current !== attempt || !frame) {
+      URL.revokeObjectURL(blobURL);
+      return;
+    }
+    objectURL = blobURL;
+    frame.src = blobURL;
+    frame.hidden = false;
+    if (status) {
+      status.hidden = true;
+      status.textContent = "";
+    }
+    setState("ready");
+  }
+
+  function begin() {
+    var expected = attempt + 1;
+    start().catch(function () {
+      fail(expected, "The shared response could not be decrypted.");
+    });
+  }
+
+  window.addEventListener("pagehide", function () {
+    attempt += 1;
+    revoke();
+  });
+  window.addEventListener("hashchange", begin);
+  begin();
+})();`
+
+// sharedResponseDecryptScriptTag emits the trusted viewer script as exact,
+// unescaped bytes so the CSP hash stays stable.
+func sharedResponseDecryptScriptTag() templ.Component {
+	return templ.Raw("<script>" + sharedResponseDecryptScript + "</script>")
+}
+
+// SharedResponseCSP returns the public viewer's complete Content-Security-Policy
+// header. Only the hash of sharedResponseDecryptScript may execute.
+func SharedResponseCSP() string {
+	sum := sha256.Sum256([]byte(sharedResponseDecryptScript))
+	return "default-src 'none'; script-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'; style-src 'unsafe-inline'; img-src https: http: data:; frame-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+}
+
+// EncryptedSharedResponsePage renders the deterministic public bootstrap for an
+// encrypted snapshot. It contains no plaintext and no randomness; the browser
+// decrypts the payload with the key held only in the URL fragment.
+templ EncryptedSharedResponsePage(formatVersion int, nonceBase64URL, ciphertextBase64URL string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="theme-color" content="#101014"/>
+			<meta name="robots" content="noindex, nofollow"/>
+			<title>Encrypted shared response</title>
+			<style>
+				:root {
+					color-scheme: light dark;
+				}
+
+				* {
+					box-sizing: border-box;
+				}
+
+				[hidden] {
+					display: none !important;
+				}
+
+				html,
+				body {
+					height: 100%;
+				}
+
+				body {
+					margin: 0;
+					overflow: hidden;
+					background: Canvas;
+					color: CanvasText;
+					font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+					font-size: 16px;
+					line-height: 1.5;
+				}
+
+				.shared-status,
+				.shared-noscript {
+					position: fixed;
+					inset: 0;
+					display: flex;
+					align-items: center;
+					justify-content: center;
+					margin: 0;
+					padding: 24px;
+					text-align: center;
+				}
+
+				.shared-noscript {
+					background: Canvas;
+					color: CanvasText;
+				}
+
+				#shared-response-frame {
+					position: fixed;
+					inset: 0;
+					display: block;
+					width: 100%;
+					height: 100dvh;
+					border: 0;
+					background: Canvas;
+				}
+			</style>
+		</head>
+		<body>
+			<main data-share-root="true" data-share-state="loading">
+				<p id="shared-response-status" class="shared-status" role="status">Decrypting shared response...</p>
+				<iframe id="shared-response-frame" title="Shared response" sandbox="allow-popups allow-popups-to-escape-sandbox" hidden></iframe>
+				<noscript>
+					<p class="shared-noscript">This shared response is encrypted and needs JavaScript to decrypt in your browser. Enable JavaScript and reload this page.</p>
+				</noscript>
+			</main>
+			<template id="shared-response-payload" data-format-version={ strconv.Itoa(formatVersion) } data-nonce={ nonceBase64URL } data-ciphertext={ ciphertextBase64URL }></template>
+			@sharedResponseDecryptScriptTag()
+		</body>
+	</html>
+}

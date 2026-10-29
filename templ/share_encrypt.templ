@@ -1,0 +1,263 @@
+package templates
+
+// PreparedMessageShare renders the inert data needed by the sender's browser
+// to encrypt one snapshot before publishing it. It is returned only to the
+// authenticated owner and must never be inserted into the live document.
+templ PreparedMessageShare(token, snapshotBase64URL string) {
+	<div data-share-preparation data-share-token={ token }>
+		<template data-share-snapshot>{ snapshotBase64URL }</template>
+	</div>
+}
+
+// ShareEncryptionScript returns the trusted inline code that encrypts a
+// prepared snapshot locally and publishes only ciphertext. The raw constant
+// preserves the script bytes exactly; there are no external dependencies.
+templ ShareEncryptionScript() {
+	@templ.Raw(shareEncryptionScript)
+}
+
+const shareEncryptionScript = `<script>
+(function () {
+	'use strict';
+
+	if (window.__krituiShareEncryptionInstalled) {
+		return;
+	}
+	window.__krituiShareEncryptionInstalled = true;
+
+	var MAX_CIPHERTEXT_BYTES = 16 * 1024 * 1024;
+	var SHARE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+	var BASE64URL = /^[A-Za-z0-9_-]+$/;
+	var busyForms = new WeakSet();
+
+	function parseInert(html) {
+		var template = document.createElement('template');
+		template.innerHTML = html;
+		return template.content;
+	}
+
+	function decodeBase64URL(value) {
+		if (typeof value !== 'string' || value.length === 0 || !BASE64URL.test(value)) {
+			throw new Error('Invalid base64url data.');
+		}
+		var remainder = value.length % 4;
+		if (remainder === 1) {
+			throw new Error('Invalid base64url data.');
+		}
+		var padded = value;
+		if (remainder !== 0) {
+			padded += '='.repeat(4 - remainder);
+		}
+		var binary;
+		try {
+			binary = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+		} catch (error) {
+			throw new Error('Invalid base64url data.');
+		}
+		var bytes = new Uint8Array(binary.length);
+		for (var i = 0; i < binary.length; i += 1) {
+			bytes[i] = binary.charCodeAt(i);
+		}
+		return bytes;
+	}
+
+	function encodeBase64URL(bytes) {
+		var chunkSize = 0x8000;
+		var binary = '';
+		for (var offset = 0; offset < bytes.length; offset += chunkSize) {
+			var chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+			binary += String.fromCharCode.apply(null, chunk);
+		}
+		return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+	}
+
+	function setStatus(form, message, state) {
+		if (typeof window.setShareStatus === 'function') {
+			window.setShareStatus(form, message, state || '');
+		}
+	}
+
+	function actionURL(form) {
+		var raw = form.getAttribute('action');
+		if (!raw) {
+			throw new Error('Share action is missing.');
+		}
+		var url = new URL(raw, window.location.href);
+		if (url.origin !== window.location.origin) {
+			throw new Error('Share action is not same-origin.');
+		}
+		return url;
+	}
+
+	function post(url, body) {
+		return fetch(url, {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: {
+				'Accept': 'text/html',
+				'HX-Current-URL': window.location.origin + window.location.pathname + window.location.search,
+				'HX-Request': 'true'
+			},
+			body: body
+		});
+	}
+
+	function followHXRedirect(response) {
+		var location = response.headers.get('HX-Redirect');
+		if (!location) {
+			return false;
+		}
+		var target;
+		try {
+			target = new URL(location, window.location.origin);
+		} catch (error) {
+			return false;
+		}
+		if (target.origin !== window.location.origin) {
+			return false;
+		}
+		window.location.assign(target.href);
+		return true;
+	}
+
+	function shareError(message) {
+		var error = new Error(message);
+		error.shareMessage = message;
+		return error;
+	}
+
+	async function createEncryptedShare(form, submitButton) {
+		busyForms.add(form);
+		submitButton.disabled = true;
+		form.classList.add('htmx-request');
+		setStatus(form, '');
+		try {
+			if (!window.isSecureContext || !window.crypto || !window.crypto.subtle) {
+				throw shareError('Encrypted shares require HTTPS. Try again over a secure connection.');
+			}
+
+			var url = actionURL(form);
+			var preparationResponse = await post(url, new URLSearchParams());
+			if (followHXRedirect(preparationResponse)) {
+				return;
+			}
+			if (!preparationResponse.ok) {
+				throw new Error('Share preparation failed.');
+			}
+
+			var preparation = parseInert(await preparationResponse.text());
+			var container = preparation.querySelector('[data-share-preparation]');
+			var token = container ? container.getAttribute('data-share-token') || '' : '';
+			if (!SHARE_TOKEN.test(token)) {
+				throw new Error('Share preparation response is invalid.');
+			}
+			var snapshotTemplate = container.querySelector('template[data-share-snapshot]');
+			var snapshotText = '';
+			if (snapshotTemplate) {
+				snapshotText = (snapshotTemplate.content ? snapshotTemplate.content.textContent : snapshotTemplate.textContent || '').trim();
+			}
+			var snapshotBytes = decodeBase64URL(snapshotText);
+			if (snapshotBytes.length === 0) {
+				throw new Error('Share snapshot is empty.');
+			}
+
+			var key = await window.crypto.subtle.generateKey(
+				{ name: 'AES-GCM', length: 256 },
+				true,
+				['encrypt', 'decrypt']
+			);
+			var rawKey = new Uint8Array(await window.crypto.subtle.exportKey('raw', key));
+			if (rawKey.length !== 32) {
+				throw new Error('Share key is invalid.');
+			}
+			var nonce = window.crypto.getRandomValues(new Uint8Array(12));
+			var ciphertext = new Uint8Array(await window.crypto.subtle.encrypt(
+				{ name: 'AES-GCM', iv: nonce, tagLength: 128 },
+				key,
+				snapshotBytes
+			));
+			if (ciphertext.length > MAX_CIPHERTEXT_BYTES) {
+				throw shareError('This response is too large to share.');
+			}
+
+			var publishURL = new URL(url.pathname.replace(/\/+$/, '') + '/publish', url.origin);
+			var publishBody = new URLSearchParams();
+			publishBody.set('token', token);
+			publishBody.set('format_version', '1');
+			publishBody.set('nonce', encodeBase64URL(nonce));
+			publishBody.set('ciphertext', encodeBase64URL(ciphertext));
+
+			var publishResponse = await post(publishURL, publishBody);
+			if (followHXRedirect(publishResponse)) {
+				return;
+			}
+			if (!publishResponse.ok) {
+				throw new Error('Share publish failed.');
+			}
+
+			var success = parseInert(await publishResponse.text());
+			var replacements = success.querySelectorAll('form.message-share-actions');
+			if (replacements.length !== 1) {
+				throw new Error('Share publish response is invalid.');
+			}
+			var replacement = replacements[0];
+			var copyButton = replacement.querySelector('button.message-share-copy-button[data-share-url]');
+			if (!copyButton) {
+				throw new Error('Share publish response has no copy control.');
+			}
+			var sharePath = '/s/' + token;
+			if (copyButton.getAttribute('data-share-url') !== sharePath) {
+				throw new Error('Share publish response has the wrong share path.');
+			}
+
+			copyButton.removeAttribute('data-share-copy-pending');
+			var encodedKey = encodeBase64URL(rawKey);
+			rawKey.fill(0);
+			copyButton.dataset.shareUrl = sharePath + '#key=' + encodedKey;
+
+			if (!form.isConnected) {
+				return;
+			}
+			form.replaceWith(replacement);
+			if (window.htmx && typeof window.htmx.process === 'function') {
+				window.htmx.process(replacement);
+			}
+			if (typeof window.copyShareLink === 'function') {
+				await window.copyShareLink(copyButton);
+			}
+		} catch (error) {
+			if (form.isConnected) {
+				var message = error && error.shareMessage
+					? error.shareMessage
+					: 'Could not create encrypted share. Try again.';
+				setStatus(form, message, 'error');
+			}
+		} finally {
+			busyForms.delete(form);
+			if (form.isConnected) {
+				submitButton.disabled = false;
+				form.classList.remove('htmx-request');
+			}
+		}
+	}
+
+	document.addEventListener('submit', function (event) {
+		var form = event.target;
+		if (!(form instanceof HTMLFormElement) || !form.classList.contains('message-share-actions')) {
+			return;
+		}
+		var submitButton = form.querySelector('button[type="submit"]');
+		if (!submitButton) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		event.stopImmediatePropagation();
+		if (busyForms.has(form)) {
+			return;
+		}
+		createEncryptedShare(form, submitButton);
+	}, true);
+})();
+</script>`

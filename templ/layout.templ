@@ -4,7 +4,7 @@ import (
 	"seesharpsi/kritui/themes"
 )
 
-const staticAssetVersion = "52"
+const staticAssetVersion = "54"
 
 func staticAsset(path string) string {
 	return path + "?v=" + staticAssetVersion
@@ -83,6 +83,7 @@ templ Layout(title string, theme themes.Theme) {
 					></iframe>
 				</div>
 			</dialog>
+			@ShareEncryptionScript()
 		</body>
 	</html>
 }

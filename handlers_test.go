@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -410,10 +411,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=52`,
-		`/static/hx-sse.js?v=52`,
-		`/static/app.js?v=52`,
-		`/static/styles.css?v=52`,
+		`/static/htmx.min.js?v=54`,
+		`/static/hx-sse.js?v=54`,
+		`/static/app.js?v=54`,
+		`/static/styles.css?v=54`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -2244,7 +2245,7 @@ func TestMigrateDatabaseAddsChatPinsFromVersion26(t *testing.T) {
 	previous = strings.Replace(previous, `CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
     ON chats (user_id, pinned DESC, updated_at DESC, id DESC);`, `CREATE INDEX IF NOT EXISTS chats_user_updated_idx
     ON chats (user_id, updated_at DESC, id DESC);`, 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 28;", "PRAGMA user_version = 26;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 30;", "PRAGMA user_version = 26;", 1)
 	if previous == schema || strings.Contains(previous, "pinned") {
 		t.Fatal("failed to build version 26 schema fixture")
 	}
@@ -2305,7 +2306,7 @@ func TestMigrateDatabaseAddsTitleGenerationSettingsFromVersion27(t *testing.T) {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	previous := prefix + schema[start+relativeEnd:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 28;", "PRAGMA user_version = 27;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 30;", "PRAGMA user_version = 27;", 1)
 	if previous == schema || strings.Contains(previous, "title_generation") {
 		t.Fatal("failed to build version 27 schema fixture")
 	}
@@ -2335,6 +2336,92 @@ func TestMigrateDatabaseAddsTitleGenerationSettingsFromVersion27(t *testing.T) {
 	}
 	if got, err := kritui_db.GetDefaultModel(context.Background(), database, "fallback"); err != nil || got != "existing-model" {
 		t.Fatalf("migrated default model = %q, %v, want existing-model", got, err)
+	}
+}
+
+func TestMigrateDatabaseRetiresPlaintextSharesFromVersion29(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = database.Close() })
+
+	start := strings.Index(schema, "CREATE TABLE IF NOT EXISTS shared_responses")
+	if start < 0 {
+		t.Fatal("schema has no shared response table")
+	}
+	end := strings.Index(schema[start:], "CREATE TABLE IF NOT EXISTS inbox_items")
+	if end < 0 {
+		t.Fatal("schema has no table boundary after shared responses")
+	}
+	legacyDDL, err := os.ReadFile("db/share_schema.sql")
+	if err != nil {
+		t.Fatalf("read legacy share schema: %v", err)
+	}
+	previous := schema[:start] + string(legacyDDL) + "\n\n" + schema[start+end:]
+	previous = strings.Replace(previous, "PRAGMA user_version = 30;", "PRAGMA user_version = 29;", 1)
+	if !strings.Contains(previous, "PRAGMA user_version = 29;") {
+		t.Fatal("failed to construct version 29 fixture")
+	}
+	if _, err := database.Exec(previous); err != nil {
+		t.Fatalf("initialize version 29 database: %v", err)
+	}
+	oldToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{17}, 32))
+	if _, err := database.Exec(`
+		UPDATE settings SET default_model = 'existing-model' WHERE id = 1;
+		INSERT INTO chats (id, user_id, title) VALUES (7, 1, 'Saved conversation');
+		INSERT INTO messages (id, chat_id, position, role, content) VALUES
+			(71, 7, 0, 'user', 'Original question'),
+			(72, 7, 1, 'assistant', 'Original answer');
+		INSERT INTO shared_responses (token_hash, user_id, chat_id, message_id, theme, html)
+		VALUES (?, 1, 7, 72, 'nord', '<!doctype html><p>Retired plaintext snapshot</p>');
+	`, hashSharedToken(oldToken)); err != nil {
+		t.Fatalf("seed legacy share and conversation: %v", err)
+	}
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate version 29 database: %v", err)
+	}
+	var version, shareCount int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != len(databaseMigrations) {
+		t.Fatalf("migrated version = %d, %v, want %d", version, err, len(databaseMigrations))
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM shared_responses`).Scan(&shareCount); err != nil || shareCount != 0 {
+		t.Fatalf("remaining legacy shares = %d, %v, want 0", shareCount, err)
+	}
+	ctx := kritui_db.WithUser(context.Background(), kritui_db.LegacyOwnerID)
+	source, err := kritui_db.GetShareSource(ctx, database, 7, 72)
+	if err != nil || source.Title != "Saved conversation" || source.UserContent != "Original question" || source.Content != "Original answer" {
+		t.Fatalf("conversation changed during share migration: %#v, %v", source, err)
+	}
+	if model, err := kritui_db.GetDefaultModel(ctx, database, "fallback"); err != nil || model != "existing-model" {
+		t.Fatalf("settings changed during share migration: %q, %v", model, err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/s/"+oldToken, nil)
+	request.SetPathValue("token", oldToken)
+	response := httptest.NewRecorder()
+	sharedResponseHandler(database)(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("retired share status = %d, want 404", response.Code)
+	}
+
+	share := kritui_db.SharedResponse{
+		TokenHash:     hashSharedToken(base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{23}, 32))),
+		ChatID:        7,
+		MessageID:     72,
+		FormatVersion: kritui_db.SharedResponseFormatVersion,
+		Nonce:         bytes.Repeat([]byte{4}, 12),
+		Ciphertext:    bytes.Repeat([]byte{9}, 32),
+	}
+	if err := kritui_db.CreateSharedResponse(ctx, database, share); err != nil {
+		t.Fatalf("publish encrypted share after migration: %v", err)
+	}
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("repeat application migration: %v", err)
+	}
+	stored, err := kritui_db.GetSharedResponse(context.Background(), database, share.TokenHash)
+	if err != nil || !bytes.Equal(stored.Ciphertext, share.Ciphertext) {
+		t.Fatalf("encrypted share changed after repeated migration: %#v, %v", stored, err)
 	}
 }
 

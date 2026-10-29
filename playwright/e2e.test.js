@@ -1,12 +1,15 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { after, before, test } = require('node:test');
 const { chromium } = require('playwright');
 
 const { buildApp, cleanupBuild } = require('./lib/build');
 const { errorResponse, finalResponse, toolCallResponse } = require('./lib/fake-provider');
-const { runIsolatedCase } = require('./lib/isolated-case');
+const { resultsRoot, runIsolatedCase } = require('./lib/isolated-case');
 const {
   assertNoStaleCompletionFailure,
   changeInboxDelivery,
@@ -37,6 +40,23 @@ You will be given the user's message, and must generate a title with these rules
 2. No trailing period
 3. No markdown; just plain text
 4. Clearly shows what the message was requesting and what the chat will be about`;
+
+const shareUI = Object.freeze({
+  preparationSelector: '[data-share-preparation]',
+  preparationAttribute: 'data-share-preparation',
+  tokenAttribute: 'data-share-token',
+  snapshotSelector: 'template[data-share-snapshot]',
+  snapshotAttribute: 'data-share-snapshot',
+  rootSelector: '[data-share-root]',
+  stateAttribute: 'data-share-state',
+  payloadSelector: '#shared-response-payload',
+  payloadID: 'shared-response-payload',
+  versionAttribute: 'data-format-version',
+  nonceAttribute: 'data-nonce',
+  ciphertextAttribute: 'data-ciphertext',
+  frameSelector: '#shared-response-frame',
+  statusSelector: '#shared-response-status',
+});
 
 let browser;
 let build;
@@ -585,6 +605,566 @@ async function chatSummaryHTML(env, chatID, label) {
   const html = await response.text();
   assert.equal(response.status(), 200, `${label} summary returned ${response.status()}`);
   return html;
+}
+
+async function selectTheme(page, themeID) {
+  await page.locator('#settings-button').click();
+  await waitForPanels(page, 'settings-page');
+  await page.locator('#theme').selectOption(themeID);
+  await page.locator('#settings-page .settings-save').click();
+  await page.locator('[data-settings-saved]').waitFor({ state: 'visible', timeout: 15000 });
+  await waitUntil(async () => page.evaluate((expected) => document.documentElement.dataset.theme === expected, themeID), {
+    timeout: 10000,
+    label: `document theme ${themeID} to apply after saving settings`,
+  });
+  await page.locator('#settings-button').click();
+  await waitForPanels(page, null);
+}
+
+async function renameChat(page, chatID, title) {
+  const status = await page.evaluate(async ({ id, nextTitle }) => {
+    const body = new URLSearchParams({ title: nextTitle });
+    const response = await fetch(`/chats/${id}?current=${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    return response.status;
+  }, { id: chatID, nextTitle: title });
+  assert.ok(status >= 200 && status < 300, `chat rename returned ${status}`);
+}
+
+async function capturePublicScreenshot(t, page, label) {
+  const directory = path.join(resultsRoot, 'screenshots');
+  await fs.mkdir(directory, { recursive: true });
+  const file = path.join(directory, `${Date.now()}-${label}.png`);
+  const frame = page.locator(shareUI.frameSelector);
+  if (await frame.isVisible().catch(() => false)) {
+    await frame.screenshot({ path: file });
+  } else {
+    await page.screenshot({ path: file, fullPage: true });
+  }
+  const message = `Public share ${label} screenshot: ${file}`;
+  t.diagnostic(message);
+  console.log(message);
+  return file;
+}
+
+function parseShareLink(value, baseURL, label = 'share link') {
+  const match = /^\/s\/([A-Za-z0-9_-]{43})#key=([A-Za-z0-9_-]{43})$/.exec(value ?? '');
+  assert.ok(
+    match,
+    `${label} must contain a canonical 43-character token and a #key= canonical 32-byte key, got ${JSON.stringify(value)}`,
+  );
+  const token = match[1];
+  const key = match[2];
+  assert.equal(Buffer.from(token, 'base64url').length, 32, `${label} token must decode to 32 bytes`);
+  assert.equal(Buffer.from(key, 'base64url').length, 32, `${label} fragment key must decode to 32 bytes`);
+  return {
+    token,
+    key,
+    sharePath: `/s/${token}`,
+    hash: `#key=${key}`,
+    shareURL: new URL(`/s/${token}#key=${key}`, baseURL).href,
+    rawURL: new URL(`/s/${token}`, baseURL).href,
+  };
+}
+
+function parsePreparedShareHTML(html, label) {
+  assert.match(html, new RegExp(`\\b${shareUI.preparationAttribute}\\b`),
+    `${label} must return the inert preparation fragment`);
+  const token = new RegExp(`\\b${shareUI.tokenAttribute}="([A-Za-z0-9_-]{43})"`).exec(html)?.[1];
+  assert.ok(token, `${label} preparation must include a canonical ${shareUI.tokenAttribute}`);
+  const snapshotBase64 = new RegExp(
+    `<template[^>]*\\b${shareUI.snapshotAttribute}\\b[^>]*>([A-Za-z0-9_-]+)</template>`,
+  ).exec(html)?.[1];
+  assert.ok(snapshotBase64, `${label} preparation must include a base64url ${shareUI.snapshotAttribute} template`);
+  const snapshotBytes = Buffer.from(snapshotBase64, 'base64url');
+  assert.ok(snapshotBytes.length > 0, `${label} prepared snapshot must not be empty`);
+  assert.equal(snapshotBytes.toString('base64url'), snapshotBase64, `${label} prepared snapshot must be canonical base64url`);
+  return {
+    token,
+    snapshotBase64,
+    snapshotHTML: snapshotBytes.toString('utf8'),
+  };
+}
+
+async function performShare(page, shareButton, shareAction) {
+  const preparePath = new URL(shareAction, page.url()).pathname;
+  const publishPath = `${preparePath}/publish`;
+  const preparePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'POST' && url.pathname === preparePath;
+  }, { timeout: 20000 });
+  const publishPromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'POST' && url.pathname === publishPath;
+  }, { timeout: 20000 });
+
+  await shareButton.click();
+  const prepareResponse = await preparePromise;
+  const publishResponse = await publishPromise;
+  const prepareBody = prepareResponse.status() >= 400 ? await prepareResponse.text().catch(() => '') : '';
+  const publishBody = publishResponse.status() >= 400 ? await publishResponse.text().catch(() => '') : '';
+  assert.match(prepareResponse.headers()['content-type'] ?? '', /^text\/html/,
+    'share preparation must return a hypermedia HTML fragment');
+  assert.match(publishResponse.headers()['content-type'] ?? '', /^text\/html/,
+    'share publish must return a hypermedia HTML fragment');
+  assert.ok(
+    prepareResponse.status() >= 200 && prepareResponse.status() < 300,
+    `POST ${preparePath} returned ${prepareResponse.status()}${prepareBody ? `: ${prepareBody}` : ''}`,
+  );
+  assert.ok(
+    publishResponse.status() >= 200 && publishResponse.status() < 300,
+    `POST ${publishPath} returned ${publishResponse.status()}${publishBody ? `: ${publishBody}` : ''}`,
+  );
+  const prepareHTML = await prepareResponse.text();
+  const publishHTML = await publishResponse.text();
+  assert.ok(!prepareHTML.includes('#key='), 'prepare response must not contain a fragment key');
+  assert.ok(!publishHTML.includes('#key='), 'publish response must not contain a fragment key');
+  return {
+    prepareRequest: prepareResponse.request(),
+    publishRequest: publishResponse.request(),
+    prepareHTML,
+    publishHTML,
+    prepare: parsePreparedShareHTML(prepareHTML, 'share preparation response'),
+  };
+}
+
+function parsePublishedShareRequest(request, label) {
+  const body = request.postData();
+  assert.ok(body, `${label} publish request must contain a form body`);
+  const params = new URLSearchParams(body);
+  assert.deepEqual(
+    [...new Set(params.keys())].sort(),
+    ['ciphertext', 'format_version', 'nonce', 'token'],
+    `${label} publish form must contain exactly token, format_version, nonce, and ciphertext`,
+  );
+  for (const name of ['token', 'format_version', 'nonce', 'ciphertext']) {
+    assert.equal(params.getAll(name).length, 1, `${label} publish form must contain one ${name} value`);
+  }
+  const token = params.get('token');
+  assert.match(token ?? '', /^[A-Za-z0-9_-]{43}$/, `${label} publish token must be canonical`);
+  assert.equal(Buffer.from(token, 'base64url').length, 32, `${label} publish token must decode to 32 bytes`);
+  assert.equal(params.get('format_version'), '1', `${label} publish payload must use format version 1`);
+  const nonce = params.get('nonce');
+  const nonceBytes = Buffer.from(nonce ?? '', 'base64url');
+  assert.equal(nonceBytes.length, 12, `${label} publish nonce must decode to 12 bytes`);
+  assert.equal(nonceBytes.toString('base64url'), nonce, `${label} publish nonce must be canonical base64url`);
+  const ciphertext = params.get('ciphertext');
+  const ciphertextBytes = Buffer.from(ciphertext ?? '', 'base64url');
+  assert.ok(ciphertextBytes.length >= 16, `${label} publish ciphertext must include the 16-byte GCM tag`);
+  assert.equal(
+    ciphertextBytes.toString('base64url'),
+    ciphertext,
+    `${label} publish ciphertext must be canonical base64url`,
+  );
+  return {
+    token,
+    formatVersion: params.get('format_version'),
+    nonce,
+    nonceBytes,
+    ciphertext,
+    ciphertextBytes,
+    body,
+    params,
+  };
+}
+
+function decryptPublishedShare({ key, nonce, ciphertext }, label) {
+  const keyBytes = Buffer.from(key, 'base64url');
+  const nonceBytes = Buffer.from(nonce, 'base64url');
+  const ciphertextBytes = Buffer.from(ciphertext, 'base64url');
+  assert.equal(keyBytes.length, 32, `${label} decryption key must be 32 bytes`);
+  assert.equal(nonceBytes.length, 12, `${label} decryption nonce must be 12 bytes`);
+  assert.ok(ciphertextBytes.length >= 16, `${label} ciphertext must include the GCM tag`);
+  const tag = ciphertextBytes.subarray(ciphertextBytes.length - 16);
+  const encrypted = ciphertextBytes.subarray(0, ciphertextBytes.length - 16);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', keyBytes, nonceBytes);
+  decipher.setAAD(Buffer.alloc(0));
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+}
+
+function assertPublishedSharePayload(published, prepared, key, plaintextMarkers, label) {
+  assert.equal(published.token, prepared.token, `${label} publish token must match the prepared token`);
+  assert.equal(published.ciphertextBytes.includes(Buffer.from(key)), false, `${label} ciphertext must not contain the key`);
+  for (const marker of plaintextMarkers) {
+    assert.equal(
+      published.ciphertextBytes.includes(Buffer.from(marker)),
+      false,
+      `${label} ciphertext must not contain plaintext marker ${JSON.stringify(marker)}`,
+    );
+    assert.ok(
+      !published.body.includes(marker),
+      `${label} publish request body must not contain plaintext marker ${JSON.stringify(marker)}`,
+    );
+  }
+  const decrypted = decryptPublishedShare({
+    key,
+    nonce: published.nonce,
+    ciphertext: published.ciphertext,
+  }, label);
+  assert.equal(decrypted, prepared.snapshotHTML, `${label} independent AES-GCM decryption must reproduce the prepared snapshot`);
+  for (const marker of plaintextMarkers) {
+    assert.ok(decrypted.includes(marker), `${label} decrypted snapshot must contain ${JSON.stringify(marker)}`);
+  }
+  return decrypted;
+}
+
+function parseShareBootstrapHTML(html, label) {
+  const templateTag = new RegExp(`<template[^>]*\\bid="${shareUI.payloadID}"[^>]*>`).exec(html)?.[0];
+  assert.ok(templateTag, `${label} must contain the deterministic shared-response payload template`);
+  const attribute = (name) => new RegExp(`\\b${name}="([^"]*)"`).exec(templateTag)?.[1];
+  const version = attribute(shareUI.versionAttribute);
+  const nonce = attribute(shareUI.nonceAttribute);
+  const ciphertext = attribute(shareUI.ciphertextAttribute);
+  assert.equal(version, '1', `${label} bootstrap must declare format version 1`);
+  assert.ok(nonce, `${label} bootstrap must embed the nonce`);
+  assert.ok(ciphertext, `${label} bootstrap must embed the ciphertext`);
+  const nonceBytes = Buffer.from(nonce, 'base64url');
+  const ciphertextBytes = Buffer.from(ciphertext, 'base64url');
+  assert.equal(nonceBytes.length, 12, `${label} bootstrap nonce must decode to 12 bytes`);
+  assert.equal(nonceBytes.toString('base64url'), nonce, `${label} bootstrap nonce must be canonical base64url`);
+  assert.ok(ciphertextBytes.length >= 16, `${label} bootstrap ciphertext must include the GCM tag`);
+  assert.equal(
+    ciphertextBytes.toString('base64url'),
+    ciphertext,
+    `${label} bootstrap ciphertext must be canonical base64url`,
+  );
+  return {
+    version,
+    nonce,
+    nonceBytes,
+    ciphertext,
+    ciphertextBytes,
+  };
+}
+
+function assertShareBootstrapMatches(bootstrap, published, label) {
+  assert.equal(bootstrap.version, String(published.formatVersion), `${label} bootstrap format version changed`);
+  assert.equal(bootstrap.nonce, published.nonce, `${label} bootstrap nonce must match the published nonce`);
+  assert.equal(bootstrap.ciphertext, published.ciphertext, `${label} bootstrap ciphertext must match the published ciphertext`);
+}
+
+function assertShareCSP(headers, label) {
+  const csp = headers['content-security-policy'] ?? '';
+  assert.ok(csp, `${label} must send a Content-Security-Policy`);
+  assert.match(csp, /default-src 'none'/, `${label} CSP must deny resources by default`);
+  const scriptDirective = csp.split(';').map((part) => part.trim()).find((part) => part.startsWith('script-src'));
+  assert.ok(scriptDirective, `${label} CSP must declare script-src`);
+  assert.match(scriptDirective, /'sha256-[A-Za-z0-9+/=]+'/, `${label} CSP must authorize the inline decryptor by hash`);
+  assert.ok(!scriptDirective.includes("'unsafe-inline'"), `${label} CSP must not allow unsafe inline scripts`);
+  assert.ok(!scriptDirective.includes("'unsafe-eval'"), `${label} CSP must not allow eval`);
+}
+
+function assertNoSecretInRequests(requests, secrets, label) {
+  for (const request of requests) {
+    const url = request.url();
+    const headers = JSON.stringify(request.headers());
+    const postData = request.postData() ?? '';
+    let postDataBuffer = null;
+    try {
+      postDataBuffer = request.postDataBuffer();
+    } catch {
+      postDataBuffer = null;
+    }
+    for (const secret of secrets) {
+      assert.ok(!url.includes(secret), `${label} leaked a secret in ${request.method()} ${url}`);
+      assert.ok(!headers.includes(secret), `${label} leaked a secret in request headers for ${url}`);
+      assert.ok(!postData.includes(secret), `${label} leaked a secret in request body for ${url}`);
+      if (postDataBuffer) {
+        assert.equal(
+          postDataBuffer.includes(Buffer.from(secret)),
+          false,
+          `${label} leaked a secret in the raw request body for ${url}`,
+        );
+      }
+    }
+  }
+}
+
+function assertNoPlaintext(html, markers, label) {
+  for (const marker of markers) {
+    assert.ok(!html.includes(marker), `${label} must not contain plaintext marker ${JSON.stringify(marker)}`);
+  }
+}
+
+async function prepareShareFixture(page, baseURL, shareAction) {
+  const response = await page.request.post(new URL(shareAction, baseURL).href, {
+    form: {},
+    headers: { 'HX-Request': 'true' },
+    maxRedirects: 0,
+  });
+  const html = await response.text();
+  assert.equal(response.status(), 200, `prepare fixture returned ${response.status()}: ${html}`);
+  assert.match(response.headers()['content-type'] ?? '', /^text\/html/, 'prepare fixture must return HTML');
+  return parsePreparedShareHTML(html, 'prepare fixture');
+}
+
+async function encryptShareFixture(page, html) {
+  return page.evaluate(async (plaintext) => {
+    const encoder = new TextEncoder();
+    const rawKey = crypto.getRandomValues(new Uint8Array(32));
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const key = await crypto.subtle.importKey(
+      'raw',
+      rawKey,
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt'],
+    );
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: nonce, tagLength: 128 },
+      key,
+      encoder.encode(plaintext),
+    ));
+    const base64url = (bytes) => {
+      let binary = '';
+      for (const byte of bytes) {
+        binary += String.fromCharCode(byte);
+      }
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    };
+    return {
+      key: base64url(rawKey),
+      nonce: base64url(nonce),
+      ciphertext: base64url(ciphertext),
+    };
+  }, html);
+}
+
+async function publishShareFixture(page, baseURL, shareAction, prepared, encrypted) {
+  const response = await page.request.post(new URL(`${shareAction}/publish`, baseURL).href, {
+    form: {
+      token: prepared.token,
+      format_version: '1',
+      nonce: encrypted.nonce,
+      ciphertext: encrypted.ciphertext,
+    },
+    headers: { 'HX-Request': 'true' },
+    maxRedirects: 0,
+  });
+  const html = await response.text();
+  assert.equal(response.status(), 200, `publish fixture returned ${response.status()}: ${html}`);
+  const sharePath = /data-share-url="(\/s\/[A-Za-z0-9_-]{43})"/.exec(html)?.[1];
+  assert.ok(sharePath, 'publish fixture must return a bare canonical share path');
+  assert.ok(!html.includes('#key='), 'publish fixture response must not contain the fragment key');
+  assert.equal(sharePath, `/s/${prepared.token}`, 'publish fixture must retain the prepared token');
+  return {
+    sharePath,
+    shareURL: `${new URL(sharePath, baseURL).href}#key=${encrypted.key}`,
+    html,
+  };
+}
+
+async function waitForShareState(page, expected, label) {
+  await waitUntil(async () => (
+    (await page.locator(shareUI.rootSelector).getAttribute(shareUI.stateAttribute).catch(() => null)) === expected
+  ), {
+    timeout: 15000,
+    label,
+  });
+}
+
+async function waitForSharedFrame(page, label) {
+  const frameElement = page.locator(shareUI.frameSelector);
+  await frameElement.waitFor({ state: 'visible', timeout: 15000 });
+  const frame = page.frameLocator(shareUI.frameSelector);
+  await frame.locator('.shared-page').waitFor({ state: 'visible', timeout: 15000 });
+  return { frameElement, frame };
+}
+
+async function assertFrameSandbox(frameElement, label) {
+  const sandbox = await frameElement.getAttribute('sandbox');
+  assert.ok(sandbox !== null, `${label} iframe must declare a sandbox`);
+  const tokens = sandbox.split(/\s+/).filter(Boolean);
+  assert.ok(tokens.includes('allow-popups'), `${label} sandbox must allow popups`);
+  assert.ok(tokens.includes('allow-popups-to-escape-sandbox'), `${label} sandbox must let popups escape the sandbox`);
+  assert.ok(!tokens.includes('allow-scripts'), `${label} sandbox must not allow scripts`);
+  assert.ok(!tokens.includes('allow-same-origin'), `${label} sandbox must not allow same-origin access`);
+}
+
+async function assertOpaqueFrameOrigin(page, frameElement, label) {
+  const parent = await page.evaluate((selector) => {
+    const frame = document.querySelector(selector);
+    let windowAccess = 'none';
+    try {
+      void frame.contentWindow.document.body;
+      windowAccess = 'allowed';
+    } catch (error) {
+      windowAccess = error.name;
+    }
+    return {
+      contentDocument: frame.contentDocument === null ? 'null' : 'non-null',
+      windowAccess,
+    };
+  }, shareUI.frameSelector);
+  assert.equal(parent.contentDocument, 'null', `${label} parent must not read iframe.contentDocument`);
+  assert.equal(parent.windowAccess, 'SecurityError', `${label} parent contentWindow.document must throw SecurityError`);
+
+  const handle = await frameElement.elementHandle();
+  const contentFrame = await handle.contentFrame();
+  assert.ok(contentFrame, `${label} iframe content frame must exist`);
+  const child = await contentFrame.evaluate(() => {
+    let parentAccess = 'none';
+    let topAccess = 'none';
+    try {
+      void parent.document.body;
+      parentAccess = 'allowed';
+    } catch (error) {
+      parentAccess = error.name;
+    }
+    try {
+      void top.document.body;
+      topAccess = 'allowed';
+    } catch (error) {
+      topAccess = error.name;
+    }
+    return {
+      origin: location.origin,
+      parentAccess,
+      topAccess,
+    };
+  });
+  assert.equal(child.parentAccess, 'SecurityError', `${label} iframe must not read parent.document`);
+  assert.equal(child.topAccess, 'SecurityError', `${label} iframe must not read top.document`);
+}
+
+async function assertShareFails(page, url, markers, label) {
+  await page.goto(url, { waitUntil: 'load' });
+  await waitForShareState(page, 'error', `${label} to report a decryption error`);
+  const status = page.locator(shareUI.statusSelector);
+  await status.waitFor({ state: 'visible', timeout: 5000 });
+  assert.ok((await status.innerText()).trim().length > 0, `${label} must display a decryption failure message`);
+  const frame = page.frameLocator(shareUI.frameSelector);
+  assert.equal(await frame.locator('.shared-page').count(), 0, `${label} must not render decrypted plaintext`);
+  assertNoPlaintext(await page.content(), markers, label);
+}
+
+function tamperShareBootstrap(html, label) {
+  const bootstrap = parseShareBootstrapHTML(html, label);
+  const bytes = Buffer.from(bootstrap.ciphertext, 'base64url');
+  bytes[0] ^= 0x01;
+  const tamperedCiphertext = bytes.toString('base64url');
+  assert.notEqual(tamperedCiphertext, bootstrap.ciphertext, `${label} tampered ciphertext must differ`);
+  const parts = html.split(bootstrap.ciphertext);
+  assert.equal(parts.length, 2, `${label} ciphertext must occur exactly once in the bootstrap`);
+  return {
+    bootstrap,
+    tamperedCiphertext,
+    tamperedHTML: parts.join(tamperedCiphertext),
+  };
+}
+
+async function assertIconOnlyShareButton(button, label) {
+  assert.equal((await button.innerText()).trim(), '', `${label} must not show visible text`);
+  assert.equal(await button.locator('svg').count(), 1, `${label} must render exactly one SVG icon`);
+  assert.ok((await button.locator('svg path').count()) > 0, `${label} SVG must render icon paths`);
+}
+
+async function waitForSharedResponse(actions, baseURL) {
+  const copyButton = actions.locator('.message-share-copy-button');
+  await waitUntil(async () => (await copyButton.count()) === 1 && (await copyButton.isVisible()), {
+    timeout: 15000,
+    label: 'share copy action to appear after creating the public snapshot',
+  });
+  assert.equal(await actions.locator('button').count(), 1, 'sharing must render exactly one icon button');
+  assert.equal(await actions.locator('a').count(), 0, 'sharing must not render links');
+  assert.equal(await actions.locator('.message-share-link').count(), 0, 'sharing must not render a public link');
+  for (const label of ['Open link', 'Copy link']) {
+    assert.equal(
+      await actions.getByText(label, { exact: true }).count(),
+      0,
+      `sharing must not render visible ${label} text`,
+    );
+  }
+  assert.equal(await copyButton.getAttribute('type'), 'button', 'copy action must be a non-submitting button');
+  const classes = (await copyButton.getAttribute('class') ?? '').split(/\s+/);
+  assert.ok(classes.includes('message-share-button'), 'copy action must retain the share button class');
+  assert.ok(classes.includes('message-share-copy-button'), 'copy action must expose its copy class');
+  assert.equal(await copyButton.getAttribute('aria-label'), 'Copy share link');
+  await assertIconOnlyShareButton(copyButton, 'copy share link');
+  const link = parseShareLink(await copyButton.getAttribute('data-share-url'), baseURL, 'copy share link');
+  assert.equal(new URL(link.shareURL).origin, new URL(baseURL).origin, 'shared response must use the application origin');
+  return {
+    copyButton,
+    ...link,
+  };
+}
+
+async function waitForShareStatus(page, status, expected, { timeout = 6000, label } = {}) {
+  const element = await status.elementHandle();
+  assert.ok(element, 'share status element is missing');
+  await page.waitForFunction(
+    ({ element: statusElement, expected: expectedText }) => (
+      (statusElement.textContent ?? '').trim() === expectedText
+    ),
+    { element, expected },
+    { timeout },
+  ).catch((error) => {
+    throw new Error(`Timed out waiting for ${label ?? `share status ${JSON.stringify(expected)}`}: ${error.message}`);
+  });
+}
+
+async function assertShareStatusClears(page, status, copiedAt, label) {
+  await waitForShareStatus(page, status, '', {
+    timeout: 6000,
+    label: `${label} to clear`,
+  });
+  const elapsed = Date.now() - copiedAt;
+  assert.ok(elapsed >= 3800, `${label} cleared after ${elapsed}ms, before the four-second feedback window`);
+  assert.ok(elapsed <= 5500, `${label} cleared after ${elapsed}ms, later than the tolerated feedback window`);
+  return elapsed;
+}
+
+async function assertNoShareActions(scope, label) {
+  assert.equal(await scope.locator('.message-share-actions').count(), 0, `${label} must not render share actions`);
+  assert.equal(
+    await scope.getByRole('button', { name: 'Share response' }).count(),
+    0,
+    `${label} must not render a Share response button`,
+  );
+}
+
+async function shortTableWordLineCounts(frame) {
+  return frame.locator('.shared-page').evaluate(() => {
+    const lineCount = (element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const tops = [];
+      for (const rect of range.getClientRects()) {
+        if (rect.width <= 0 || rect.height <= 0) {
+          continue;
+        }
+        if (!tops.some((top) => Math.abs(top - rect.top) < 0.5)) {
+          tops.push(rect.top);
+        }
+      }
+      return tops.length;
+    };
+    const header = document.querySelector('.shared-article table th');
+    const firstDataCell = document.querySelector('.shared-article table td');
+    return {
+      headerText: header?.textContent.trim() ?? '',
+      headerLines: header ? lineCount(header) : 0,
+      firstDataText: firstDataCell?.textContent.trim() ?? '',
+      firstDataLines: firstDataCell ? lineCount(firstDataCell) : 0,
+    };
+  });
+}
+
+function assertShortTableWordsOneLine(counts, label) {
+  assert.deepEqual(
+    counts,
+    {
+      headerText: 'Item',
+      headerLines: 1,
+      firstDataText: 'Alpha',
+      firstDataLines: 1,
+    },
+    `${label} short table words must each render on one line: ${JSON.stringify(counts)}`,
+  );
 }
 
 function assertTitleGenerationRequest(call, { model, prompt }) {
@@ -1917,6 +2497,915 @@ test('user message edit checkmark and X match history icons and submit by click 
         const enterText = `enter edit ${viewport.label}`;
         await submitMessageEdit(page, provider, await openMessageEditor(page), enterText, 'enter', `${viewport.label} Enter`);
         currentText = enterText;
+      }
+    },
+  });
+});
+
+test('public response share copies a frozen standalone article and survives theme and source changes', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'public response share frozen article',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      const promptMarker = 'PROMPT-SENTINEL-field-notes-7c31';
+      const articleMarker = 'ARTICLE-SENTINEL-reading-surface-9d42';
+      const prompt = [
+        `${promptMarker} Explain these field notes clearly.`,
+        '',
+        'Keep **markdown** and <strong>HTML</strong> literal.',
+        'Do not execute <script>window.__sharedPromptXss = true</script>.',
+      ].join('\n');
+      const chatTitle = `Shared field notes ${promptMarker}`;
+      const articleReply = [
+        '## Overview',
+        '',
+        `A public reading surface for one finished response. ${articleMarker}`,
+        '',
+        '| Item | Detail |',
+        '| --- | --- |',
+        '| Alpha | first value |',
+        `| Wide | ${'column value '.repeat(20)} |`,
+        '',
+        '```text',
+        `const frozen = "${'x'.repeat(160)}";`,
+        '```',
+        '',
+        'Read the [reference](https://example.com/reference) for details.',
+        '',
+        'Attempted <script>window.__sharedXss = true</script> content.',
+      ].join('\n');
+      const plaintextMarkers = [
+        promptMarker,
+        articleMarker,
+        chatTitle,
+        'A public reading surface for one finished response.',
+        '--color-background',
+      ];
+      const extraContexts = [];
+      const sharePOSTs = [];
+      const ownerRequests = [];
+      page.on('request', (request) => {
+        ownerRequests.push(request);
+        const url = new URL(request.url());
+        if (request.method() === 'POST' && /^\/chats\/\d+\/messages\/\d+\/share(?:\/publish)?$/.test(url.pathname)) {
+          sharePOSTs.push(url.pathname);
+        }
+      });
+
+      try {
+        await signup(page, username('sharepage'), password);
+        const { chatID } = await openChat(page);
+        await selectTheme(page, '1975');
+        await selectWebfetch(page);
+
+        await submitPrompt(page, prompt);
+        await waitCompletionActive(page);
+        await assertNoShareActions(page.locator('.loading-message.completion-active'), 'active completion placeholder');
+        await assertNoShareActions(page.locator('#message-history .message.user'), 'user message');
+        await provider.waitForCallCount(1);
+        await provider.release(0, toolCallResponse({
+          id: 'call_share_fixture',
+          name: 'webfetch',
+          argumentsValue: { url: provider.fixtureURL, limit: 400 },
+        }));
+        await provider.waitForCallCount(2);
+        await waitForToolCallIDs(
+          page.locator('.loading-message .tool-call-list [data-tool-call-id]'),
+          ['call_share_fixture'],
+          'live share tool call to render',
+        );
+        await assertNoShareActions(page.locator('.loading-message .tool-call-list'), 'live tool-call list');
+        await provider.release(1, finalResponse(articleReply));
+        await waitCompletionDone(page);
+        await waitForHistoryText(page, 'A public reading surface for one finished response.');
+
+        await renameChat(page, chatID, chatTitle);
+        await reloadChat(page, chatID);
+        await waitForHistoryText(page, 'A public reading surface for one finished response.');
+
+        const assistant = page.locator('#message-history article.message')
+          .filter({ hasText: 'A public reading surface for one finished response.' })
+          .first();
+        await assistant.waitFor({ state: 'visible', timeout: 10000 });
+        const userMessage = page.locator('#message-history .message.user').filter({ hasText: prompt }).first();
+        await assertNoShareActions(userMessage, 'user message after completion');
+        assert.equal(await page.locator('#message-history .completed-tool-calls').count(), 1,
+          'the shared turn must keep its completed tool-call group');
+        await assertNoShareActions(page.locator('#message-history .completed-tool-calls'), 'completed tool-call group');
+        const shareActions = assistant.locator('.message-share-actions');
+        assert.equal(await shareActions.count(), 1,
+          'the final persisted assistant response must render share actions exactly once');
+        assert.equal(await shareActions.locator('button').count(), 1,
+          'the share actions must render exactly one icon button');
+        assert.equal(await shareActions.locator('a').count(), 0,
+          'the share actions must not render links before sharing');
+        const shareButton = shareActions.getByRole('button', { name: 'Share response' });
+        assert.equal(await shareButton.count(), 1, 'final assistant response must expose a Share response button');
+        assert.equal(await shareButton.isVisible(), true, 'Share response control must be visible');
+        assert.equal(await shareButton.getAttribute('aria-label'), 'Share response',
+          'Share response control must expose its accessible label');
+        assert.equal(await shareButton.getAttribute('type'), 'submit', 'Share response must submit the share form');
+        assert.match(await shareButton.getAttribute('class') ?? '', /\bmessage-share-button\b/,
+          'Share response must use the message share button class');
+        await assertIconOnlyShareButton(shareButton, 'initial Share response button');
+        const shareIcon = await iconPaths(shareButton);
+
+        await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: env.baseURL });
+        await page.bringToFront();
+        const shareAction = await shareActions.getAttribute('action');
+        assert.match(shareAction ?? '', /^\/chats\/\d+\/messages\/\d+\/share$/, 'share form action is missing');
+
+        const creation = await performShare(page, shareButton, shareAction);
+        assert.deepEqual(
+          sharePOSTs,
+          [shareAction, `${shareAction}/publish`],
+          'creating one encrypted share must send exactly one prepare and one publish POST',
+        );
+        const publish = parsePublishedShareRequest(creation.publishRequest, 'first share');
+        assert.equal(publish.token, creation.prepare.token, 'publish must use the prepared token');
+
+        const share = await waitForSharedResponse(shareActions, env.baseURL);
+        assert.equal(share.token, creation.prepare.token, 'copied URL must use the prepared token');
+        const publishedSnapshot = assertPublishedSharePayload(
+          publish,
+          creation.prepare,
+          share.key,
+          plaintextMarkers,
+          'first share',
+        );
+        assert.match(publishedSnapshot, /data-theme="1975"/, 'encrypted snapshot must freeze the selected 1975 theme');
+        assert.match(publishedSnapshot, /style="[^"]*--color-background/, 'encrypted snapshot must freeze theme CSS variables');
+        assert.ok(!publishedSnapshot.includes('data-theme="nord"'), 'encrypted snapshot must not use a later theme');
+        assert.ok(!publishedSnapshot.includes('Fixture article: deterministic test content.'),
+          'encrypted snapshot must not contain tool output');
+
+        const shareStatus = shareActions.locator('.message-share-status');
+        assert.equal(await shareStatus.getAttribute('role'), 'status', 'share feedback must be a status region');
+        await waitForShareStatus(page, shareStatus, 'Link copied', {
+          label: 'automatic share URL copy to report success',
+        });
+        const copiedAt = Date.now();
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), share.shareURL,
+          'real clipboard must contain the absolute public share URL with its fragment key');
+        assert.match(await page.evaluate(() => navigator.clipboard.readText()), /#key=[A-Za-z0-9_-]{43}$/,
+          'clipboard share URL must carry the raw key only in the fragment');
+        assert.equal(await share.copyButton.getAttribute('data-share-copy-pending'), null,
+          'the one-time automatic copy marker must be consumed');
+        assert.deepEqual(await iconPaths(share.copyButton), shareIcon,
+          'the successful copy action must keep the same icon as the initial share action');
+        const firstClearElapsed = await assertShareStatusClears(
+          page,
+          shareStatus,
+          copiedAt,
+          'automatic share copy feedback',
+        );
+
+        await share.copyButton.click();
+        await waitForShareStatus(page, shareStatus, 'Link copied', {
+          label: 'repeated icon action to report success',
+        });
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), share.shareURL,
+          'another icon click must copy the same public URL and fragment key');
+        assert.equal(sharePOSTs.length, 2, 'copying the existing URL must not create another prepare or publish request');
+        assert.equal(await assistant.locator('.message-share-actions').count(), 1,
+          'repeated copy must keep one share action group');
+        assert.equal(await shareActions.locator('button').count(), 1,
+          'repeated copy must keep one icon button');
+        await assertIconOnlyShareButton(share.copyButton, 'repeated copy action');
+        assertNoSecretInRequests(ownerRequests, [share.key], 'owner page');
+        const repeatedAt = Date.now();
+        const repeatedClearElapsed = await assertShareStatusClears(
+          page,
+          shareStatus,
+          repeatedAt,
+          'repeated share copy feedback',
+        );
+        t.diagnostic(
+          `Share feedback visible ${firstClearElapsed}ms after automatic copy and ${repeatedClearElapsed}ms ` +
+          'after the repeated copy; one prepare and one publish created the encrypted snapshot.',
+        );
+
+        const publicContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+        extraContexts.push(publicContext);
+        assert.deepEqual(await publicContext.cookies(), [], 'public navigation must start without session cookies');
+        const publicPage = await publicContext.newPage();
+        publicPage.setDefaultTimeout(15000);
+        const baseOrigin = new URL(env.baseURL).origin;
+        const forbiddenRequests = [];
+        const publicRequests = [];
+        publicPage.on('request', (request) => {
+          publicRequests.push(request);
+          const url = new URL(request.url());
+          const type = request.resourceType();
+          if (url.origin !== baseOrigin) {
+            forbiddenRequests.push(`external ${type} ${url.href}`);
+          }
+          if (type === 'script' || type === 'stylesheet' || type === 'font') {
+            forbiddenRequests.push(`${type} ${url.href}`);
+          }
+          if (url.pathname.startsWith('/static/')) {
+            forbiddenRequests.push(`static asset ${url.href}`);
+          }
+        });
+
+        const publicResponse = await publicPage.goto(share.shareURL, { waitUntil: 'load' });
+        assert.ok(publicResponse, 'anonymous navigation must return a response');
+        assert.equal(publicResponse.status(), 200, `anonymous public navigation returned ${publicResponse.status()}`);
+        const publicHTML = Buffer.from(await publicResponse.body());
+        const publicText = publicHTML.toString('utf8');
+        assert.match(publicText, /<title>Encrypted shared response<\/title>/,
+          'public bootstrap must use its generic title');
+        assert.ok(!publicText.includes(`<title>${chatTitle}</title>`),
+          'public bootstrap title must not expose the chat title');
+        assertNoPlaintext(publicText, plaintextMarkers, 'public bootstrap');
+        const bootstrap = parseShareBootstrapHTML(publicText, 'first public bootstrap');
+        assertShareBootstrapMatches(bootstrap, publish, 'first public bootstrap');
+        assert.ok(publicText.includes(bootstrap.ciphertext), 'public bootstrap must embed the stored ciphertext');
+        assert.ok(!publicText.includes(share.key), 'public bootstrap must not contain the fragment key');
+        assertShareCSP(publicResponse.headers(), 'public bootstrap');
+        const topDocument = await publicPage.evaluate(() => ({
+          scripts: document.scripts.length,
+          scriptSources: Array.from(document.scripts)
+            .map((script) => script.getAttribute('src') ?? '')
+            .filter(Boolean),
+          sharedPages: document.querySelectorAll('.shared-page').length,
+          prompts: document.querySelectorAll('.shared-prompt').length,
+          theme: document.documentElement.dataset.theme ?? '',
+          state: document.querySelector('[data-share-root]')?.getAttribute('data-share-state') ?? '',
+        }));
+        assert.equal(topDocument.scripts, 1, 'public bootstrap must contain exactly one inline script');
+        assert.deepEqual(topDocument.scriptSources, [], 'public bootstrap must not load external scripts');
+        assert.equal(topDocument.sharedPages, 0, 'public bootstrap must not render shared article markup');
+        assert.equal(topDocument.prompts, 0, 'public bootstrap must not render the shared prompt');
+        assert.notEqual(topDocument.theme, '1975', 'public bootstrap must not expose the frozen theme outside the sandbox');
+
+        await waitForShareState(publicPage, 'ready', 'public bootstrap to decrypt the first share');
+        const { frameElement, frame } = await waitForSharedFrame(publicPage, 'first shared response');
+        await assertFrameSandbox(frameElement, 'first shared response');
+        await assertOpaqueFrameOrigin(publicPage, frameElement, 'first shared response');
+
+        const publicLayout = await frame.locator('.shared-page').evaluate(() => {
+          const pageElement = document.querySelector('.shared-page');
+          const article = document.querySelector('.shared-article');
+          const title = document.querySelector('.shared-title');
+          const date = document.querySelector('.shared-date');
+          const eyebrow = document.querySelector('.shared-eyebrow');
+          const eyebrowLink = eyebrow?.matches('a') ? eyebrow : eyebrow?.querySelector('a');
+          const prompt = document.querySelector('.shared-prompt');
+          const promptTextElement = document.querySelector('.shared-prompt-text');
+          const footer = document.querySelector('.shared-footer');
+          const footerLink = footer?.querySelector('a');
+          const bodyStyle = getComputedStyle(document.body);
+          const titleStyle = getComputedStyle(title);
+          const dateStyle = getComputedStyle(date);
+          const footerLinkStyle = footerLink ? getComputedStyle(footerLink) : null;
+          const eyebrowLinkStyle = eyebrowLink ? getComputedStyle(eyebrowLink) : null;
+          const resourceReferences = Array.from(
+            document.querySelectorAll('[src], link[href], source[src], object[data], embed[src]'),
+          ).map((element) => element.getAttribute('src') ?? element.getAttribute('href') ?? element.getAttribute('data'));
+          return {
+            theme: document.documentElement.dataset.theme ?? '',
+            themeStyle: document.documentElement.getAttribute('style') ?? '',
+            pageWidth: pageElement.getBoundingClientRect().width,
+            pageMaxWidth: parseFloat(getComputedStyle(pageElement).maxWidth),
+            paddingTop: parseFloat(getComputedStyle(pageElement).paddingTop),
+            articleWidth: article.getBoundingClientRect().width,
+            titleText: title.textContent.trim(),
+            titleAlign: titleStyle.textAlign,
+            titleFontSize: parseFloat(titleStyle.fontSize),
+            bodyFontSize: parseFloat(bodyStyle.fontSize),
+            dateFontSize: parseFloat(dateStyle.fontSize),
+            dateColor: dateStyle.color,
+            bodyColor: bodyStyle.color,
+            bodyFontFamily: bodyStyle.fontFamily,
+            eyebrowCount: document.querySelectorAll('.shared-eyebrow').length,
+            eyebrowText: eyebrow?.textContent.replace(/\s+/g, ' ').trim() ?? '',
+            eyebrowLinkText: eyebrowLink?.textContent.trim() ?? '',
+            eyebrowHref: eyebrowLink?.getAttribute('href') ?? '',
+            eyebrowTarget: eyebrowLink?.getAttribute('target') ?? '',
+            eyebrowRel: eyebrowLink?.getAttribute('rel') ?? '',
+            eyebrowUnderlined: eyebrowLinkStyle
+              ? eyebrowLinkStyle.textDecorationLine.includes('underline') ||
+                (parseFloat(eyebrowLinkStyle.borderBottomWidth) > 0 &&
+                  eyebrowLinkStyle.borderBottomStyle !== 'none')
+              : false,
+            eyebrowDateGap: eyebrow && date
+              ? date.getBoundingClientRect().top - eyebrow.getBoundingClientRect().bottom
+              : null,
+            promptCount: document.querySelectorAll('.shared-prompt').length,
+            promptTextCount: document.querySelectorAll('.shared-prompt-text').length,
+            promptText: promptTextElement?.textContent.trim() ?? '',
+            promptBeforeArticle: Boolean(
+              prompt && article &&
+              (prompt.compareDocumentPosition(article) & Node.DOCUMENT_POSITION_FOLLOWING),
+            ),
+            promptMarkupElements: promptTextElement
+              ? promptTextElement.querySelectorAll('script, strong, em, kbd, a').length
+              : -1,
+            promptXssGlobal: typeof window.__sharedPromptXss,
+            footerText: footer?.textContent.replace(/\s+/g, ' ').trim() ?? '',
+            footerLinkCount: footer?.querySelectorAll('a').length ?? -1,
+            footerLinkText: footerLink?.textContent.trim() ?? '',
+            footerHref: footerLink?.getAttribute('href') ?? '',
+            footerTarget: footerLink?.getAttribute('target') ?? '',
+            footerRel: footerLink?.getAttribute('rel') ?? '',
+            footerUnderlined: footerLinkStyle
+              ? footerLinkStyle.textDecorationLine.includes('underline') ||
+                (parseFloat(footerLinkStyle.borderBottomWidth) > 0 &&
+                  footerLinkStyle.borderBottomStyle !== 'none')
+              : false,
+            scripts: document.querySelectorAll('script').length,
+            stylesheetLinks: document.querySelectorAll('link[rel~="stylesheet"]').length,
+            staticReferences: resourceReferences.filter((value) => value?.includes('/static/')),
+            heading: document.querySelector('.shared-article h2')?.textContent.trim() ?? '',
+            paragraph: document.querySelector('.shared-article p')?.textContent ?? '',
+            code: document.querySelector('.shared-article pre code')?.textContent ?? '',
+            tableText: document.querySelector('.shared-article table')?.textContent ?? '',
+            linkText: document.querySelector('.shared-article a')?.textContent.trim() ?? '',
+            linkHref: document.querySelector('.shared-article a')?.getAttribute('href') ?? '',
+            xssGlobal: typeof window.__sharedXss,
+          };
+        });
+
+        assert.equal(publicLayout.theme, '1975', 'decrypted snapshot must use the frozen 1975 theme');
+        assert.match(publicLayout.themeStyle, /--color-background/, 'decrypted snapshot must freeze theme CSS variables');
+        assert.equal(publicLayout.titleText, chatTitle);
+        assert.equal(publicLayout.titleAlign, 'center', 'public title must be centered');
+        assert.ok(publicLayout.titleFontSize > publicLayout.bodyFontSize * 1.5,
+          'public title must be visibly larger than body text');
+        assert.ok(publicLayout.dateFontSize < publicLayout.bodyFontSize, 'public date must be smaller than body text');
+        assert.notEqual(publicLayout.dateColor, publicLayout.bodyColor, 'public date must use the muted text color');
+        assert.ok(!/Inter|JetBrains/i.test(publicLayout.bodyFontFamily), 'public page must use system fonts');
+        assert.ok(publicLayout.pageMaxWidth <= 875, 'public reading column must cap near 825px');
+        assert.ok(publicLayout.articleWidth > 700 && publicLayout.articleWidth <= 830,
+          `desktop article width ${publicLayout.articleWidth} must stay in the reading column`);
+        assert.ok(publicLayout.paddingTop <= 40,
+          `desktop public top padding ${publicLayout.paddingTop}px must stay at or below 40px`);
+        assert.equal(publicLayout.eyebrowCount, 1, 'public page must render exactly one Kritui eyebrow');
+        assert.equal(publicLayout.eyebrowText, 'Kritui', 'public eyebrow must show the Kritui wordmark');
+        assert.equal(publicLayout.eyebrowLinkText, 'Kritui', 'public eyebrow Kritui must be linked');
+        assert.equal(new URL(publicLayout.eyebrowHref).href, 'https://kritui.skrittle.net/',
+          'public eyebrow must link to the Kritui site');
+        assert.equal(publicLayout.eyebrowTarget, '_blank', 'public eyebrow must open in a new tab');
+        assert.match(publicLayout.eyebrowRel, /\bnoopener\b/, 'public eyebrow link must use noopener');
+        assert.equal(publicLayout.eyebrowUnderlined, true, 'public eyebrow Kritui link must be underlined');
+        assert.ok(publicLayout.eyebrowDateGap !== null && publicLayout.eyebrowDateGap >= 0 &&
+          publicLayout.eyebrowDateGap <= 16,
+        `public eyebrow to date gap ${publicLayout.eyebrowDateGap}px must stay at or below 16px`);
+        assert.equal(publicLayout.promptCount, 1, 'public page must render exactly one shared prompt');
+        assert.equal(publicLayout.promptTextCount, 1, 'public page must render exactly one shared prompt text');
+        assert.equal(publicLayout.promptText, prompt, 'public shared prompt must match the nearest user message exactly');
+        assert.equal(publicLayout.promptBeforeArticle, true,
+          'public shared prompt must appear before the assistant article');
+        assert.equal(publicLayout.promptMarkupElements, 0,
+          'public shared prompt must remain escaped plaintext without rendered markup');
+        assert.equal(publicLayout.promptXssGlobal, 'undefined',
+          'literal script text in the shared prompt must not execute');
+        assert.equal(publicLayout.footerText, 'Shared from Kritui', 'public footer must use the shared-from wording');
+        assert.equal(publicLayout.footerLinkCount, 1, 'public footer must link only the Kritui word');
+        assert.equal(publicLayout.footerLinkText, 'Kritui', 'public footer link must contain only Kritui');
+        assert.equal(new URL(publicLayout.footerHref).href, 'https://kritui.skrittle.net/',
+          'public footer Kritui link must point to the Kritui site');
+        assert.equal(publicLayout.footerTarget, '_blank', 'public footer link must open in a new tab');
+        assert.match(publicLayout.footerRel, /\bnoopener\b/, 'public footer link must use noopener');
+        assert.equal(publicLayout.footerUnderlined, true, 'public footer Kritui link must be underlined');
+        assert.equal(publicLayout.scripts, 0, 'decrypted shared page must contain no executable scripts');
+        assert.equal(publicLayout.stylesheetLinks, 0, 'public page must not link external stylesheets');
+        assert.deepEqual(publicLayout.staticReferences, [], 'public page must not reference application static assets');
+        assert.equal(publicLayout.heading, 'Overview');
+        assert.match(publicLayout.paragraph, /A public reading surface/);
+        assert.match(publicLayout.code, /const frozen/);
+        assert.match(publicLayout.tableText, /Alpha/);
+        assert.match(publicLayout.tableText, /Wide/);
+        assert.equal(publicLayout.linkText, 'reference');
+        assert.equal(publicLayout.linkHref, 'https://example.com/reference');
+        assert.equal(publicLayout.xssGlobal, 'undefined', 'public Markdown must remain sanitized');
+        assert.deepEqual(forbiddenRequests, [], 'public page must not fetch external CSS, JavaScript, or fonts');
+        assertNoSecretInRequests(publicRequests, [share.key], 'public page');
+        assertShortTableWordsOneLine(await shortTableWordLineCounts(frame), 'desktop 1280px');
+        await capturePublicScreenshot(t, publicPage, 'public-response-desktop');
+
+        const headResponse = await publicContext.request.head(share.rawURL);
+        assert.equal(headResponse.status(), 200, `HEAD public response returned ${headResponse.status()}`);
+        assert.equal((await headResponse.body()).length, 0, 'HEAD public response must have an empty body');
+        assert.match(headResponse.headers()['content-type'] ?? '', /^text\/html/, 'HEAD must advertise HTML');
+        assert.equal(Number(headResponse.headers()['content-length'] ?? 0), publicHTML.length,
+          'HEAD must retain the ciphertext bootstrap content length');
+        assertShareCSP(headResponse.headers(), 'HEAD public bootstrap');
+
+        await useViewport(publicPage, 390, 844);
+        await waitForStableLayout(publicPage);
+        const mobileLayout = await frame.locator('.shared-page').evaluate(() => {
+          const pre = document.querySelector('.shared-article pre');
+          const table = document.querySelector('.shared-article table');
+          return {
+            innerWidth: window.innerWidth,
+            documentScrollWidth: document.documentElement.scrollWidth,
+            bodyScrollWidth: document.body.scrollWidth,
+            pageWidth: document.querySelector('.shared-page').getBoundingClientRect().width,
+            paddingTop: parseFloat(getComputedStyle(document.querySelector('.shared-page')).paddingTop),
+            preOverflow: getComputedStyle(pre).overflowX,
+            preScrolls: pre.scrollWidth > pre.clientWidth,
+            tableOverflow: getComputedStyle(table).overflowX,
+            tableWidth: table.getBoundingClientRect().width,
+          };
+        });
+        assert.ok(mobileLayout.documentScrollWidth <= mobileLayout.innerWidth + 1,
+          `mobile page overflowed: ${mobileLayout.documentScrollWidth}px in ${mobileLayout.innerWidth}px`);
+        assert.ok(mobileLayout.bodyScrollWidth <= mobileLayout.innerWidth + 1,
+          `mobile body overflowed: ${mobileLayout.bodyScrollWidth}px in ${mobileLayout.innerWidth}px`);
+        assert.ok(mobileLayout.pageWidth <= mobileLayout.innerWidth,
+          `mobile reading column ${mobileLayout.pageWidth}px must fit ${mobileLayout.innerWidth}px`);
+        assert.ok(mobileLayout.paddingTop <= 24,
+          `mobile public top padding ${mobileLayout.paddingTop}px must stay at or below 24px`);
+        assert.equal(mobileLayout.preOverflow, 'auto', 'wide code blocks must scroll inside the article');
+        assert.equal(mobileLayout.preScrolls, true, 'wide code fixture must overflow its scroll container');
+        assert.equal(mobileLayout.tableOverflow, 'auto', 'wide tables must stay inside a horizontal scroll container');
+        assert.ok(mobileLayout.tableWidth <= mobileLayout.innerWidth + 1,
+          `mobile table ${mobileLayout.tableWidth}px must not exceed ${mobileLayout.innerWidth}px`);
+        assertShortTableWordsOneLine(await shortTableWordLineCounts(frame), 'mobile 390px');
+        await capturePublicScreenshot(t, publicPage, 'public-response-mobile');
+
+        await selectTheme(page, 'nord');
+        assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'nord',
+          'sharer theme change must apply to the private application');
+        const afterThemeResponse = await publicContext.request.get(share.rawURL);
+        assert.equal(afterThemeResponse.status(), 200);
+        assert.deepEqual(Buffer.from(await afterThemeResponse.body()), publicHTML,
+          'public ciphertext bootstrap bytes must stay frozen after the sharer changes theme');
+        const frozenResponse = await publicPage.reload({ waitUntil: 'load' });
+        assert.equal(frozenResponse.status(), 200, 'frozen first share must remain readable after the theme change');
+        await waitForShareState(publicPage, 'ready', 'frozen first share to decrypt after the theme change');
+        const frozenFrame = await waitForSharedFrame(publicPage, 'frozen first shared response');
+        assert.equal(
+          await frozenFrame.frame.locator('.shared-page').evaluate(() => document.documentElement.dataset.theme),
+          '1975',
+          'first encrypted snapshot must stay frozen on the 1975 theme after the sharer changes theme',
+        );
+
+        await reloadChat(page, chatID);
+        await waitForHistoryText(page, 'A public reading surface for one finished response.');
+        assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'nord',
+          'reloaded owner chat must retain the Nord theme');
+        const nordAssistant = page.locator('#message-history article.message')
+          .filter({ hasText: 'A public reading surface for one finished response.' })
+          .first();
+        await nordAssistant.waitFor({ state: 'visible', timeout: 10000 });
+        const nordShareActions = nordAssistant.locator('.message-share-actions');
+        const nordShareAction = await nordShareActions.getAttribute('action');
+        assert.match(nordShareAction ?? '', /^\/chats\/\d+\/messages\/\d+\/share$/, 'Nord share form action is missing');
+        const nordCreation = await performShare(
+          page,
+          nordAssistant.getByRole('button', { name: 'Share response' }),
+          nordShareAction,
+        );
+        const nordPublish = parsePublishedShareRequest(nordCreation.publishRequest, 'Nord share');
+        const nordShare = await waitForSharedResponse(nordShareActions, env.baseURL);
+        assert.notEqual(nordShare.shareURL, share.shareURL, 'a second share must create a distinct public URL');
+        assert.notEqual(nordShare.token, share.token, 'a second share must create a distinct public token');
+        const nordSnapshot = assertPublishedSharePayload(
+          nordPublish,
+          nordCreation.prepare,
+          nordShare.key,
+          plaintextMarkers,
+          'Nord share',
+        );
+        assert.match(nordSnapshot, /data-theme="nord"/, 'second encrypted snapshot must freeze the Nord theme');
+        const nordShareStatus = nordShareActions.locator('.message-share-status');
+        await waitForShareStatus(page, nordShareStatus, 'Link copied', {
+          label: 'automatic Nord share URL copy to report success',
+        });
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), nordShare.shareURL,
+          'real clipboard must contain the new Nord public share URL with its fragment key');
+
+        await useViewport(publicPage, 1280, 900);
+        const nordPublicResponse = await publicPage.goto(nordShare.shareURL, { waitUntil: 'load' });
+        assert.ok(nordPublicResponse, 'anonymous Nord navigation must return a response');
+        assert.equal(nordPublicResponse.status(), 200,
+          `anonymous Nord public navigation returned ${nordPublicResponse.status()}`);
+        const nordHTML = Buffer.from(await nordPublicResponse.body());
+        const nordText = nordHTML.toString('utf8');
+        assertNoPlaintext(nordText, plaintextMarkers, 'Nord public bootstrap');
+        const nordBootstrap = parseShareBootstrapHTML(nordText, 'Nord public bootstrap');
+        assertShareBootstrapMatches(nordBootstrap, nordPublish, 'Nord public bootstrap');
+        assertShareCSP(nordPublicResponse.headers(), 'Nord public bootstrap');
+        assert.notDeepEqual(nordHTML, publicHTML, 'second encrypted bootstrap must store different ciphertext');
+        await waitForShareState(publicPage, 'ready', 'public bootstrap to decrypt the Nord share');
+        const nordFrameState = await waitForSharedFrame(publicPage, 'Nord shared response');
+        await assertFrameSandbox(nordFrameState.frameElement, 'Nord shared response');
+        const nordPublic = await nordFrameState.frame.locator('.shared-page').evaluate(() => {
+          const rootStyle = getComputedStyle(document.documentElement);
+          const bodyStyle = getComputedStyle(document.body);
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = 'var(--color-background)';
+          probe.style.display = 'none';
+          document.body.append(probe);
+          const expectedBackground = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return {
+            theme: document.documentElement.dataset.theme,
+            colorScheme: rootStyle.colorScheme,
+            bodyBackground: bodyStyle.backgroundColor,
+            expectedBackground,
+          };
+        });
+        assert.equal(nordPublic.theme, 'nord', 'second public snapshot must use the Nord theme');
+        assert.match(nordPublic.colorScheme, /dark/, 'public Nord root must declare a dark color scheme');
+        assert.equal(nordPublic.bodyBackground, nordPublic.expectedBackground,
+          'public Nord body background must match the frozen --color-background');
+        await capturePublicScreenshot(t, publicPage, 'public-response-nord-dark');
+
+        await env.restartApp({ signal: 'SIGKILL' });
+        await reloadChat(page, chatID);
+        await waitForHistoryText(page, 'A public reading surface for one finished response.');
+        const restartedContext = await browser.newContext();
+        extraContexts.push(restartedContext);
+        assert.deepEqual(await restartedContext.cookies(), [], 'post-restart public checks must start without cookies');
+        const afterRestartResponse = await restartedContext.request.get(share.rawURL);
+        assert.equal(afterRestartResponse.status(), 200);
+        assert.deepEqual(Buffer.from(await afterRestartResponse.body()), publicHTML,
+          'public ciphertext bootstrap bytes must survive an application restart');
+
+        const undoStatus = await page.evaluate(async (id) => {
+          const response = await fetch(`/messages?chat=${id}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'HX-Request': 'true',
+            },
+            body: new URLSearchParams({ message: '/undo' }),
+          });
+          return response.status;
+        }, chatID);
+        assert.ok(undoStatus >= 200 && undoStatus < 300, `undo returned ${undoStatus}`);
+        await reloadChat(page, chatID);
+        await waitUntil(async () => {
+          return !(await page.locator('#message-history').innerText()).includes('A public reading surface for one finished response.');
+        }, {
+          timeout: 10000,
+          label: 'undo to remove the shared source from private history',
+        });
+        const afterUndoResponse = await restartedContext.request.get(share.rawURL);
+        assert.equal(afterUndoResponse.status(), 200);
+        assert.deepEqual(Buffer.from(await afterUndoResponse.body()), publicHTML,
+          'public ciphertext bootstrap bytes must survive removal of the source message');
+      } finally {
+        for (const context of extraContexts) {
+          await context.close().catch(() => {});
+        }
+      }
+    },
+  });
+});
+
+test('encrypted public response share keeps a usable fragment link and rejects tampering and foreign access', { timeout: 300000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'encrypted public share failure and security',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      const promptMarker = 'PROMPT-SENTINEL-copy-failure-4a18';
+      const replyMarker = 'REPLY-SENTINEL-copy-failure-8c92';
+      const prompt = `${promptMarker} Copy failure source prompt`;
+      const reply = `Copy failure answer body. ${replyMarker}`;
+      const plaintextMarkers = [promptMarker, replyMarker, prompt, reply, 'Copy failure answer body.'];
+      const extraContexts = [];
+      const ownerRequests = [];
+      const sharePOSTs = [];
+      page.on('request', (request) => {
+        ownerRequests.push(request);
+        const url = new URL(request.url());
+        if (request.method() === 'POST' && /^\/chats\/\d+\/messages\/\d+\/share(?:\/publish)?$/.test(url.pathname)) {
+          sharePOSTs.push(url.pathname);
+        }
+      });
+
+      try {
+        await signup(page, username('sharecopy'), password);
+        const { chatID } = await openChat(page);
+        await submitPrompt(page, prompt);
+        await waitCompletionActive(page);
+        await provider.waitForCallCount(1);
+        await provider.release(0, finalResponse(reply));
+        await waitCompletionDone(page);
+        await waitForHistoryText(page, reply);
+
+        const assistant = page.locator('#message-history article.message').filter({ hasText: reply }).first();
+        await assistant.waitFor({ state: 'visible', timeout: 10000 });
+        const shareAction = await assistant.locator('.message-share-actions').getAttribute('action');
+        assert.match(shareAction ?? '', /^\/chats\/\d+\/messages\/\d+\/share$/, 'share form action is missing');
+        const shareActionMatch = /^\/chats\/(\d+)\/messages\/(\d+)\/share$/.exec(shareAction);
+        assert.ok(shareActionMatch, 'share action must expose the chat and message IDs');
+
+        const nativePost = await page.request.post(`${env.baseURL}${shareAction}`, {
+          form: {},
+          maxRedirects: 0,
+        });
+        assert.equal(nativePost.status(), 400, 'native share preparation without HX-Request must be rejected');
+        assert.match(await nativePost.text(), /JavaScript/i,
+          'native share preparation rejection must explain that JavaScript is required');
+
+        const preparedFixture = await prepareShareFixture(page, env.baseURL, shareAction);
+        const fixtureRawURL = new URL(`/s/${preparedFixture.token}`, env.baseURL).href;
+        const beforePublish = await page.request.get(fixtureRawURL, { maxRedirects: 0 });
+        assert.equal(beforePublish.status(), 404,
+          'preparing a share must not create a public record before publish');
+
+        const overrideApplied = await page.evaluate(() => {
+          const original = navigator.clipboard;
+          if (!original?.writeText) {
+            return false;
+          }
+          window.__krituiShareClipboard = original;
+          window.__krituiShareExecCommand = document.execCommand;
+          Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: {
+              writeText: () => Promise.reject(new Error('clipboard denied by test')),
+              readText: () => original.readText(),
+            },
+          });
+          document.execCommand = () => false;
+          return true;
+        });
+        assert.equal(overrideApplied, true, 'test could not force clipboard denial');
+
+        sharePOSTs.length = 0;
+        const creation = await performShare(
+          page,
+          assistant.getByRole('button', { name: 'Share response' }),
+          shareAction,
+        );
+        assert.deepEqual(
+          sharePOSTs,
+          [shareAction, `${shareAction}/publish`],
+          'one UI share must send exactly one prepare and one publish POST',
+        );
+        const publish = parsePublishedShareRequest(creation.publishRequest, 'copy-failure share');
+        const shareActions = assistant.locator('.message-share-actions');
+        const share = await waitForSharedResponse(shareActions, env.baseURL);
+        assert.equal(share.token, creation.prepare.token, 'copy URL must use the prepared token');
+        const decrypted = assertPublishedSharePayload(
+          publish,
+          creation.prepare,
+          share.key,
+          plaintextMarkers,
+          'copy-failure share',
+        );
+        assert.match(decrypted, new RegExp(promptMarker), 'decrypted snapshot must include the preceding prompt');
+        assert.match(decrypted, new RegExp(replyMarker), 'decrypted snapshot must include the assistant response');
+
+        const shareStatus = shareActions.locator('.message-share-status');
+        await waitForShareStatus(page, shareStatus, 'Copy failed. Try again.', {
+          label: 'clipboard denial to render the copy failure message',
+        });
+        await assertIconOnlyShareButton(share.copyButton, 'failed copy action');
+
+        await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: env.baseURL });
+        await page.evaluate(() => {
+          Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: window.__krituiShareClipboard,
+          });
+          document.execCommand = window.__krituiShareExecCommand;
+        });
+        const postsBeforeRetry = sharePOSTs.length;
+        await share.copyButton.click();
+        await waitForShareStatus(page, shareStatus, 'Link copied', {
+          label: 'icon retry to succeed after clipboard access returns',
+        });
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), share.shareURL,
+          'retry must copy the public share URL with its fragment key');
+        assert.equal(sharePOSTs.length, postsBeforeRetry,
+          'copying an existing URL must not send another prepare or publish request');
+        assert.equal(await shareActions.locator('button').count(), 1,
+          'copy failure and retry must keep one icon button');
+        assertNoSecretInRequests(ownerRequests, [share.key], 'owner page');
+
+        const anonymousContext = await browser.newContext();
+        extraContexts.push(anonymousContext);
+        assert.deepEqual(await anonymousContext.cookies(), [], 'anonymous checks must start without cookies');
+        const anonymousPrepare = await anonymousContext.request.post(`${env.baseURL}${shareAction}`, {
+          form: {},
+          maxRedirects: 0,
+        });
+        assert.equal(anonymousPrepare.status(), 303, 'anonymous share preparation must redirect to login');
+        assert.match(anonymousPrepare.headers().location ?? '', /\/login/, 'anonymous prepare redirect must target login');
+        const foreignNonce = crypto.randomBytes(12).toString('base64url');
+        const foreignCiphertext = crypto.randomBytes(32).toString('base64url');
+        const anonymousPublish = await anonymousContext.request.post(`${env.baseURL}${shareAction}/publish`, {
+          form: {
+            token: preparedFixture.token,
+            format_version: '1',
+            nonce: foreignNonce,
+            ciphertext: foreignCiphertext,
+          },
+          maxRedirects: 0,
+        });
+        assert.equal(anonymousPublish.status(), 303, 'anonymous share publish must redirect to login');
+        assert.match(anonymousPublish.headers().location ?? '', /\/login/, 'anonymous publish redirect must target login');
+        const anonymousPrivate = await anonymousContext.request.get(
+          `${env.baseURL}/chats/${chatID}/summary`,
+          { maxRedirects: 0 },
+        );
+        assert.equal(anonymousPrivate.status(), 303, 'private source routes must remain protected');
+        const anonymousAttachment = await anonymousContext.request.get(
+          `${env.baseURL}/chats/${shareActionMatch[1]}/messages/${shareActionMatch[2]}/attachments/0`,
+          { maxRedirects: 0 },
+        );
+        assert.equal(anonymousAttachment.status(), 303, 'private message attachments must remain protected');
+
+        const invalidTokens = [
+          'a'.repeat(43),
+          'not-a-token',
+          crypto.randomBytes(32).toString('base64url'),
+        ];
+        for (const token of invalidTokens) {
+          const invalid = await anonymousContext.request.get(`${env.baseURL}/s/${token}`, { maxRedirects: 0 });
+          assert.equal(invalid.status(), 404, `unknown public token ${token} must return 404`);
+        }
+
+        const otherContext = await browser.newContext();
+        extraContexts.push(otherContext);
+        const otherPage = await otherContext.newPage();
+        otherPage.setDefaultTimeout(15000);
+        await signup(otherPage, username('shareother'), password);
+        const foreignPrepare = await otherPage.request.post(`${env.baseURL}${shareAction}`, {
+          form: {},
+          headers: { 'HX-Request': 'true' },
+          maxRedirects: 0,
+        });
+        assert.equal(foreignPrepare.status(), 404,
+          'a different account must not prepare another account response');
+        const foreignPublish = await otherPage.request.post(`${env.baseURL}${shareAction}/publish`, {
+          form: {
+            token: preparedFixture.token,
+            format_version: '1',
+            nonce: foreignNonce,
+            ciphertext: foreignCiphertext,
+          },
+          headers: { 'HX-Request': 'true' },
+          maxRedirects: 0,
+        });
+        assert.equal(foreignPublish.status(), 404,
+          'a different account must not publish another account response');
+
+        const publicContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+        extraContexts.push(publicContext);
+        assert.deepEqual(await publicContext.cookies(), [], 'public security checks must start without cookies');
+        const missingPage = await publicContext.newPage();
+        missingPage.setDefaultTimeout(15000);
+        await assertShareFails(missingPage, share.rawURL, plaintextMarkers, 'missing-fragment share');
+        const wrongKey = crypto.randomBytes(32).toString('base64url');
+        assert.notEqual(wrongKey, share.key, 'wrong-key fixture must differ from the real key');
+        const wrongPage = await publicContext.newPage();
+        wrongPage.setDefaultTimeout(15000);
+        await assertShareFails(
+          wrongPage,
+          `${share.rawURL}#key=${wrongKey}`,
+          plaintextMarkers,
+          'wrong-key share',
+        );
+        await capturePublicScreenshot(t, wrongPage, 'share-error-wrong-key');
+        const malformedPage = await publicContext.newPage();
+        malformedPage.setDefaultTimeout(15000);
+        await assertShareFails(
+          malformedPage,
+          `${share.rawURL}#key=not-a-canonical-key`,
+          plaintextMarkers,
+          'malformed-key share',
+        );
+
+        const bootstrapResponse = await publicContext.request.get(share.rawURL);
+        assert.equal(bootstrapResponse.status(), 200);
+        const bootstrapHTML = await bootstrapResponse.text();
+        const tampered = tamperShareBootstrap(bootstrapHTML, 'tampered bootstrap fixture');
+        assert.equal(tampered.bootstrap.ciphertext, publish.ciphertext,
+          'tamper fixture must start from the published ciphertext');
+        const tamperPage = await publicContext.newPage();
+        tamperPage.setDefaultTimeout(15000);
+        await tamperPage.route(share.rawURL, (route) => route.fulfill({
+          status: 200,
+          contentType: 'text/html; charset=utf-8',
+          body: tampered.tamperedHTML,
+        }));
+        try {
+          await assertShareFails(tamperPage, share.shareURL, plaintextMarkers, 'tampered-ciphertext share');
+          await capturePublicScreenshot(t, tamperPage, 'share-error-tampered-ciphertext');
+        } finally {
+          await tamperPage.unroute(share.rawURL);
+        }
+
+        const maliciousMarker = 'MALICIOUS-SENTINEL-encrypted-fixture-5f27';
+        const maliciousPrepare = await prepareShareFixture(page, env.baseURL, shareAction);
+        const maliciousHTML = [
+          '<!DOCTYPE html>',
+          '<html lang="en" data-theme="1975">',
+          '<head><meta charset="utf-8"><title>Malicious fixture</title></head>',
+          '<body>',
+          '<main class="shared-page">',
+          `<h1 class="shared-title">${maliciousMarker}</h1>`,
+          '<article class="shared-article">',
+          `<p>${maliciousMarker}</p>`,
+          '<script>',
+          'window.__maliciousExecuted = true;',
+          `try { fetch('/chats/${chatID}/summary', { credentials: 'include' }); } catch (error) {}`,
+          "try { window.__parentRead = parent.document.documentElement.outerHTML.length; } catch (error) { window.__parentError = error.name; }",
+          '</script>',
+          `<img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" onload="window.__maliciousOnload = true; try { fetch('/chats/${chatID}/summary', { credentials: 'include' }); } catch (error) {}">`,
+          '</article>',
+          '</main>',
+          '</body>',
+          '</html>',
+        ].join('\n');
+        const maliciousCipher = await encryptShareFixture(page, maliciousHTML);
+        assert.match(maliciousCipher.key, /^[A-Za-z0-9_-]{43}$/, 'malicious fixture key must be canonical base64url');
+        assert.equal(Buffer.from(maliciousCipher.key, 'base64url').length, 32,
+          'malicious fixture key must be 32 bytes');
+        assert.equal(Buffer.from(maliciousCipher.nonce, 'base64url').length, 12,
+          'malicious fixture nonce must be 12 bytes');
+        assert.notEqual(maliciousCipher.key, share.key, 'malicious fixture must use a fresh key');
+        assert.notEqual(maliciousCipher.nonce, publish.nonce, 'malicious fixture must use a fresh nonce');
+        const maliciousPublish = await publishShareFixture(
+          page,
+          env.baseURL,
+          shareAction,
+          maliciousPrepare,
+          maliciousCipher,
+        );
+        assert.equal(maliciousPublish.sharePath, `/s/${maliciousPrepare.token}`,
+          'malicious fixture must use the owned prepare token and form action');
+
+        const maliciousViews = [
+          { label: 'anonymous malicious fixture', page: await publicContext.newPage() },
+          { label: 'other-account malicious fixture', page: otherPage },
+        ];
+        for (const view of maliciousViews) {
+          view.page.setDefaultTimeout(15000);
+          const requests = [];
+          const listener = (request) => requests.push(request);
+          view.page.on('request', listener);
+          try {
+            const response = await view.page.goto(maliciousPublish.shareURL, { waitUntil: 'load' });
+            assert.ok(response, `${view.label} navigation must return a response`);
+            assert.equal(response.status(), 200, `${view.label} returned ${response.status()}`);
+            const maliciousBootstrap = Buffer.from(await response.body()).toString('utf8');
+            assertNoPlaintext(maliciousBootstrap, [maliciousMarker], view.label);
+            assert.ok(!maliciousBootstrap.includes(maliciousCipher.key), `${view.label} bootstrap must not contain the key`);
+            assertShareBootstrapMatches(
+              parseShareBootstrapHTML(maliciousBootstrap, `${view.label} bootstrap`),
+              { formatVersion: '1', nonce: maliciousCipher.nonce, ciphertext: maliciousCipher.ciphertext },
+              `${view.label} bootstrap`,
+            );
+            await waitForShareState(view.page, 'ready', `${view.label} to decrypt`);
+            const { frameElement, frame } = await waitForSharedFrame(view.page, view.label);
+            await assertFrameSandbox(frameElement, view.label);
+            await assertOpaqueFrameOrigin(view.page, frameElement, view.label);
+            const state = await frame.locator('.shared-page').evaluate(() => ({
+              marker: document.querySelector('.shared-title')?.textContent.trim() ?? '',
+              executed: typeof window.__maliciousExecuted,
+              onload: typeof window.__maliciousOnload,
+              parentRead: typeof window.__parentRead,
+              parentError: typeof window.__parentError,
+              scripts: document.querySelectorAll('script').length,
+            }));
+            assert.equal(state.marker, maliciousMarker, `${view.label} must render the decrypted fixture`);
+            assert.equal(state.executed, 'undefined', `${view.label} inline script must not execute`);
+            assert.equal(state.onload, 'undefined', `${view.label} iframe event handler must not execute`);
+            assert.equal(state.parentRead, 'undefined', `${view.label} must not read parent DOM`);
+            assert.equal(state.parentError, 'undefined', `${view.label} fixture script must not run to observe parent access`);
+            assert.equal(state.scripts, 0, `${view.label} must strip script elements before rendering`);
+            await capturePublicScreenshot(
+              t,
+              view.page,
+              view.label === 'anonymous malicious fixture'
+                ? 'share-security-malicious-anonymous'
+                : 'share-security-malicious-other-account',
+            );
+            const topDocument = await view.page.content();
+            assert.ok(!topDocument.includes(maliciousMarker),
+              `${view.label} parent document must not contain decrypted plaintext`);
+            const privateRequests = requests.filter((request) => {
+              try {
+                return new URL(request.url()).pathname.startsWith('/chats/');
+              } catch {
+                return false;
+              }
+            });
+            assert.deepEqual(privateRequests, [],
+              `${view.label} must not issue private application fetches`);
+            assertNoSecretInRequests(requests, [maliciousCipher.key], view.label);
+          } finally {
+            view.page.off('request', listener);
+          }
+        }
+      } finally {
+        for (const context of extraContexts) {
+          await context.close().catch(() => {});
+        }
       }
     },
   });
