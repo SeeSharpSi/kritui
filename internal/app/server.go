@@ -43,6 +43,20 @@ const (
 // Run opens or creates data.db in the working directory, applies migrations,
 // and then blocks while serving HTTP on :8080.
 func Run(files fs.FS, schemaSQL string) error {
+	key, err := storageEncryptionKeyFromEnvironment()
+	if err != nil {
+		return err
+	}
+	// Production never allows the compatibility plaintext fallback. Install the
+	// one-way guard after key validation and before opening the database so a
+	// lost request or worker context fails instead of writing plaintext.
+	kritui_db.RequireStorageEncryption()
+	storage, err := kritui_db.NewStorageCipher(key)
+	clear(key)
+	if err != nil {
+		return fmt.Errorf("configure storage encryption: %w", err)
+	}
+
 	staticFiles = files
 	schema = schemaSQL
 
@@ -59,14 +73,14 @@ func Run(files fs.FS, schemaSQL string) error {
 	}
 	defer database.Close()
 
-	if !databaseExists {
-		if _, err := database.Exec(schema); err != nil {
-			return fmt.Errorf("initialize database: %w", err)
-		}
-	} else if err := migrateDatabase(database); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
+	startupContext := context.Background()
+	if err := ensureStorageEncryption(startupContext, database, storage, databaseExists); err != nil {
+		return err
 	}
-	ownerContext := kritui_db.WithUser(context.Background(), kritui_db.LegacyOwnerID)
+	ownerContext := kritui_db.WithStorageCipher(
+		kritui_db.WithUser(startupContext, kritui_db.LegacyOwnerID),
+		storage,
+	)
 	if err := kritui_db.EnsureDefaultModel(ownerContext, database, os.Getenv("LLM_MODEL")); err != nil {
 		return fmt.Errorf("initialize settings: %w", err)
 	}
@@ -99,9 +113,10 @@ func Run(files fs.FS, schemaSQL string) error {
 	toolCalls := newToolCallStore()
 	auth := newAuthService(database, secureCookies)
 	mux := newMux(database, toolRegistry, commandRegistry, toolCalls, toolCallLogger, auth)
+	handler := withStorageEncryption(storage, mux)
 
 	log.Println("listening on http://localhost:8080")
-	server := newHTTPServer(mux)
+	server := newHTTPServer(handler)
 	// SSE responses intentionally have no server-wide write deadline.
 	return server.ListenAndServe()
 }
@@ -191,20 +206,12 @@ func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 		if title == "" {
 			return &commands.UserError{Status: http.StatusBadRequest, Message: "Usage: /rename <title>."}
 		}
-		result, err := database.ExecContext(ctx, `
-			UPDATE chats
-			SET title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-			WHERE id = ? AND user_id = ?
-		`, title, chatID, kritui_db.UserID(ctx))
-		if err != nil {
-			return fmt.Errorf("rename current chat: %w", err)
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("get renamed chat count: %w", err)
-		}
-		if affected == 0 {
+		err := kritui_db.RenameChat(ctx, database, chatID, title)
+		switch {
+		case errors.Is(err, kritui_db.ErrChatNotFound):
 			return &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
+		case err != nil:
+			return fmt.Errorf("rename current chat: %w", err)
 		}
 		return nil
 	})
@@ -219,6 +226,8 @@ func openDatabase(path string) (*sql.DB, error) {
 	parameters.Add("_pragma", "foreign_keys(1)")
 	parameters.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", databaseBusyTimeout.Milliseconds()))
 	parameters.Add("_pragma", "journal_mode(DELETE)")
+	parameters.Add("_pragma", "secure_delete(1)")
+	parameters.Add("_pragma", "temp_store(MEMORY)")
 	dataSourceName := (&url.URL{Scheme: "file", Opaque: path, RawQuery: parameters.Encode()}).String()
 	database, err := sql.Open("sqlite", dataSourceName)
 	if err != nil {
@@ -519,6 +528,18 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateTitleGenerationSettings,
 	kritui_db.MigrateSharedResponses,
 	kritui_db.MigrateEncryptedSharedResponses,
+	migrateStorageFormat31,
+}
+
+// migrateStorageFormat31 reserves schema version 31 as the storage-format
+// boundary. Version 30 and older databases may contain plaintext sensitive
+// fields; this no-op intentionally does not create the encryption marker or
+// require a cipher because the mandatory-key migration runs immediately after
+// schema migration in Run. Bumping the version makes an older v30 binary refuse
+// to open a database whose fields may now be encrypted, instead of silently
+// writing new plaintext values into it.
+func migrateStorageFormat31(_ context.Context, _ *sql.Tx) error {
+	return nil
 }
 
 // migrateTitleGenerationSettings adds the opt-in chat-title generation toggle

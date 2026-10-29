@@ -65,23 +65,32 @@ class AppProcess {
     });
   }
 
-  static async start({ binary, cwd, provider, logPath }) {
+  static async start({ binary, cwd, provider, logPath, appEnv = {} }) {
     await ensurePortFree();
     await fs.mkdir(cwd, { recursive: true });
     const stream = await fs.open(logPath, 'a');
+    const env = {
+      PATH: process.env.PATH ?? '/usr/bin:/bin',
+      HOME: process.env.HOME ?? '',
+      LANG: 'C.UTF-8',
+      TZ: 'UTC',
+      KRITUI_SECURE_COOKIES: 'false',
+      LLM_KEY: 'test-key',
+      LLM_MODEL: 'fake-model',
+      LLM_ENDPOINT: provider.chatURL,
+      SHOW_TOOLCALLS: 'false',
+    };
+    // A null override removes a default so tests can exercise per-account configuration.
+    for (const [key, value] of Object.entries(appEnv)) {
+      if (value === null || value === undefined) {
+        delete env[key];
+      } else {
+        env[key] = String(value);
+      }
+    }
     const child = spawn(binary, [], {
       cwd,
-      env: {
-        PATH: process.env.PATH ?? '/usr/bin:/bin',
-        HOME: process.env.HOME ?? '',
-        LANG: 'C.UTF-8',
-        TZ: 'UTC',
-        KRITUI_SECURE_COOKIES: 'false',
-        LLM_KEY: 'test-key',
-        LLM_MODEL: 'fake-model',
-        LLM_ENDPOINT: provider.chatURL,
-        SHOW_TOOLCALLS: 'false',
-      },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const app = new AppProcess({ child, cwd, logPath, logStream: stream });
@@ -161,10 +170,11 @@ function tail(value, lines = 100) {
 }
 
 class TestEnvironment {
-  constructor({ build, provider, runDir }) {
+  constructor({ build, provider, runDir, appEnv = {} }) {
     this.build = build;
     this.provider = provider;
     this.runDir = runDir;
+    this.appEnv = appEnv;
     this.app = null;
     this.page = null;
     this.context = null;
@@ -176,6 +186,7 @@ class TestEnvironment {
       cwd: this.runDir,
       provider: this.provider,
       logPath: path.join(this.runDir, 'app.log'),
+      appEnv: this.appEnv,
     });
     return this.app;
   }

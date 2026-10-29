@@ -3410,3 +3410,419 @@ test('encrypted public response share keeps a usable fragment link and rejects t
     },
   });
 });
+
+async function readDatabaseFiles(directory, root = directory) {
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await readDatabaseFiles(fullPath, root));
+    } else if (entry.isFile() && entry.name.startsWith('data.db')) {
+      files.push({
+        name: path.relative(root, fullPath),
+        data: await fs.readFile(fullPath),
+      });
+    }
+  }
+  return files;
+}
+
+test('server-key field encryption stays transparent to settings, provider, history, and restart', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'server-key field encryption',
+    browser,
+    build,
+    appEnv: { LLM_KEY: null, LLM_ENDPOINT: null },
+    async run(env) {
+      const { page, provider } = env;
+      const suffix = `${Date.now().toString(36)}_${process.pid.toString(36)}`;
+      const prompt = `encrypted-storage prompt ${suffix}`;
+      const reply = `encrypted-storage reply ${suffix}`;
+      const followup = `encrypted-storage followup ${suffix}`;
+      const followupReply = `encrypted-storage followup reply ${suffix}`;
+      const title = `encrypted-storage title ${suffix}`;
+      const apiKey = `sk-encrypted-storage-${suffix}`;
+      const endpoint = provider.chatURL;
+
+      await signup(page, username('crypt'), password);
+      const { chatID } = await openChat(page);
+
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, 'settings-page');
+      await page.locator('#llm-settings').waitFor({ state: 'visible', timeout: 10000 });
+      await page.locator('#llm-endpoint').fill(endpoint);
+      await page.locator('#llm-api-key').fill(apiKey);
+
+      const saveResponsePromise = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return response.request().method() === 'POST' && url.pathname === '/settings';
+      }, { timeout: 20000 });
+      await page.locator('#settings-page .settings-save').click();
+      const saveResponse = await saveResponsePromise;
+      assert.ok(
+        saveResponse.status() >= 200 && saveResponse.status() < 400,
+        `settings save returned ${saveResponse.status()}`,
+      );
+      await page.locator('[data-settings-saved]').waitFor({ state: 'visible', timeout: 15000 });
+      await waitUntil(async () => (await page.locator('#llm-api-key').inputValue()) === '', {
+        timeout: 10000,
+        label: 'saved LLM API key input to clear',
+      });
+      assert.equal(
+        await page.locator('#llm-endpoint').inputValue(),
+        endpoint,
+        'saved LLM endpoint must remain visible in settings',
+      );
+      assert.equal(
+        await page.locator('#clear-llm-api-key').count(),
+        1,
+        'a stored LLM key must expose the clear control',
+      );
+      const savedSettingsHTML = await page.locator('#settings-page').innerHTML();
+      assert.ok(
+        !savedSettingsHTML.includes(apiKey),
+        'settings HTML must not echo the saved LLM API key',
+      );
+
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, null);
+
+      await submitPrompt(page, prompt);
+      await waitCompletionActive(page);
+      const firstCall = await provider.waitForCallCount(1);
+      assert.equal(
+        firstCall.headers.authorization,
+        `Bearer ${apiKey}`,
+        'provider must receive the decrypted bearer key stored in settings',
+      );
+      assert.equal(firstCall.path, '/v1/chat/completions', 'provider must receive the saved full endpoint');
+      assert.equal(lastUser(firstCall), prompt, 'provider must receive the decrypted prompt text');
+      await provider.release(firstCall.index, finalResponse(reply));
+      await waitCompletionDone(page);
+      await waitForHistoryText(page, reply);
+
+      await reloadChat(page, chatID);
+      await waitForHistoryText(page, prompt);
+      await waitForHistoryText(page, reply);
+
+      await submitPrompt(page, `/rename ${title}`);
+      const renamedSummary = await chatSummaryHTML(env, chatID, 'renamed chat');
+      assert.ok(renamedSummary.includes(title), `renamed chat summary must contain ${title}: ${renamedSummary}`);
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      await waitUntil(async () => {
+        const currentTitle = page.locator('#history-entries .history-entry.current .history-title-link strong').first();
+        if ((await currentTitle.count()) !== 1) {
+          return false;
+        }
+        return (await currentTitle.innerText()).trim() === title;
+      }, {
+        timeout: 10000,
+        label: 'slash rename to reach the open History title',
+      });
+      await page.locator('#history-button').click();
+      await waitForPanels(page, null);
+
+      const appCwd = env.app.cwd;
+      await env.app.stop('SIGTERM');
+      env.app = null;
+
+      const databaseFiles = await readDatabaseFiles(appCwd);
+      assert.ok(databaseFiles.length > 0, `no data.db files found under ${appCwd}`);
+      const primaryDatabase = databaseFiles.find((file) => file.name === 'data.db');
+      assert.ok(primaryDatabase, `data.db is missing under ${appCwd}`);
+      assert.equal(
+        primaryDatabase.data.subarray(0, 16).toString('latin1'),
+        'SQLite format 3\u0000',
+        'data.db must keep a plaintext SQLite header because encryption is per field, not whole-file',
+      );
+
+      const plaintextMarkers = [prompt, reply, title, apiKey];
+      for (const file of databaseFiles) {
+        for (const marker of plaintextMarkers) {
+          assert.equal(
+            file.data.includes(Buffer.from(marker, 'utf8')),
+            false,
+            `${file.name} must not contain plaintext ${JSON.stringify(marker)}`,
+          );
+        }
+      }
+      assert.ok(
+        primaryDatabase.data.includes(Buffer.from('enc:v1:', 'utf8')),
+        'data.db must contain encrypted field envelopes',
+      );
+
+      const { DatabaseSync } = require('node:sqlite');
+      const storedDatabase = new DatabaseSync(path.join(appCwd, 'data.db'), { readOnly: true });
+      try {
+        const storedMessages = storedDatabase.prepare(
+          "SELECT role, content FROM messages WHERE role IN ('user', 'assistant') ORDER BY id",
+        ).all();
+        assert.ok(storedMessages.length >= 2, `expected encrypted user and assistant rows, saw ${storedMessages.length}`);
+        for (const message of storedMessages) {
+          const content = String(message.content);
+          assert.match(content, /^enc:v1:/, `${message.role} message content must be an encrypted envelope`);
+          assert.ok(!content.includes(apiKey), `${message.role} message content must not contain the LLM API key`);
+        }
+
+        const storedSettings = storedDatabase.prepare(
+          'SELECT llm_api_key FROM settings WHERE llm_api_key IS NOT NULL',
+        ).all();
+        assert.equal(storedSettings.length, 1, `expected one stored LLM key row, saw ${storedSettings.length}`);
+        const storedKey = String(storedSettings[0].llm_api_key);
+        assert.match(storedKey, /^enc:v1:/, 'settings.llm_api_key must be an encrypted envelope');
+        assert.ok(!storedKey.includes(apiKey), 'settings.llm_api_key must not contain the plaintext key');
+
+        const storedChat = storedDatabase.prepare('SELECT title FROM chats WHERE id = ?').get(Number(chatID));
+        assert.ok(storedChat, `chat ${chatID} is missing from the stopped database`);
+        const storedTitle = String(storedChat.title);
+        assert.match(storedTitle, /^enc:v1:/, 'chats.title must be an encrypted envelope');
+        assert.ok(!storedTitle.includes(title), 'chats.title must not contain the plaintext title');
+      } finally {
+        storedDatabase.close();
+      }
+
+      await env.startApp();
+      await reloadChat(page, chatID);
+      await waitForHistoryText(page, prompt);
+      await waitForHistoryText(page, reply);
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      await waitUntil(async () => {
+        const currentTitle = page.locator('#history-entries .history-entry.current .history-title-link strong').first();
+        if ((await currentTitle.count()) !== 1) {
+          return false;
+        }
+        return (await currentTitle.innerText()).trim() === title;
+      }, {
+        timeout: 10000,
+        label: 'renamed title to survive restart',
+      });
+      await page.locator('#history-button').click();
+      await waitForPanels(page, null);
+
+      await submitPrompt(page, followup);
+      await waitCompletionActive(page);
+      const followupCall = await provider.waitForCallCount(2);
+      assert.equal(
+        followupCall.headers.authorization,
+        `Bearer ${apiKey}`,
+        'provider must receive the same decrypted bearer key after restart',
+      );
+      assert.equal(lastUser(followupCall), followup, 'provider must receive the new follow-up prompt');
+      assert.ok(
+        followupCall.messages.some((message) => message.role === 'user' && message.content === prompt),
+        'restarted provider history must include the decrypted first prompt',
+      );
+      assert.ok(
+        followupCall.messages.some((message) => message.role === 'assistant' && message.content === reply),
+        'restarted provider history must include the decrypted first reply',
+      );
+      await provider.release(followupCall.index, finalResponse(followupReply));
+      await waitCompletionDone(page);
+      await waitForHistoryText(page, followupReply);
+      assertNoCallOverride(provider.calls, 2);
+    },
+  });
+});
+
+function buildTinyPDF(marker) {
+  const content = `BT\n/F1 12 Tf\n20 100 Td\n(${marker}) Tj\nET\n`;
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}endstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.byteLength(pdf, 'latin1'));
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xrefOffset = Buffer.byteLength(pdf, 'latin1');
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) {
+    pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(pdf, 'latin1');
+}
+
+test('encrypted PDF attachment uploads, streams authenticated ranges, and survives restart', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'encrypted pdf attachment range',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      const suffix = `${Date.now().toString(36)}_${process.pid.toString(36)}`;
+      const marker = `pdf-marker-${suffix}`;
+      const filename = `pdf-attachment-${suffix}.pdf`;
+      const prompt = `encrypted-pdf prompt ${suffix}`;
+      const reply = `encrypted-pdf reply ${suffix}`;
+      const pdf = buildTinyPDF(marker);
+      assert.equal(pdf.subarray(0, 5).toString('latin1'), '%PDF-', 'fixture must be a PDF');
+
+      await signup(page, username('pdfcrypt'), password);
+      const { chatID } = await openChat(page);
+
+      await page.locator('#image-input').setInputFiles({
+        name: filename,
+        mimeType: 'application/pdf',
+        buffer: pdf,
+      });
+      await page.locator('#image-previews .attachment-pdf-name').filter({ hasText: filename })
+        .waitFor({ state: 'visible', timeout: 10000 });
+      assert.equal(
+        await page.locator('#image-previews .attachment-pdf-name').innerText(),
+        filename,
+        'composer must show the selected PDF filename',
+      );
+
+      await submitPrompt(page, prompt);
+      await waitCompletionActive(page);
+      const call = await provider.waitForCallCount(1);
+      const userMessage = [...call.messages].reverse().find((message) => message.role === 'user');
+      assert.ok(userMessage, 'provider request must include the user message');
+      assert.ok(Array.isArray(userMessage.content), 'PDF user content must use protocol parts');
+      const filePart = userMessage.content.find((part) => part?.type === 'file');
+      assert.ok(filePart?.file, 'provider request must include a Chat Completions file part');
+      assert.equal(filePart.file.filename, filename, 'provider must receive the decrypted PDF filename');
+      assert.equal(
+        filePart.file.file_data,
+        `data:application/pdf;base64,${pdf.toString('base64')}`,
+        'provider must receive the exact inline PDF base64',
+      );
+      assert.ok(
+        userMessage.content.some((part) => part.type === 'text' && part.text === prompt),
+        'provider request must include the decrypted message text',
+      );
+
+      await provider.release(call.index, finalResponse(reply));
+      await waitCompletionDone(page);
+      await waitForHistoryText(page, reply);
+
+      const sentCard = page.locator('#message-history .message.user .message-attachment-pdf')
+        .filter({ hasText: filename }).first();
+      await sentCard.waitFor({ state: 'visible', timeout: 10000 });
+      assert.equal(await sentCard.count(), 1, 'sent user message must show one PDF card');
+      assert.equal(await sentCard.getAttribute('data-pdf-name'), filename);
+      const pdfURL = await sentCard.getAttribute('data-pdf-url');
+      assert.match(
+        pdfURL,
+        new RegExp(`^/chats/${chatID}/messages/[1-9]\\d*/attachments/0$`),
+        `PDF card must point at its authenticated attachment endpoint: ${pdfURL}`,
+      );
+
+      await reloadChat(page, chatID);
+      await waitForHistoryText(page, reply);
+      const reloadedCard = page.locator('#message-history .message.user .message-attachment-pdf')
+        .filter({ hasText: filename }).first();
+      await reloadedCard.waitFor({ state: 'visible', timeout: 10000 });
+      assert.equal(await reloadedCard.getAttribute('data-pdf-url'), pdfURL, 'PDF card URL must survive reload');
+
+      await reloadedCard.click();
+      const viewer = page.locator('#pdf-viewer');
+      await viewer.waitFor({ state: 'visible', timeout: 10000 });
+      assert.equal(await viewer.evaluate((element) => element.open), true, 'native PDF dialog must open');
+      assert.equal(await page.locator('#pdf-viewer-frame').getAttribute('src'), pdfURL,
+        'PDF iframe must point at the authenticated attachment endpoint');
+      assert.equal(await page.locator('#pdf-viewer-open').getAttribute('href'), pdfURL,
+        'Open in new tab must point at the authenticated attachment endpoint');
+      assert.equal((await page.locator('#pdf-viewer-name').innerText()).trim(), filename);
+      await page.locator('[data-pdf-viewer-close]').click();
+      await viewer.waitFor({ state: 'hidden' });
+
+      const rangeResponse = await env.page.request.get(`${env.baseURL}${pdfURL}`, {
+        headers: { Range: 'bytes=0-15' },
+      });
+      assert.equal(rangeResponse.status(), 206, `range GET returned ${rangeResponse.status()}`);
+      const rangeHeaders = rangeResponse.headers();
+      assert.equal(
+        rangeHeaders['content-range'],
+        `bytes 0-15/${pdf.length}`,
+        'range response must report the exact PDF byte span',
+      );
+      assert.equal(rangeHeaders['cache-control'], 'no-store', 'PDF range response must not be cached');
+      assert.deepEqual(
+        Buffer.from(await rangeResponse.body()),
+        pdf.subarray(0, 16),
+        'range response must return the exact original slice bytes',
+      );
+
+      const fullResponse = await env.page.request.get(`${env.baseURL}${pdfURL}`);
+      assert.equal(fullResponse.status(), 200, `full GET returned ${fullResponse.status()}`);
+      const fullHeaders = fullResponse.headers();
+      assert.equal(fullHeaders['content-type'], 'application/pdf');
+      assert.equal(fullHeaders['cache-control'], 'no-store', 'PDF response must not be cached');
+      assert.ok(
+        (fullHeaders['content-disposition'] ?? '').includes(filename),
+        'full PDF response must keep the decrypted filename',
+      );
+      assert.deepEqual(Buffer.from(await fullResponse.body()), pdf, 'full PDF response must return exact bytes');
+
+      let otherContext;
+      try {
+        otherContext = await browser.newContext();
+        const otherPage = await otherContext.newPage();
+        otherPage.setDefaultTimeout(15000);
+        await signup(otherPage, username('pdfother'), password);
+        const foreignResponse = await otherPage.request.get(`${env.baseURL}${pdfURL}`);
+        assert.equal(foreignResponse.status(), 404, 'another account must not read the PDF attachment');
+      } finally {
+        await otherContext?.close().catch(() => {});
+      }
+
+      const appCwd = env.app.cwd;
+      await env.app.stop('SIGTERM');
+      env.app = null;
+
+      const databaseFiles = await readDatabaseFiles(appCwd);
+      assert.ok(databaseFiles.length > 0, `no data.db files found under ${appCwd}`);
+      const primaryDatabase = databaseFiles.find((file) => file.name === 'data.db');
+      assert.ok(primaryDatabase, `data.db is missing under ${appCwd}`);
+      assert.equal(
+        primaryDatabase.data.subarray(0, 16).toString('latin1'),
+        'SQLite format 3\u0000',
+        'data.db must keep a plaintext SQLite header',
+      );
+      for (const file of databaseFiles) {
+        for (const plaintext of [marker, filename]) {
+          assert.equal(
+            file.data.includes(Buffer.from(plaintext, 'utf8')),
+            false,
+            `${file.name} must not contain plaintext ${JSON.stringify(plaintext)}`,
+          );
+        }
+      }
+
+      await env.startApp();
+      await reloadChat(page, chatID);
+      await waitForHistoryText(page, reply);
+      const restoredCard = page.locator('#message-history .message.user .message-attachment-pdf')
+        .filter({ hasText: filename }).first();
+      await restoredCard.waitFor({ state: 'visible', timeout: 10000 });
+      assert.equal(await restoredCard.getAttribute('data-pdf-url'), pdfURL,
+        'session and PDF card must survive restart');
+
+      const restoredRange = await env.page.request.get(`${env.baseURL}${pdfURL}`, {
+        headers: { Range: 'bytes=0-15' },
+      });
+      assert.equal(restoredRange.status(), 206, `post-restart range GET returned ${restoredRange.status()}`);
+      assert.equal(restoredRange.headers()['content-range'], `bytes 0-15/${pdf.length}`);
+      assert.deepEqual(
+        Buffer.from(await restoredRange.body()),
+        pdf.subarray(0, 16),
+        'post-restart range response must return the exact original slice bytes',
+      );
+
+      await restoredCard.click();
+      await page.locator('#pdf-viewer').waitFor({ state: 'visible', timeout: 10000 });
+      assert.equal(await page.locator('#pdf-viewer-frame').getAttribute('src'), pdfURL,
+        'post-restart PDF dialog must use the same authenticated endpoint');
+    },
+  });
+});

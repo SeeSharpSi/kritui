@@ -63,6 +63,90 @@ type messageQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+const (
+	storageScopeChatTitle          = "chats.title"
+	storageScopeMessageContent     = "messages.content"
+	storageScopeToolCallArguments  = "message_tool_calls.arguments"
+	storageScopePromptAppendText   = "message_prompt_appends.text"
+	storageScopeAttachmentFilename = "message_user_images.filename"
+	storageScopeAttachmentData     = "message_user_images.data"
+	storageScopeProviderOutput     = "message_provider_outputs.payload"
+)
+
+func chatStorageRowID(chatID int64) string {
+	return fmt.Sprintf("%d", chatID)
+}
+
+func messageStorageRowID(messageID int64) string {
+	return fmt.Sprintf("%d", messageID)
+}
+
+func messageChildStorageRowID(messageID int64, position int) string {
+	return fmt.Sprintf("%d:%d", messageID, position)
+}
+
+// sealChatTitle encrypts a non-empty title for its chat row. The empty string
+// is the allocated-chat sentinel and stays plaintext so title discovery still
+// works before a title exists.
+func sealChatTitle(ctx context.Context, chatID int64, title string) (string, error) {
+	if title == "" {
+		return "", nil
+	}
+	return EncryptStorageText(ctx, storageScopeChatTitle, chatStorageRowID(chatID), title)
+}
+
+func openChatTitle(ctx context.Context, chatID int64, title string) (string, error) {
+	if title == "" {
+		return "", nil
+	}
+	return DecryptStorageText(ctx, storageScopeChatTitle, chatStorageRowID(chatID), title)
+}
+
+// sealProviderOutput keeps legacy provider payloads as their original JSON
+// object. With storage encryption enabled, the payload becomes a strict JSON
+// object carrying the text envelope so the schema object check still applies.
+func sealProviderOutput(ctx context.Context, messageID int64, position int, payload []byte) (string, error) {
+	rowID := messageChildStorageRowID(messageID, position)
+	envelope, err := EncryptStorageText(ctx, storageScopeProviderOutput, rowID, string(payload))
+	if err != nil {
+		return "", err
+	}
+	if envelope == string(payload) {
+		return envelope, nil
+	}
+	encoded, err := json.Marshal(struct {
+		Encrypted string `json:"encrypted"`
+	}{Encrypted: envelope})
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func openProviderOutput(ctx context.Context, messageID int64, position int, payload string) (string, error) {
+	rowID := messageChildStorageRowID(messageID, position)
+	plain, err := DecryptStorageText(ctx, storageScopeProviderOutput, rowID, payload)
+	if err == nil {
+		return plain, nil
+	}
+	if !errors.Is(err, ErrStorageDecryption) {
+		return "", err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &fields); err != nil {
+		return "", ErrStorageDecryption
+	}
+	raw, ok := fields["encrypted"]
+	if !ok || len(fields) != 1 {
+		return "", ErrStorageDecryption
+	}
+	var envelope string
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "", ErrStorageDecryption
+	}
+	return DecryptStorageText(ctx, storageScopeProviderOutput, rowID, envelope)
+}
+
 // GetChatsPage returns chats after the supplied cursor, ordered with pinned
 // chats first and then from most to least recently updated within each group.
 // An empty cursor returns the first page.
@@ -118,7 +202,7 @@ func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, befor
 	if err != nil {
 		return nil, fmt.Errorf("get chats page: %w", err)
 	}
-	chats, err := scanChats(rows)
+	chats, err := scanChats(ctx, rows)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +212,7 @@ func GetChatsPage(ctx context.Context, db *sql.DB, beforeUpdatedAt string, befor
 	return chats, nil
 }
 
-func scanChats(rows *sql.Rows) ([]Chat, error) {
+func scanChats(ctx context.Context, rows *sql.Rows) ([]Chat, error) {
 	defer rows.Close()
 
 	var chats []Chat
@@ -138,6 +222,11 @@ func scanChats(rows *sql.Rows) ([]Chat, error) {
 		if err := rows.Scan(&chat.ID, &chat.Title, &chat.CreatedAt, &chat.UpdatedAt, &pinned); err != nil {
 			return nil, fmt.Errorf("scan chat: %w", err)
 		}
+		title, err := openChatTitle(ctx, chat.ID, chat.Title)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt chat title %d: %w", chat.ID, err)
+		}
+		chat.Title = title
 		chat.Pinned = pinned != 0
 		chats = append(chats, chat)
 	}
@@ -201,6 +290,10 @@ func GetChatTitle(ctx context.Context, db *sql.DB, chatID int64) (string, error)
 		if err == sql.ErrNoRows {
 			return "", ErrChatNotFound
 		}
+		return "", fmt.Errorf("get chat title: %w", err)
+	}
+	title, err = openChatTitle(ctx, chatID, title)
+	if err != nil {
 		return "", fmt.Errorf("get chat title: %w", err)
 	}
 	return title, nil
@@ -341,7 +434,7 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 	storedMessages := []storedMessage{}
 	indexes := make(map[int64]int)
 	for rows.Next() {
-		stored, err := scanStoredMessage(rows)
+		stored, err := scanStoredMessage(ctx, rows)
 		if err != nil {
 			rows.Close()
 			return MessageSnapshot{}, err
@@ -421,6 +514,15 @@ func GetMessageAttachment(ctx context.Context, database *sql.DB, chatID, message
 	if err != nil {
 		return llm.UserAttachment{}, fmt.Errorf("get message attachment: %w", err)
 	}
+	rowID := messageChildStorageRowID(messageID, position)
+	attachment.Filename, err = DecryptStorageText(ctx, storageScopeAttachmentFilename, rowID, attachment.Filename)
+	if err != nil {
+		return llm.UserAttachment{}, fmt.Errorf("get message attachment filename: %w", err)
+	}
+	attachment.Data, err = DecryptStorageBytes(ctx, storageScopeAttachmentData, rowID, attachment.Data)
+	if err != nil {
+		return llm.UserAttachment{}, fmt.Errorf("get message attachment data: %w", err)
+	}
 	attachment.Width, attachment.Height = width, height
 	return attachment, nil
 }
@@ -449,6 +551,15 @@ func loadMessageAttachments(ctx context.Context, db messageQueryer, chatID int64
 		if !ok {
 			return fmt.Errorf("message attachment references unloaded message %d", id)
 		}
+		rowID := messageChildStorageRowID(id, position)
+		attachment.Filename, err = DecryptStorageText(ctx, storageScopeAttachmentFilename, rowID, attachment.Filename)
+		if err != nil {
+			return fmt.Errorf("decrypt attachment filename for message %d: %w", id, err)
+		}
+		attachment.Data, err = DecryptStorageBytes(ctx, storageScopeAttachmentData, rowID, attachment.Data)
+		if err != nil {
+			return fmt.Errorf("decrypt attachment data for message %d: %w", id, err)
+		}
 		attachment.Width, attachment.Height = width, height
 		attachment.Data = append([]byte(nil), attachment.Data...)
 		messages[index].message.Attachments = append(messages[index].message.Attachments, attachment)
@@ -460,7 +571,7 @@ func loadMessageAttachments(ctx context.Context, db messageQueryer, chatID int64
 	return nil
 }
 
-func scanStoredMessage(row rowScanner) (storedMessage, error) {
+func scanStoredMessage(ctx context.Context, row rowScanner) (storedMessage, error) {
 	var stored storedMessage
 	if err := row.Scan(
 		&stored.id,
@@ -475,6 +586,11 @@ func scanStoredMessage(row rowScanner) (storedMessage, error) {
 		return storedMessage{}, fmt.Errorf("scan message: %w", err)
 	}
 	stored.message.ID = stored.id
+	content, err := DecryptStorageText(ctx, storageScopeMessageContent, messageStorageRowID(stored.id), stored.message.Content)
+	if err != nil {
+		return storedMessage{}, fmt.Errorf("decrypt message %d content: %w", stored.id, err)
+	}
+	stored.message.Content = content
 	if stored.model.Valid {
 		stored.message.Model = stored.model.String
 	}
@@ -515,6 +631,11 @@ func loadMessageToolCalls(ctx context.Context, db messageQueryer, chatID int64, 
 		if !ok {
 			return fmt.Errorf("message tool call references unloaded message %d", messageID)
 		}
+		arguments, err := DecryptStorageText(ctx, storageScopeToolCallArguments, messageChildStorageRowID(messageID, position), call.Function.Arguments)
+		if err != nil {
+			return fmt.Errorf("decrypt message tool call %d for message %d: %w", position, messageID, err)
+		}
+		call.Function.Arguments = arguments
 		messages[index].message.ToolCalls = append(messages[index].message.ToolCalls, call)
 		messages[index].toolCallPositions = append(messages[index].toolCallPositions, position)
 	}
@@ -547,6 +668,10 @@ func loadMessagePromptAppends(ctx context.Context, db messageQueryer, chatID int
 		if !ok {
 			return fmt.Errorf("message prompt append references unloaded message %d", messageID)
 		}
+		text, err := DecryptStorageText(ctx, storageScopePromptAppendText, messageChildStorageRowID(messageID, position), text)
+		if err != nil {
+			return fmt.Errorf("decrypt message prompt append %d for message %d: %w", position, messageID, err)
+		}
 		messages[index].message.PromptAppendTexts = append(messages[index].message.PromptAppendTexts, text)
 		messages[index].promptAppendPositions = append(messages[index].promptAppendPositions, position)
 	}
@@ -578,6 +703,10 @@ func loadMessageProviderOutputs(ctx context.Context, db messageQueryer, chatID i
 		}
 		if _, ok := indexes[messageID]; !ok {
 			return fmt.Errorf("message provider output references unloaded message %d", messageID)
+		}
+		payload, err := openProviderOutput(ctx, messageID, position, payload)
+		if err != nil {
+			return fmt.Errorf("decrypt provider output %d for message %d: %w", position, messageID, err)
 		}
 		outputs[messageID] = append(outputs[messageID], json.RawMessage(payload))
 		messages[indexes[messageID]].providerOutputPositions = append(messages[indexes[messageID]].providerOutputPositions, position)

@@ -456,7 +456,7 @@ func legacyShareVersion28Fixture(t *testing.T) string {
 		t.Fatal("schema fixture has no inbox_items block after shared_responses")
 	}
 	fixture := messagesTestSchema[:start] + messagesTestSchema[start+end:]
-	fixture = strings.Replace(fixture, "PRAGMA user_version = 30;", "PRAGMA user_version = 28;", 1)
+	fixture = strings.Replace(fixture, "PRAGMA user_version = 31;", "PRAGMA user_version = 28;", 1)
 	if !strings.Contains(fixture, "PRAGMA user_version = 28;") {
 		t.Fatal("version 28 fixture marker is missing")
 	}
@@ -476,7 +476,7 @@ func legacyShareVersion29Fixture(t *testing.T) string {
 	fixture := messagesTestSchema[:start] +
 		strings.TrimSpace(shareSchema) + "\n\n" +
 		messagesTestSchema[start+end:]
-	fixture = strings.Replace(fixture, "PRAGMA user_version = 30;", "PRAGMA user_version = 29;", 1)
+	fixture = strings.Replace(fixture, "PRAGMA user_version = 31;", "PRAGMA user_version = 29;", 1)
 	if !strings.Contains(fixture, "PRAGMA user_version = 29;") {
 		t.Fatal("version 29 fixture marker is missing")
 	}

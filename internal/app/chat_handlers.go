@@ -332,6 +332,14 @@ func chatSummaryHandler(database *sql.DB) http.HandlerFunc {
 			http.Error(w, "Failed to load chat summary.", http.StatusInternalServerError)
 			return
 		}
+		if strings.TrimSpace(title) != "" {
+			title, err = kritui_db.DecryptStorageText(r.Context(), "chats.title", strconv.FormatInt(chatID, 10), title)
+			if err != nil {
+				log.Printf("decrypt chat summary title: %v", err)
+				http.Error(w, "Failed to load chat summary.", http.StatusInternalServerError)
+				return
+			}
+		}
 		if strings.TrimSpace(title) == "" {
 			title = "New chat"
 		}
@@ -965,24 +973,13 @@ func renameChatHandler(database *sql.DB) http.HandlerFunc {
 			}
 		}
 
-		result, err := database.ExecContext(r.Context(), `
-			UPDATE chats
-			SET title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-			WHERE id = ? AND user_id = ?
-		`, title, chatID, kritui_db.UserID(r.Context()))
-		if err != nil {
+		if err := kritui_db.RenameChat(r.Context(), database, chatID, title); err != nil {
+			if errors.Is(err, kritui_db.ErrChatNotFound) {
+				renderHistoryMutationError(w, r, http.StatusNotFound, "Chat not found.")
+				return
+			}
 			log.Printf("rename chat: %v", err)
 			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to rename chat.")
-			return
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			log.Printf("rename chat rows affected: %v", err)
-			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to rename chat.")
-			return
-		}
-		if affected == 0 {
-			renderHistoryMutationError(w, r, http.StatusNotFound, "Chat not found.")
 			return
 		}
 

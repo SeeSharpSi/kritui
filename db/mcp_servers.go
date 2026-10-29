@@ -26,7 +26,9 @@ var ErrMCPServerNotFound = errors.New("mcp server not found")
 
 // MCPServer is one configured MCP server entry, safe to render in the settings
 // page. AuthorizationConfigured reports secret presence without exposing the
-// secret; the token itself never appears on this type.
+// secret; the token itself never appears on this type. Name and URL are both
+// encrypted at rest because either can reveal deployment details or embedded
+// secrets.
 type MCPServer struct {
 	ID                      string
 	Name                    string
@@ -73,6 +75,26 @@ type mcpServerStore interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
+// encryptMCPServerText encrypts one validated server field. The server ID is
+// the AAD row binding; the owning account is bound from ctx.
+func encryptMCPServerText(ctx context.Context, scope, rowID, value string) (string, error) {
+	encrypted, err := EncryptStorageText(ctx, scope, rowID, value)
+	if err != nil {
+		return "", fmt.Errorf("encrypt %s: %w", scope, err)
+	}
+	return encrypted, nil
+}
+
+// decryptMCPServerText decrypts one server field and trims only the recovered
+// plaintext, never the stored envelope.
+func decryptMCPServerText(ctx context.Context, scope, rowID, value string) (string, error) {
+	decrypted, err := DecryptStorageText(ctx, scope, rowID, value)
+	if err != nil {
+		return "", fmt.Errorf("decrypt %s: %w", scope, err)
+	}
+	return strings.TrimSpace(decrypted), nil
+}
+
 // GetMCPServers returns configured servers in stored order, safe for frontend
 // rendering.
 func GetMCPServers(ctx context.Context, db rowQueryer) ([]MCPServer, error) {
@@ -97,8 +119,16 @@ func GetMCPServers(ctx context.Context, db rowQueryer) ([]MCPServer, error) {
 		if err := rows.Scan(&value.ID, &value.Name, &value.URL, &value.AuthorizationConfigured); err != nil {
 			return nil, fmt.Errorf("scan mcp server: %w", err)
 		}
-		value.Name = strings.TrimSpace(value.Name)
-		value.URL = strings.TrimSpace(value.URL)
+		decryptedName, err := decryptMCPServerText(ctx, "mcp_servers.name", value.ID, value.Name)
+		if err != nil {
+			return nil, fmt.Errorf("get mcp servers: %w", err)
+		}
+		decryptedURL, err := decryptMCPServerText(ctx, "mcp_servers.url", value.ID, value.URL)
+		if err != nil {
+			return nil, fmt.Errorf("get mcp servers: %w", err)
+		}
+		value.Name = decryptedName
+		value.URL = decryptedURL
 		values = append(values, value)
 	}
 	if err := rows.Err(); err != nil {
@@ -131,10 +161,22 @@ func GetMCPServerConfigs(ctx context.Context, db rowQueryer, capabilities []stri
 		if err := rows.Scan(&config.ID, &config.Name, &config.URL, &token); err != nil {
 			return nil, fmt.Errorf("scan mcp server config: %w", err)
 		}
-		config.Name = strings.TrimSpace(config.Name)
-		config.URL = strings.TrimSpace(config.URL)
+		decryptedName, err := decryptMCPServerText(ctx, "mcp_servers.name", config.ID, config.Name)
+		if err != nil {
+			return nil, fmt.Errorf("get mcp server configs: %w", err)
+		}
+		decryptedURL, err := decryptMCPServerText(ctx, "mcp_servers.url", config.ID, config.URL)
+		if err != nil {
+			return nil, fmt.Errorf("get mcp server configs: %w", err)
+		}
+		config.Name = decryptedName
+		config.URL = decryptedURL
 		if token.Valid {
-			config.AuthorizationToken = strings.TrimSpace(token.String)
+			decryptedToken, err := decryptMCPServerText(ctx, "mcp_servers.authorization_token", config.ID, token.String)
+			if err != nil {
+				return nil, fmt.Errorf("get mcp server configs: %w", err)
+			}
+			config.AuthorizationToken = decryptedToken
 		}
 		byID[config.ID] = config
 	}
@@ -293,9 +335,10 @@ func validateMCPServerURL(id, value string) error {
 
 // setMCPServers replaces the stored collection inside the caller's
 // transaction. It never begins, commits, or rolls back. Tokens marked Keep are
-// copied from the rows being replaced, Replace stores the submitted value, and
-// Clear stores NULL. Stable capability names of removed servers are pruned
-// from default_tools and chat_tools; built-in names are never touched.
+// decrypted from the rows being replaced and re-encrypted with a fresh nonce,
+// Replace stores the submitted value, and Clear stores NULL. Stable capability
+// names of removed servers are pruned from default_tools and chat_tools;
+// built-in names are never touched.
 func setMCPServers(ctx context.Context, db mcpServerStore, updates []MCPServerUpdate) error {
 	userID, err := requireUserID(ctx)
 	if err != nil {
@@ -315,20 +358,36 @@ func setMCPServers(ctx context.Context, db mcpServerStore, updates []MCPServerUp
 		return fmt.Errorf("clear mcp servers: %w", err)
 	}
 	for position, update := range normalized {
+		encryptedName, err := encryptMCPServerText(ctx, "mcp_servers.name", update.Server.ID, update.Server.Name)
+		if err != nil {
+			return fmt.Errorf("set mcp servers: %w", err)
+		}
+		encryptedURL, err := encryptMCPServerText(ctx, "mcp_servers.url", update.Server.ID, update.Server.URL)
+		if err != nil {
+			return fmt.Errorf("set mcp servers: %w", err)
+		}
 		var token any
 		switch update.AuthorizationChange {
 		case MCPKeepAuthorization:
 			if value, ok := existing[update.Server.ID]; ok && strings.TrimSpace(value) != "" {
-				token = value
+				encryptedToken, err := encryptMCPServerText(ctx, "mcp_servers.authorization_token", update.Server.ID, strings.TrimSpace(value))
+				if err != nil {
+					return fmt.Errorf("set mcp servers: %w", err)
+				}
+				token = encryptedToken
 			}
 		case MCPReplaceAuthorization:
-			token = update.AuthorizationValue
+			encryptedToken, err := encryptMCPServerText(ctx, "mcp_servers.authorization_token", update.Server.ID, update.AuthorizationValue)
+			if err != nil {
+				return fmt.Errorf("set mcp servers: %w", err)
+			}
+			token = encryptedToken
 		case MCPClearAuthorization:
 		}
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO mcp_servers (user_id, id, position, name, url, authorization_token)
 			VALUES (?, ?, ?, ?, ?, ?)
-		`, userID, update.Server.ID, position, update.Server.Name, update.Server.URL, token); err != nil {
+		`, userID, update.Server.ID, position, encryptedName, encryptedURL, token); err != nil {
 			return fmt.Errorf("store mcp server %q: %w", update.Server.ID, err)
 		}
 	}
@@ -356,9 +415,10 @@ func setMCPServers(ctx context.Context, db mcpServerStore, updates []MCPServerUp
 	return nil
 }
 
-// loadMCPServerTokens maps every stored server ID to its raw token value,
-// with blank and NULL tokens represented by an empty string so removed
-// servers can be detected regardless of their stored secret.
+// loadMCPServerTokens maps every stored server ID to its decrypted plaintext
+// token value, with blank and NULL tokens represented by an empty string so
+// removed servers can be detected regardless of their stored secret. A
+// corrupted token fails the load rather than being preserved or exposed.
 func loadMCPServerTokens(ctx context.Context, db mcpServerStore) (map[string]string, error) {
 	userID, err := requireUserID(ctx)
 	if err != nil {
@@ -377,7 +437,11 @@ func loadMCPServerTokens(ctx context.Context, db mcpServerStore) (map[string]str
 			return nil, fmt.Errorf("scan existing mcp server: %w", err)
 		}
 		if token.Valid {
-			existing[id] = token.String
+			decrypted, err := decryptMCPServerText(ctx, "mcp_servers.authorization_token", id, token.String)
+			if err != nil {
+				return nil, fmt.Errorf("load existing mcp server %q token: %w", id, err)
+			}
+			existing[id] = strings.TrimSpace(decrypted)
 		} else {
 			existing[id] = ""
 		}

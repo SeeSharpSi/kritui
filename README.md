@@ -4,10 +4,25 @@ Server-rendered, multiuser LLM chat UI built with Go, templ, htmx, and SQLite. I
 
 ## Run
 
-Requires Go 1.25.3. Environment LLM values are optional. Copy the example environment file and load it:
+Requires Go 1.25.3. Environment LLM values are optional. Copy the example environment file and generate the required database encryption key once:
 
 ```sh
 cp .env.example .env
+chmod 600 .env
+openssl rand -base64 32
+```
+
+Paste the generated value after `KRITUI_ENCRYPTION_KEY=` in `.env`, replacing the empty sample assignment. Alternatively, generate and append a fresh assignment instead of pasting; the later value overrides the earlier blank one:
+
+```sh
+printf 'KRITUI_ENCRYPTION_KEY=%s\n' "$(openssl rand -base64 32)" >> .env
+```
+
+Use only one of these methods. The key must be standard base64 encoding of exactly 32 random bytes. Kritui validates it before opening the database. Store it outside the database in a `0600` environment file or secret manager, and back it up separately. Losing the key makes encrypted data unrecoverable, and changing it does not rekey existing data.
+
+Load the environment:
+
+```sh
 set -a; . ./.env; set +a
 export KRITUI_SECURE_COOKIES=false
 ```
@@ -35,6 +50,16 @@ On an existing database, legacy data stays attached to the Skrittle account (ID 
 
 PWA assets remain public before login, and the manifest keeps its identity, start URL, and scope at `/`. Login and signup pages share the manifest and mobile web-app metadata, and installed apps keep their session across relaunches. The service worker does not cache private pages or API responses. Mobile installation requires HTTPS, except for the browser localhost exception.
 
+## Data encryption
+
+Kritui requires `KRITUI_ENCRYPTION_KEY` at startup and encrypts stored content with AES-256-GCM from the Go standard library. Encrypted fields include chat titles, message text for every role, tool arguments and results, provider output, prompt append definitions and snapshots, attachment bytes and filenames, pending and receipted inbox text and attachments, stored LLM keys and endpoints, ntfy credentials, endpoints, and topics, and MCP bearer tokens and URLs. IDs, ownership, usernames, password and session hashes, timestamps, model and tool names, and attachment types and dimensions remain plaintext metadata.
+
+Existing plaintext fields are migrated atomically to encrypted envelopes when the app starts; text values use the `enc:v1:` prefix, while byte fields use a binary envelope. Each value uses a fresh 12-byte nonce, and authenticated data binds the field, owner, and stable row ID. A missing, wrong, or malformed key is rejected before the app mutates data, and the server does not fall back to plaintext. `secure_delete` and `VACUUM` remove logically freed plaintext pages from the database file.
+
+This protects database files and backups if they are stolen. It does not protect a running server: the server, configured LLM provider, and any tool that receives content can read plaintext. Process memory and crash dumps can contain plaintext and the encryption key. AES-GCM detects payload tampering, but it does not detect whole-database rollback or metadata tampering. Physical erasure is not guaranteed on SSDs, copy-on-write filesystems, backups, or snapshots; use full-disk encryption and manage old copies separately. Keep `SHOW_TOOLCALLS=false` in production because tool and model logs can contain plaintext. Use HTTPS and restrict access to the key and environment file.
+
+Public share links use their separate existing client-side encryption scheme; the database key does not affect them. There is no key rotation UI or tool yet. Use the same key for every restart and deployment, and do not treat an environment change as rekeying.
+
 ## Attachments
 
 Use the chat's plus button to attach PNG, JPEG, WebP, or PDF files. A message can contain up to four attachments, with a limit of 20 MiB per file and 80 MiB total. Text is optional when attaching files. Remove a selected file with its preview's remove button before sending.
@@ -43,7 +68,7 @@ PDFs appear as filename cards in the composer and chat history. Composer cards a
 
 ## Docker
 
-Configure the LLM connection in `.env`, then build and run the image:
+Configure the LLM connection and encryption key in `.env`, then build and run the image:
 
 ```bash
 docker build --tag kritui:latest .
@@ -58,7 +83,7 @@ docker run --rm \
 
 Keep `--env KRITUI_SECURE_COOKIES=false` for direct `http://localhost:8080`; omit it, or set `KRITUI_SECURE_COOKIES=true` in `.env`, when the app is served through HTTPS or a TLS-terminating reverse proxy. Open the app and create an account. On an existing database, sign up as Skrittle once to claim the legacy data as described above.
 
-The named volume persists the SQLite database. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`. It also includes isolated Git runtime files required by the optional Git tool capability.
+The named volume persists the SQLite database. It does not contain `KRITUI_ENCRYPTION_KEY`; keep the key in `.env` or your secret manager and back it up separately. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`. It also includes isolated Git runtime files required by the optional Git tool capability.
 
 ## Container Publishing
 
@@ -96,7 +121,7 @@ docker builder prune --filter "until=24h"
 
 ## Development
 
-With [Air](https://github.com/air-verse/air) installed, copy `.env.example` to `.env` and run:
+With [Air](https://github.com/air-verse/air) installed, copy `.env.example` to `.env`, set `KRITUI_ENCRYPTION_KEY`, and run:
 
 ```sh
 air

@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -74,9 +75,10 @@ async function saveScreenshot(env, label) {
   return file;
 }
 
-async function runIsolatedCase(t, { name, browser, build, run }) {
+async function runIsolatedCase(t, { name, browser, build, run, appEnv = {} }) {
   return serialized(async () => {
     const provider = new FakeProvider();
+    const encryptionKey = crypto.randomBytes(32).toString('base64');
     let appEnvironment;
     let context;
     let page;
@@ -87,7 +89,12 @@ async function runIsolatedCase(t, { name, browser, build, run }) {
 
     try {
       await provider.start();
-      appEnvironment = new TestEnvironment({ build, provider, runDir });
+      appEnvironment = new TestEnvironment({
+        build,
+        provider,
+        runDir,
+        appEnv: { KRITUI_ENCRYPTION_KEY: encryptionKey, ...appEnv },
+      });
       await appEnvironment.startApp();
       context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
       await context.tracing.start({ screenshots: true, snapshots: true, sources: true });

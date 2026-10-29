@@ -98,13 +98,17 @@ func UpsertChat(ctx context.Context, db databaseExecutor, chatID int64, title st
 	if err != nil {
 		return fmt.Errorf("upsert chat: %w", err)
 	}
+	storedTitle, err := sealChatTitle(ctx, chatID, title)
+	if err != nil {
+		return fmt.Errorf("upsert chat: %w", err)
+	}
 	return executeAtomically(ctx, db, func(executor databaseExecutor) error {
 		result, err := executor.ExecContext(ctx, `
 			INSERT INTO chats (id, user_id, title) VALUES (?, ?, ?)
 			ON CONFLICT (id) DO UPDATE SET
 				title = CASE WHEN chats.title = '' THEN excluded.title ELSE chats.title END
 			WHERE chats.user_id = excluded.user_id
-		`, chatID, userID, title)
+		`, chatID, userID, storedTitle)
 		if err != nil {
 			return fmt.Errorf("upsert chat: %w", err)
 		}
@@ -140,11 +144,31 @@ func SetChatPinned(ctx context.Context, db databaseExecutor, chatID int64, pinne
 	return nil
 }
 
-// UpdateChatTitleIfUnchanged replaces a title only when it still matches
-// expectedTitle. A concurrent rename or deletion reports false without an
-// error, and chat recency is left untouched.
+// UpdateChatTitleIfUnchanged replaces a title only when the decrypted stored
+// title still matches expectedTitle. The compare-and-swap uses the exact stored
+// ciphertext, so a concurrent rename wins and no timestamp changes.
 func UpdateChatTitleIfUnchanged(ctx context.Context, db databaseExecutor, chatID int64, expectedTitle, title string) (bool, error) {
 	userID, err := requireUserID(ctx)
+	if err != nil {
+		return false, fmt.Errorf("update chat title: %w", err)
+	}
+	var storedTitle string
+	if err := db.QueryRowContext(ctx, `
+		SELECT title FROM chats WHERE id = ? AND user_id = ?
+	`, chatID, userID).Scan(&storedTitle); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("update chat title: %w", err)
+	}
+	currentTitle, err := openChatTitle(ctx, chatID, storedTitle)
+	if err != nil {
+		return false, fmt.Errorf("update chat title: %w", err)
+	}
+	if currentTitle != expectedTitle {
+		return false, nil
+	}
+	nextTitle, err := sealChatTitle(ctx, chatID, title)
 	if err != nil {
 		return false, fmt.Errorf("update chat title: %w", err)
 	}
@@ -152,7 +176,7 @@ func UpdateChatTitleIfUnchanged(ctx context.Context, db databaseExecutor, chatID
 		UPDATE chats
 		SET title = ?
 		WHERE id = ? AND user_id = ? AND title = ?
-	`, title, chatID, userID, expectedTitle)
+	`, nextTitle, chatID, userID, storedTitle)
 	if err != nil {
 		return false, fmt.Errorf("update chat title: %w", err)
 	}
@@ -161,6 +185,35 @@ func UpdateChatTitleIfUnchanged(ctx context.Context, db databaseExecutor, chatID
 		return false, fmt.Errorf("update chat title rows affected: %w", err)
 	}
 	return affected > 0, nil
+}
+
+// RenameChat encrypts and stores a chat title, updates recency, and rejects
+// foreign or missing chats with ErrChatNotFound.
+func RenameChat(ctx context.Context, database *sql.DB, chatID int64, title string) error {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("rename chat: %w", err)
+	}
+	storedTitle, err := sealChatTitle(ctx, chatID, title)
+	if err != nil {
+		return fmt.Errorf("rename chat: %w", err)
+	}
+	result, err := database.ExecContext(ctx, `
+		UPDATE chats
+		SET title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		WHERE id = ? AND user_id = ?
+	`, storedTitle, chatID, userID)
+	if err != nil {
+		return fmt.Errorf("rename chat: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rename chat rows affected: %w", err)
+	}
+	if affected == 0 {
+		return ErrChatNotFound
+	}
+	return nil
 }
 
 func replaceChatOptions(ctx context.Context, db databaseExecutor, chatID int64, tools, appendIDs []string) error {
@@ -248,7 +301,7 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 	result, err := db.ExecContext(ctx, `
 		INSERT INTO messages (chat_id, position, role, content, model, total_tokens, cost, tool_call_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, chatID, position, message.Role, message.Content, model, totalTokens, cost, toolCallID)
+	`, chatID, position, message.Role, "", model, totalTokens, cost, toolCallID)
 	if err != nil {
 		return 0, fmt.Errorf("insert message: %w", err)
 	}
@@ -256,21 +309,69 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 	if err != nil {
 		return 0, fmt.Errorf("get inserted message ID: %w", err)
 	}
+	sealedContent, err := EncryptStorageText(ctx, storageScopeMessageContent, messageStorageRowID(id), message.Content)
+	if err != nil {
+		return 0, fmt.Errorf("encrypt message content: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE messages SET content = ? WHERE id = ?`, sealedContent, id); err != nil {
+		return 0, fmt.Errorf("store message content: %w", err)
+	}
+
+	toolCallArguments := make([]string, len(message.ToolCalls))
+	for callPosition, call := range message.ToolCalls {
+		arguments, err := EncryptStorageText(ctx, storageScopeToolCallArguments, messageChildStorageRowID(id, callPosition), call.Function.Arguments)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt tool call %d for message %d: %w", callPosition, id, err)
+		}
+		toolCallArguments[callPosition] = arguments
+	}
+	promptAppendTexts := make([]string, len(message.PromptAppendTexts))
+	for appendPosition, text := range message.PromptAppendTexts {
+		sealed, err := EncryptStorageText(ctx, storageScopePromptAppendText, messageChildStorageRowID(id, appendPosition), text)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt prompt append %d for message %d: %w", appendPosition, id, err)
+		}
+		promptAppendTexts[appendPosition] = sealed
+	}
+	attachmentFilenames := make([]string, len(message.Attachments))
+	attachmentData := make([][]byte, len(message.Attachments))
+	for attachmentPosition, attachment := range message.Attachments {
+		rowID := messageChildStorageRowID(id, attachmentPosition)
+		filename, err := EncryptStorageText(ctx, storageScopeAttachmentFilename, rowID, attachment.Filename)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt attachment filename %d for message %d: %w", attachmentPosition, id, err)
+		}
+		data, err := EncryptStorageBytes(ctx, storageScopeAttachmentData, rowID, attachment.Data)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt attachment data %d for message %d: %w", attachmentPosition, id, err)
+		}
+		attachmentFilenames[attachmentPosition] = filename
+		attachmentData[attachmentPosition] = data
+	}
+	providerOutputs := message.ProviderMetadata.ResponsesOutput()
+	providerPayloads := make([]string, len(providerOutputs))
+	for outputPosition, output := range providerOutputs {
+		payload, err := sealProviderOutput(ctx, id, outputPosition, output)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt provider output %d for message %d: %w", outputPosition, id, err)
+		}
+		providerPayloads[outputPosition] = payload
+	}
 
 	for callPosition, call := range message.ToolCalls {
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO message_tool_calls
 				(message_id, message_role, position, call_id, call_type, function_name, arguments)
 			VALUES (?, 'assistant', ?, ?, ?, ?, ?)
-		`, id, callPosition, call.ID, call.Type, call.Function.Name, call.Function.Arguments); err != nil {
+		`, id, callPosition, call.ID, call.Type, call.Function.Name, toolCallArguments[callPosition]); err != nil {
 			return 0, fmt.Errorf("store tool call %d for message %d: %w", callPosition, id, err)
 		}
 	}
-	for appendPosition, text := range message.PromptAppendTexts {
+	for appendPosition := range message.PromptAppendTexts {
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO message_prompt_appends (message_id, message_role, position, text)
 			VALUES (?, 'user', ?, ?)
-		`, id, appendPosition, text); err != nil {
+		`, id, appendPosition, promptAppendTexts[appendPosition]); err != nil {
 			return 0, fmt.Errorf("store prompt append %d for message %d: %w", appendPosition, id, err)
 		}
 	}
@@ -279,15 +380,15 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 			INSERT INTO message_user_images
 				(message_id, message_role, position, filename, media_type, width, height, data)
 			VALUES (?, 'user', ?, ?, ?, ?, ?, ?)
-		`, id, attachmentPosition, attachment.Filename, attachment.MediaType, attachment.Width, attachment.Height, attachment.Data); err != nil {
+		`, id, attachmentPosition, attachmentFilenames[attachmentPosition], attachment.MediaType, attachment.Width, attachment.Height, attachmentData[attachmentPosition]); err != nil {
 			return 0, fmt.Errorf("store attachment %d for message %d: %w", attachmentPosition, id, err)
 		}
 	}
-	for outputPosition, output := range message.ProviderMetadata.ResponsesOutput() {
+	for outputPosition := range providerPayloads {
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO message_provider_outputs (message_id, message_role, position, payload)
 			VALUES (?, 'assistant', ?, ?)
-		`, id, outputPosition, string(output)); err != nil {
+		`, id, outputPosition, providerPayloads[outputPosition]); err != nil {
 			return 0, fmt.Errorf("store provider output %d for message %d: %w", outputPosition, id, err)
 		}
 	}
@@ -309,6 +410,18 @@ func ReplaceUserMessage(ctx context.Context, db databaseExecutor, chatID, messag
 	userID, err := requireUserID(ctx)
 	if err != nil {
 		return fmt.Errorf("replace user message: %w", err)
+	}
+	sealedContent, err := EncryptStorageText(ctx, storageScopeMessageContent, messageStorageRowID(messageID), message.Content)
+	if err != nil {
+		return fmt.Errorf("replace user message content: %w", err)
+	}
+	sealedAppends := make([]string, len(message.PromptAppendTexts))
+	for appendPosition, text := range message.PromptAppendTexts {
+		sealed, err := EncryptStorageText(ctx, storageScopePromptAppendText, messageChildStorageRowID(messageID, appendPosition), text)
+		if err != nil {
+			return fmt.Errorf("replace user message prompt append %d: %w", appendPosition, err)
+		}
+		sealedAppends[appendPosition] = sealed
 	}
 
 	return executeAtomically(ctx, db, func(executor databaseExecutor) error {
@@ -344,17 +457,17 @@ func ReplaceUserMessage(ctx context.Context, db databaseExecutor, chatID, messag
 		if _, err := executor.ExecContext(ctx, `DELETE FROM messages WHERE chat_id = ? AND position > ?`, chatID, position); err != nil {
 			return fmt.Errorf("truncate messages after edit: %w", err)
 		}
-		if _, err := executor.ExecContext(ctx, `UPDATE messages SET content = ? WHERE id = ?`, message.Content, messageID); err != nil {
+		if _, err := executor.ExecContext(ctx, `UPDATE messages SET content = ? WHERE id = ?`, sealedContent, messageID); err != nil {
 			return fmt.Errorf("replace edited message: %w", err)
 		}
 		if _, err := executor.ExecContext(ctx, `DELETE FROM message_prompt_appends WHERE message_id = ?`, messageID); err != nil {
 			return fmt.Errorf("clear edited message prompt appends: %w", err)
 		}
-		for position, text := range message.PromptAppendTexts {
+		for position := range message.PromptAppendTexts {
 			if _, err := executor.ExecContext(ctx, `
 				INSERT INTO message_prompt_appends (message_id, message_role, position, text)
 				VALUES (?, 'user', ?, ?)
-			`, messageID, position, text); err != nil {
+			`, messageID, position, sealedAppends[position]); err != nil {
 				return fmt.Errorf("store edited message prompt append %d: %w", position, err)
 			}
 		}
@@ -391,6 +504,11 @@ func UndoLatestTurn(ctx context.Context, db *sql.DB, chatID int64) (UndoResult, 
 		}
 		return UndoResult{}, fmt.Errorf("get message to undo: %w", err)
 	}
+	decryptedContent, err := DecryptStorageText(ctx, storageScopeMessageContent, messageStorageRowID(message.ID), message.Content)
+	if err != nil {
+		return UndoResult{}, fmt.Errorf("decrypt message to undo: %w", err)
+	}
+	message.Content = decryptedContent
 
 	var sequence int
 	if err := tx.QueryRowContext(ctx, `

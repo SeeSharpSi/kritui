@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"seesharpsi/kritui/llm"
@@ -12,6 +13,46 @@ import (
 )
 
 const MaxConfigurableToolRounds = 100
+
+// storageRowID returns the stable AAD row identifier for one account-scoped
+// settings row. The owner ID itself is authenticated separately by the storage
+// helpers from the context.
+func storageRowID(userID int64) string {
+	return strconv.FormatInt(userID, 10)
+}
+
+// encryptSettingText encrypts one settings field after the caller has validated
+// its plaintext form.
+func encryptSettingText(ctx context.Context, scope string, userID int64, value string) (string, error) {
+	encrypted, err := EncryptStorageText(ctx, scope, storageRowID(userID), value)
+	if err != nil {
+		return "", fmt.Errorf("encrypt %s: %w", scope, err)
+	}
+	return encrypted, nil
+}
+
+// decryptSettingText decrypts one settings field. It never trims ciphertext;
+// callers may trim the returned plaintext to preserve legacy presentation.
+func decryptSettingText(ctx context.Context, scope string, userID int64, value string) (string, error) {
+	decrypted, err := DecryptStorageText(ctx, scope, storageRowID(userID), value)
+	if err != nil {
+		return "", fmt.Errorf("decrypt %s: %w", scope, err)
+	}
+	return decrypted, nil
+}
+
+// decryptNullableSettingText decrypts a nullable settings column, treating NULL
+// as absent and trimming only the recovered plaintext.
+func decryptNullableSettingText(ctx context.Context, scope string, userID int64, value sql.NullString) (string, error) {
+	if !value.Valid {
+		return "", nil
+	}
+	decrypted, err := decryptSettingText(ctx, scope, userID, value.String)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(decrypted), nil
+}
 
 // settingWriter is satisfied by both *sql.DB and *sql.Tx so setting writes can
 // run inside a shared transaction.
@@ -362,9 +403,17 @@ func GetNtfySettings(ctx context.Context, db *sql.DB) (NtfySettings, error) {
 	`, userID).Scan(&endpoint, &topic, &apiKeyConfigured); err != nil {
 		return NtfySettings{}, fmt.Errorf("get ntfy settings: %w", err)
 	}
+	decryptedEndpoint, err := decryptNullableSettingText(ctx, "settings.ntfy_endpoint", userID, endpoint)
+	if err != nil {
+		return NtfySettings{}, fmt.Errorf("get ntfy settings: %w", err)
+	}
+	decryptedTopic, err := decryptNullableSettingText(ctx, "settings.ntfy_topic", userID, topic)
+	if err != nil {
+		return NtfySettings{}, fmt.Errorf("get ntfy settings: %w", err)
+	}
 	return NtfySettings{
-		Endpoint:         nullSettingString(endpoint),
-		Topic:            nullSettingString(topic),
+		Endpoint:         decryptedEndpoint,
+		Topic:            decryptedTopic,
 		APIKeyConfigured: apiKeyConfigured,
 	}, nil
 }
@@ -395,10 +444,22 @@ func getNtfyPublishConfig(ctx context.Context, db settingReader) (NtfyPublishCon
 	`, userID).Scan(&endpoint, &topic, &apiKey); err != nil {
 		return NtfyPublishConfig{}, err
 	}
+	decryptedEndpoint, err := decryptNullableSettingText(ctx, "settings.ntfy_endpoint", userID, endpoint)
+	if err != nil {
+		return NtfyPublishConfig{}, err
+	}
+	decryptedTopic, err := decryptNullableSettingText(ctx, "settings.ntfy_topic", userID, topic)
+	if err != nil {
+		return NtfyPublishConfig{}, err
+	}
+	decryptedAPIKey, err := decryptNullableSettingText(ctx, "settings.ntfy_api_key", userID, apiKey)
+	if err != nil {
+		return NtfyPublishConfig{}, err
+	}
 	return NtfyPublishConfig{
-		Endpoint: nullSettingString(endpoint),
-		Topic:    nullSettingString(topic),
-		APIKey:   nullSettingString(apiKey),
+		Endpoint: decryptedEndpoint,
+		Topic:    decryptedTopic,
+		APIKey:   decryptedAPIKey,
 	}, nil
 }
 
@@ -446,11 +507,19 @@ func setNtfySettings(ctx context.Context, db settingWriter, update NtfySettingsU
 			return fmt.Errorf("clear ntfy settings: %w", err)
 		}
 	} else {
+		encryptedEndpoint, err := encryptSettingText(ctx, "settings.ntfy_endpoint", userID, endpoint)
+		if err != nil {
+			return fmt.Errorf("set ntfy settings: %w", err)
+		}
+		encryptedTopic, err := encryptSettingText(ctx, "settings.ntfy_topic", userID, topic)
+		if err != nil {
+			return fmt.Errorf("set ntfy settings: %w", err)
+		}
 		if _, err := db.ExecContext(ctx, `
 			UPDATE settings
 			SET ntfy_endpoint = ?, ntfy_topic = ?
 			WHERE id = ?
-		`, endpoint, topic, userID); err != nil {
+		`, encryptedEndpoint, encryptedTopic, userID); err != nil {
 			return fmt.Errorf("set ntfy destination: %w", err)
 		}
 
@@ -460,7 +529,11 @@ func setNtfySettings(ctx context.Context, db settingWriter, update NtfySettingsU
 			apiKey := strings.TrimSpace(update.APIKeyValue)
 			var value any
 			if apiKey != "" {
-				value = apiKey
+				encryptedKey, err := encryptSettingText(ctx, "settings.ntfy_api_key", userID, apiKey)
+				if err != nil {
+					return fmt.Errorf("set ntfy API key: %w", err)
+				}
+				value = encryptedKey
 			}
 			if _, err := db.ExecContext(ctx, `UPDATE settings SET ntfy_api_key = ? WHERE id = ?`, value, userID); err != nil {
 				return fmt.Errorf("set ntfy API key: %w", err)
@@ -492,8 +565,12 @@ func GetLLMSettings(ctx context.Context, db *sql.DB) (LLMSettings, error) {
 	`, userID).Scan(&endpoint, &apiKeyConfigured); err != nil {
 		return LLMSettings{}, fmt.Errorf("get llm settings: %w", err)
 	}
+	decryptedEndpoint, err := decryptNullableSettingText(ctx, "settings.llm_endpoint", userID, endpoint)
+	if err != nil {
+		return LLMSettings{}, fmt.Errorf("get llm settings: %w", err)
+	}
 	return LLMSettings{
-		Endpoint:         nullSettingString(endpoint),
+		Endpoint:         decryptedEndpoint,
 		APIKeyConfigured: apiKeyConfigured,
 	}, nil
 }
@@ -520,9 +597,17 @@ func getLLMConfig(ctx context.Context, db settingReader) (LLMConfig, error) {
 	`, userID).Scan(&endpoint, &apiKey); err != nil {
 		return LLMConfig{}, err
 	}
+	decryptedEndpoint, err := decryptNullableSettingText(ctx, "settings.llm_endpoint", userID, endpoint)
+	if err != nil {
+		return LLMConfig{}, err
+	}
+	decryptedAPIKey, err := decryptNullableSettingText(ctx, "settings.llm_api_key", userID, apiKey)
+	if err != nil {
+		return LLMConfig{}, err
+	}
 	return LLMConfig{
-		Endpoint: nullSettingString(endpoint),
-		APIKey:   nullSettingString(apiKey),
+		Endpoint: decryptedEndpoint,
+		APIKey:   decryptedAPIKey,
 	}, nil
 }
 
@@ -586,7 +671,11 @@ func setLLMSettings(ctx context.Context, db settingWriter, update LLMSettingsUpd
 
 	var endpointValue any
 	if endpoint != "" {
-		endpointValue = endpoint
+		encryptedEndpoint, err := encryptSettingText(ctx, "settings.llm_endpoint", userID, endpoint)
+		if err != nil {
+			return fmt.Errorf("set llm endpoint: %w", err)
+		}
+		endpointValue = encryptedEndpoint
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_endpoint = ? WHERE id = ?`, endpointValue, userID); err != nil {
 		return fmt.Errorf("set llm endpoint: %w", err)
@@ -598,7 +687,11 @@ func setLLMSettings(ctx context.Context, db settingWriter, update LLMSettingsUpd
 		apiKey := strings.TrimSpace(update.APIKeyValue)
 		var value any
 		if apiKey != "" {
-			value = apiKey
+			encryptedKey, err := encryptSettingText(ctx, "settings.llm_api_key", userID, apiKey)
+			if err != nil {
+				return fmt.Errorf("set llm API key: %w", err)
+			}
+			value = encryptedKey
 		}
 		if _, err := db.ExecContext(ctx, `UPDATE settings SET llm_api_key = ? WHERE id = ?`, value, userID); err != nil {
 			return fmt.Errorf("set llm API key: %w", err)

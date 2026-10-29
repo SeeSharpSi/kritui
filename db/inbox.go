@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"seesharpsi/kritui/llm"
@@ -18,7 +19,20 @@ const (
 	maxPendingInboxItems = 32
 	maxInboxModelBytes   = 512
 	maxInboxIDBytes      = 512
+
+	inboxContentScope            = "inbox_items.content"
+	inboxAppendTextScope         = "inbox_prompt_append_texts.text"
+	inboxAttachmentFilenameScope = "inbox_attachments.filename"
+	inboxAttachmentDataScope     = "inbox_attachments.data"
 )
+
+func inboxStorageRowID(inboxID int64) string {
+	return strconv.FormatInt(inboxID, 10)
+}
+
+func inboxChildStorageRowID(inboxID int64, position int) string {
+	return fmt.Sprintf("%d:%d", inboxID, position)
+}
 
 var (
 	// ErrInboxFull means a chat already has the maximum number of pending
@@ -119,14 +133,25 @@ func EnqueuePrompt(ctx context.Context, db databaseExecutor, chatID int64, item 
 
 		inserted, err := executor.ExecContext(ctx, `
 			INSERT INTO inbox_items (chat_id, submission_id, delivery, model, status, content)
-			VALUES (?, ?, ?, ?, 'pending', ?)
-		`, chatID, prepared.SubmissionID, prepared.Delivery, prepared.Model, prepared.Message.Content)
+			VALUES (?, ?, ?, ?, 'pending', '')
+		`, chatID, prepared.SubmissionID, prepared.Delivery, prepared.Model)
 		if err != nil {
 			return fmt.Errorf("insert inbox item: %w", err)
 		}
 		id, err := inserted.LastInsertId()
 		if err != nil {
 			return fmt.Errorf("get inbox item ID: %w", err)
+		}
+		sealedContent, err := EncryptStorageText(ctx, inboxContentScope, inboxStorageRowID(id), prepared.Message.Content)
+		if err != nil {
+			return fmt.Errorf("encrypt inbox content: %w", err)
+		}
+		if _, err := executor.ExecContext(ctx, `
+			UPDATE inbox_items
+			SET content = ?
+			WHERE id = ?
+		`, sealedContent, id); err != nil {
+			return fmt.Errorf("store inbox content: %w", err)
 		}
 		if err := insertInboxChildren(ctx, executor, id, prepared); err != nil {
 			return err
@@ -678,14 +703,17 @@ func inboxItemBySubmission(ctx context.Context, db messageQueryer, chatID int64,
 		return InboxItem{}, false, err
 	}
 	item := InboxItem{}
-	var messageID sql.NullInt64
+	var (
+		messageID     sql.NullInt64
+		sealedContent string
+	)
 	err = db.QueryRowContext(ctx, `
 		SELECT items.id, items.submission_id, items.delivery, items.model, items.status, items.content, items.message_id
 		FROM inbox_items AS items
 		JOIN chats ON chats.id = items.chat_id
 		WHERE chats.user_id = ? AND items.chat_id = ? AND items.submission_id = ?
 	`, userID, chatID, submissionID).Scan(
-		&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.Status, &item.Message.Content, &messageID,
+		&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.Status, &sealedContent, &messageID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return InboxItem{}, false, nil
@@ -693,6 +721,11 @@ func inboxItemBySubmission(ctx context.Context, db messageQueryer, chatID int64,
 	if err != nil {
 		return InboxItem{}, false, fmt.Errorf("get inbox submission receipt: %w", err)
 	}
+	content, err := DecryptStorageText(ctx, inboxContentScope, inboxStorageRowID(item.ID), sealedContent)
+	if err != nil {
+		return InboxItem{}, false, fmt.Errorf("decrypt inbox submission receipt content: %w", err)
+	}
+	item.Message.Content = content
 	if messageID.Valid {
 		item.Message.ID = messageID.Int64
 	}
@@ -728,12 +761,18 @@ func queryInboxItems(ctx context.Context, db messageQueryer, chatID int64, statu
 	items := []InboxItem{}
 	for rows.Next() {
 		var (
-			item      InboxItem
-			messageID sql.NullInt64
+			item          InboxItem
+			messageID     sql.NullInt64
+			sealedContent string
 		)
-		if err := rows.Scan(&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.Status, &item.Message.Content, &messageID); err != nil {
+		if err := rows.Scan(&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.Status, &sealedContent, &messageID); err != nil {
 			return nil, fmt.Errorf("scan inbox item: %w", err)
 		}
+		content, err := DecryptStorageText(ctx, inboxContentScope, inboxStorageRowID(item.ID), sealedContent)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt inbox item %d content: %w", item.ID, err)
+		}
+		item.Message.Content = content
 		if messageID.Valid {
 			item.Message.ID = messageID.Int64
 		}
@@ -818,7 +857,7 @@ func loadInboxChildren(ctx context.Context, db messageQueryer, userID, chatID in
 	}
 
 	rows, err = db.QueryContext(ctx, `
-		SELECT child.inbox_id, child.text
+		SELECT child.inbox_id, child.position, child.text
 		FROM inbox_prompt_append_texts AS child
 		`+condition+`
 		ORDER BY child.inbox_id, child.position
@@ -827,11 +866,19 @@ func loadInboxChildren(ctx context.Context, db messageQueryer, userID, chatID in
 		return fmt.Errorf("get inbox prompt append texts: %w", err)
 	}
 	for rows.Next() {
-		var id int64
-		var text string
-		if err := rows.Scan(&id, &text); err != nil {
+		var (
+			id         int64
+			position   int
+			sealedText string
+		)
+		if err := rows.Scan(&id, &position, &sealedText); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan inbox prompt append text: %w", err)
+		}
+		text, err := DecryptStorageText(ctx, inboxAppendTextScope, inboxChildStorageRowID(id, position), sealedText)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("decrypt inbox prompt append text: %w", err)
 		}
 		items[indexes[id]].Message.PromptAppendTexts = append(items[indexes[id]].Message.PromptAppendTexts, text)
 	}
@@ -843,7 +890,7 @@ func loadInboxChildren(ctx context.Context, db messageQueryer, userID, chatID in
 	}
 
 	rows, err = db.QueryContext(ctx, `
-		SELECT child.inbox_id, child.filename, child.media_type, child.width, child.height, child.data
+		SELECT child.inbox_id, child.position, child.filename, child.media_type, child.width, child.height, child.data
 		FROM inbox_attachments AS child
 		`+condition+`
 		ORDER BY child.inbox_id, child.position
@@ -853,17 +900,36 @@ func loadInboxChildren(ctx context.Context, db messageQueryer, userID, chatID in
 	}
 	for rows.Next() {
 		var (
-			id         int64
-			attachment llm.UserAttachment
-			width      int
-			height     int
+			id             int64
+			position       int
+			sealedFilename string
+			mediaType      string
+			width          int
+			height         int
+			sealedData     []byte
 		)
-		if err := rows.Scan(&id, &attachment.Filename, &attachment.MediaType, &width, &height, &attachment.Data); err != nil {
+		if err := rows.Scan(&id, &position, &sealedFilename, &mediaType, &width, &height, &sealedData); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan inbox attachment: %w", err)
 		}
-		attachment.Width, attachment.Height = width, height
-		attachment.Data = append([]byte(nil), attachment.Data...)
+		rowID := inboxChildStorageRowID(id, position)
+		filename, err := DecryptStorageText(ctx, inboxAttachmentFilenameScope, rowID, sealedFilename)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("decrypt inbox attachment filename: %w", err)
+		}
+		data, err := DecryptStorageBytes(ctx, inboxAttachmentDataScope, rowID, sealedData)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("decrypt inbox attachment data: %w", err)
+		}
+		attachment := llm.UserAttachment{
+			Filename:  filename,
+			MediaType: mediaType,
+			Width:     width,
+			Height:    height,
+			Data:      append([]byte(nil), data...),
+		}
 		items[indexes[id]].Message.Attachments = append(items[indexes[id]].Message.Attachments, attachment)
 	}
 	if err := rows.Close(); err != nil {
@@ -893,19 +959,32 @@ func insertInboxChildren(ctx context.Context, db databaseExecutor, inboxID int64
 		}
 	}
 	for position, text := range item.Message.PromptAppendTexts {
+		sealedText, err := EncryptStorageText(ctx, inboxAppendTextScope, inboxChildStorageRowID(inboxID, position), text)
+		if err != nil {
+			return fmt.Errorf("encrypt inbox prompt append text %d: %w", position, err)
+		}
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO inbox_prompt_append_texts (inbox_id, position, text)
 			VALUES (?, ?, ?)
-		`, inboxID, position, text); err != nil {
+		`, inboxID, position, sealedText); err != nil {
 			return fmt.Errorf("store inbox prompt append text %d: %w", position, err)
 		}
 	}
 	for position, attachment := range item.Message.Attachments {
+		rowID := inboxChildStorageRowID(inboxID, position)
+		sealedFilename, err := EncryptStorageText(ctx, inboxAttachmentFilenameScope, rowID, attachment.Filename)
+		if err != nil {
+			return fmt.Errorf("encrypt inbox attachment %d filename: %w", position, err)
+		}
+		sealedData, err := EncryptStorageBytes(ctx, inboxAttachmentDataScope, rowID, attachment.Data)
+		if err != nil {
+			return fmt.Errorf("encrypt inbox attachment %d data: %w", position, err)
+		}
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO inbox_attachments
 				(inbox_id, position, filename, media_type, width, height, data)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, inboxID, position, attachment.Filename, attachment.MediaType, attachment.Width, attachment.Height, attachment.Data); err != nil {
+		`, inboxID, position, sealedFilename, attachment.MediaType, attachment.Width, attachment.Height, sealedData); err != nil {
 			return fmt.Errorf("store inbox attachment %d: %w", position, err)
 		}
 	}

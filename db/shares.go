@@ -158,20 +158,25 @@ func GetShareSource(ctx context.Context, database *sql.DB, chatID, messageID int
 	if err != nil {
 		return ShareSource{}, fmt.Errorf("get share source: %w", err)
 	}
-	var source ShareSource
+	var (
+		source       ShareSource
+		priorID      sql.NullInt64
+		priorContent sql.NullString
+	)
 	err = database.QueryRowContext(ctx, `
-		SELECT chats.title, COALESCE((
-			SELECT prior.content
-			FROM messages AS prior
-			WHERE prior.chat_id = messages.chat_id
-				AND prior.role = 'user'
-				AND prior.undo_sequence IS NULL
-				AND prior.position < messages.position
-			ORDER BY prior.position DESC
-			LIMIT 1
-		), ''), messages.content
+		SELECT chats.title, prior.id, prior.content, messages.content
 		FROM messages
 		JOIN chats ON chats.id = messages.chat_id
+		LEFT JOIN messages AS prior ON prior.id = (
+			SELECT candidate.id
+			FROM messages AS candidate
+			WHERE candidate.chat_id = messages.chat_id
+				AND candidate.role = 'user'
+				AND candidate.undo_sequence IS NULL
+				AND candidate.position < messages.position
+			ORDER BY candidate.position DESC
+			LIMIT 1
+		)
 		WHERE chats.user_id = ?
 			AND messages.chat_id = ?
 			AND messages.id = ?
@@ -180,12 +185,29 @@ func GetShareSource(ctx context.Context, database *sql.DB, chatID, messageID int
 			AND NOT EXISTS (
 				SELECT 1 FROM message_tool_calls WHERE message_tool_calls.message_id = messages.id
 			)
-	`, userID, chatID, messageID).Scan(&source.Title, &source.UserContent, &source.Content)
+	`, userID, chatID, messageID).Scan(&source.Title, &priorID, &priorContent, &source.Content)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ShareSource{}, ErrMessageNotFound
 	}
 	if err != nil {
 		return ShareSource{}, fmt.Errorf("get share source: %w", err)
+	}
+	source.Title, err = openChatTitle(ctx, chatID, source.Title)
+	if err != nil {
+		return ShareSource{}, fmt.Errorf("get share source title: %w", err)
+	}
+	source.Content, err = DecryptStorageText(ctx, storageScopeMessageContent, messageStorageRowID(messageID), source.Content)
+	if err != nil {
+		return ShareSource{}, fmt.Errorf("get share source content: %w", err)
+	}
+	if priorID.Valid {
+		if !priorContent.Valid {
+			return ShareSource{}, fmt.Errorf("get share source: preceding user message %d has no content", priorID.Int64)
+		}
+		source.UserContent, err = DecryptStorageText(ctx, storageScopeMessageContent, messageStorageRowID(priorID.Int64), priorContent.String)
+		if err != nil {
+			return ShareSource{}, fmt.Errorf("get share source user content: %w", err)
+		}
 	}
 	return source, nil
 }

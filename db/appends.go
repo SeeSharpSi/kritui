@@ -90,6 +90,16 @@ func GetPromptAppends(ctx context.Context, db rowQueryer) ([]PromptAppend, error
 		if err := rows.Scan(&value.ID, &value.Name, &value.Text, &value.EnabledByDefault); err != nil {
 			return nil, fmt.Errorf("scan prompt append: %w", err)
 		}
+		decryptedName, err := DecryptStorageText(ctx, "prompt_appends.name", value.ID, value.Name)
+		if err != nil {
+			return nil, fmt.Errorf("get prompt appends: %w", err)
+		}
+		decryptedText, err := DecryptStorageText(ctx, "prompt_appends.text", value.ID, value.Text)
+		if err != nil {
+			return nil, fmt.Errorf("get prompt appends: %w", err)
+		}
+		value.Name = decryptedName
+		value.Text = decryptedText
 		values = append(values, value)
 	}
 	if err := rows.Err(); err != nil {
@@ -117,10 +127,18 @@ func setPromptAppends(ctx context.Context, db settingWriter, values []PromptAppe
 		return fmt.Errorf("clear prompt appends: %w", err)
 	}
 	for position, value := range normalized {
+		encryptedName, err := EncryptStorageText(ctx, "prompt_appends.name", value.ID, value.Name)
+		if err != nil {
+			return fmt.Errorf("set prompt appends: %w", err)
+		}
+		encryptedText, err := EncryptStorageText(ctx, "prompt_appends.text", value.ID, value.Text)
+		if err != nil {
+			return fmt.Errorf("set prompt appends: %w", err)
+		}
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO prompt_appends (user_id, id, position, name, text, enabled_by_default)
 			VALUES (?, ?, ?, ?, ?, ?)
-		`, userID, value.ID, position, value.Name, value.Text, value.EnabledByDefault); err != nil {
+		`, userID, value.ID, position, encryptedName, encryptedText, value.EnabledByDefault); err != nil {
 			return fmt.Errorf("store prompt append %q: %w", value.ID, err)
 		}
 	}
