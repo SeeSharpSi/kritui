@@ -412,10 +412,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=54`,
-		`/static/hx-sse.js?v=54`,
-		`/static/app.js?v=54`,
-		`/static/styles.css?v=54`,
+		`/static/htmx.min.js?v=55`,
+		`/static/hx-sse.js?v=55`,
+		`/static/app.js?v=55`,
+		`/static/styles.css?v=55`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -2075,7 +2075,8 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	requireContains(t, response.Body.String(),
+	body := response.Body.String()
+	requireContains(t, body,
 		`class="history-pin-form"`,
 		`class="history-action history-pin"`,
 		`aria-pressed="false"`,
@@ -2102,7 +2103,23 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		`id="history-error"`,
 		`hx-swap-oob="outerHTML"`,
 	)
-	requireNotContains(t, response.Body.String(), "<style>", `id="send-button"`)
+	deleteButton := elementMarkupContaining(t, body, `class="history-action history-delete"`, "<button", "</button>")
+	requireContains(t, deleteButton,
+		`hx-indicator="this"`,
+		`class="history-delete-spinner braille-spinner"`,
+		`aria-hidden="true"`,
+		`hx-delete="/chats/8?current=8"`,
+		`hx-target="#history-entries"`,
+		`hx-swap="innerHTML"`,
+		`hx-confirm="Permanently delete Project notes?"`,
+		`aria-label="Delete Project notes"`,
+	)
+	svgEnd := strings.Index(deleteButton, "</svg>")
+	spinnerStart := strings.Index(deleteButton, `class="history-delete-spinner`)
+	if svgEnd == -1 || spinnerStart == -1 || spinnerStart < svgEnd {
+		t.Errorf("delete spinner is not beside trash icon: %s", deleteButton)
+	}
+	requireNotContains(t, body, "<style>", `id="send-button"`)
 }
 
 func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
@@ -2136,6 +2153,17 @@ func TestHistoryHandlerPaginatesFromNewestToOldest(t *testing.T) {
 	}
 	body := response.Body.String()
 	requireContains(t, body, "Newest", "Middle", `before_id=2`, `before_pinned=0`, `class="history-loader"`, `hx-target="this"`, `hx-vals="js:{limit: Math.min(50, Math.max(1, Math.ceil((this.closest(&#39;.history-page&#39;)?.clientHeight ?? 0) / 80)))}`)
+	loader := elementMarkupContaining(t, body, `class="history-loader"`, "<li", "</li>")
+	requireContains(t, loader,
+		`hx-indicator="this"`,
+		`hx-trigger="intersect once root:#history-page threshold:0.1"`,
+		`hx-target="this"`,
+		`hx-swap="outerHTML"`,
+		`hx-sync="this:drop"`,
+		`before=2026-01-02T00%3A00%3A00.000Z`,
+		`before_id=2`,
+		`class="braille-spinner"`,
+	)
 	requireNotContains(t, body, "Oldest")
 
 	request = httptest.NewRequest(http.MethodGet, "/history?chat=8&limit=2&before=2026-01-02T00:00:00.000Z&before_id=2&before_pinned=0", nil)
@@ -6846,6 +6874,23 @@ func multipartImageRequestField(t *testing.T, field string, files []testUpload) 
 		t.Fatal(err)
 	}
 	return body.Bytes(), writer.FormDataContentType()
+}
+
+func elementMarkupContaining(t *testing.T, content, marker, openTag, closeTag string) string {
+	t.Helper()
+	markerIndex := strings.Index(content, marker)
+	if markerIndex == -1 {
+		t.Fatalf("content does not contain marker %q", marker)
+	}
+	start := strings.LastIndex(content[:markerIndex], openTag)
+	if start == -1 {
+		t.Fatalf("content does not contain %q before %q", openTag, marker)
+	}
+	closeOffset := strings.Index(content[markerIndex:], closeTag)
+	if closeOffset == -1 {
+		t.Fatalf("content does not contain %q after %q", closeTag, marker)
+	}
+	return content[start : markerIndex+closeOffset+len(closeTag)]
 }
 
 func requireContains(t *testing.T, content string, values ...string) {

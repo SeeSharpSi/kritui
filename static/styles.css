@@ -1002,6 +1002,11 @@ main {
                         min-height: 3rem;
                         justify-content: center;
                         color: var(--color-text-muted);
+
+                        .braille-spinner {
+                            font-size: 3em;
+                            line-height: 1;
+                        }
                     }
                 }
             }
@@ -1169,6 +1174,24 @@ main {
                 &:focus-visible {
                     background: var(--color-surface);
                     color: var(--color-text);
+                }
+            }
+
+            .history-delete {
+                .history-delete-spinner {
+                    display: none;
+                    font-size: 1rem;
+                    line-height: 1;
+                }
+
+                &.htmx-request {
+                    svg {
+                        display: none;
+                    }
+
+                    .history-delete-spinner {
+                        display: inline-grid;
+                    }
                 }
             }
 

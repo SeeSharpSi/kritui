@@ -429,6 +429,82 @@ async function renameHistoryWith(page, entry, title, method, label) {
   assert.equal(await entry.locator('.history-rename input').isVisible(), false, `${label} history editor must close`);
 }
 
+function deferredGate() {
+  let release;
+  const promise = new Promise((resolve) => {
+    release = resolve;
+  });
+  return {
+    promise,
+    release: () => release(),
+  };
+}
+
+function historyRowForChat(page, chatID) {
+  return page.locator(`#history-entries .history-entry:has(.history-title-link[href="/?chat=${chatID}"])`).first();
+}
+
+async function createPersistedChat(page, provider, prompt, reply) {
+  const { chatID } = await openChat(page);
+  const callIndex = provider.calls.length;
+  await submitPrompt(page, prompt);
+  await waitCompletionActive(page);
+  await provider.waitForCallCount(callIndex + 1);
+  await provider.release(callIndex, finalResponse(reply));
+  await waitCompletionDone(page);
+  await waitForHistoryText(page, reply);
+  return { chatID, prompt, reply };
+}
+
+async function historyDeleteState(row) {
+  return row.locator('.history-delete').evaluate((button) => {
+    const spinner = button.querySelector('.history-delete-spinner');
+    const svg = button.querySelector('svg');
+    const rect = button.getBoundingClientRect();
+    return {
+      pending: button.classList.contains('htmx-request'),
+      indicator: button.getAttribute('hx-indicator'),
+      spinnerCount: button.querySelectorAll('.history-delete-spinner').length,
+      spinnerAriaHidden: spinner?.getAttribute('aria-hidden') ?? '',
+      spinnerVisible: Boolean(spinner?.getClientRects().length),
+      spinnerAnimation: spinner ? getComputedStyle(spinner, '::before').animationName : '',
+      svgCount: button.querySelectorAll('svg').length,
+      svgVisible: Boolean(svg?.getClientRects().length),
+      svgDisplay: svg ? getComputedStyle(svg).display : '',
+      width: rect.width,
+      height: rect.height,
+    };
+  });
+}
+
+async function historyLoaderState(loader) {
+  return loader.evaluate((node) => {
+    const spinner = node.querySelector('.braille-spinner');
+    const loaderStyle = getComputedStyle(node);
+    const spinnerStyle = spinner ? getComputedStyle(spinner) : null;
+    return {
+      pending: node.classList.contains('htmx-request'),
+      indicator: node.getAttribute('hx-indicator'),
+      spinnerCount: node.querySelectorAll('.braille-spinner').length,
+      spinnerVisible: Boolean(spinner?.getClientRects().length),
+      loaderFontSize: Number.parseFloat(loaderStyle.fontSize),
+      spinnerFontSize: spinnerStyle ? Number.parseFloat(spinnerStyle.fontSize) : 0,
+      spinnerAnimation: spinner ? getComputedStyle(spinner, '::before').animationName : '',
+    };
+  });
+}
+
+async function assertGlobalRequestOverlayInactive(page, label) {
+  const overlay = page.locator('#request-overlay');
+  await waitUntil(async () => {
+    return overlay.evaluate((element) => !element.classList.contains('htmx-request')).catch(() => false);
+  }, {
+    timeout: 10000,
+    label: `${label}: global request overlay must not be active`,
+  });
+  assert.equal(await overlay.isVisible(), false, `${label}: global request overlay must stay hidden`);
+}
+
 async function openMessageEditor(page) {
   const message = page.locator('#message-history .message.user').first();
   await message.scrollIntoViewIfNeeded();
@@ -2423,6 +2499,280 @@ test('history rename checkmark and X align and submit by click and Enter at desk
 
         entry = await openHistoryEditor(page);
         await renameHistoryWith(page, entry, enterTitle, 'enter', `${viewport.label} Enter`);
+      }
+    },
+  });
+});
+
+test('history delete keeps its own pending spinner active without the global overlay until the gated DELETE completes', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'history delete pending indicator',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      await signup(page, username('historydel'), password);
+      const target = await createPersistedChat(page, provider, 'Delete this history chat', 'Deleted chat answer');
+      const survivor = await createPersistedChat(page, provider, 'Keep this history chat', 'Surviving chat answer');
+
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      const targetRow = historyRowForChat(page, target.chatID);
+      const survivorRow = historyRowForChat(page, survivor.chatID);
+      await targetRow.waitFor({ state: 'visible', timeout: 10000 });
+      await survivorRow.waitFor({ state: 'visible', timeout: 10000 });
+      await waitUntil(async () => {
+        return (await page.locator('#history-entries .history-entry').count()) === 2;
+      }, {
+        timeout: 10000,
+        label: 'two persisted chats in History',
+      });
+
+      const deleteButton = targetRow.locator('.history-delete');
+      assert.equal(await deleteButton.getAttribute('hx-indicator'), 'this', 'delete must use its own pending indicator');
+      const idleState = await historyDeleteState(targetRow);
+      assert.equal(idleState.pending, false, 'idle delete button must not carry htmx-request');
+      assert.equal(idleState.svgCount, 1, 'idle delete button must render one trash icon');
+      assert.equal(idleState.svgVisible, true, 'idle delete trash icon must be visible');
+      assert.equal(idleState.spinnerCount, 1, 'delete button must render one pending spinner');
+      assert.equal(idleState.spinnerAriaHidden, 'true', 'delete spinner must stay hidden from assistive technology');
+      assert.equal(idleState.spinnerVisible, false, 'idle delete pending spinner must stay hidden');
+      const idleMetrics = await elementMetrics(deleteButton);
+
+      const deleteRequests = [];
+      const trackRequest = (request) => {
+        const url = new URL(request.url());
+        if (request.method() === 'DELETE' && /^\/chats\/\d+$/.test(url.pathname)) {
+          deleteRequests.push(url.href);
+        }
+      };
+      page.on('request', trackRequest);
+
+      let cancelledMessage = '';
+      const cancelledDialog = new Promise((resolve, reject) => {
+        page.once('dialog', async (dialog) => {
+          try {
+            cancelledMessage = dialog.message();
+            await dialog.dismiss();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+      await deleteButton.click();
+      await cancelledDialog;
+      assert.match(cancelledMessage, /^Permanently delete .+\?$/, 'delete confirmation message changed');
+      await page.waitForTimeout(100);
+      assert.equal(deleteRequests.length, 0, 'cancelled confirmation must not issue DELETE');
+      const cancelledState = await historyDeleteState(targetRow);
+      assert.equal(cancelledState.pending, false, 'cancelled delete must not keep htmx-request');
+      assert.equal(cancelledState.svgVisible, true, 'cancelled delete must restore the trash icon');
+      assert.equal(cancelledState.spinnerVisible, false, 'cancelled delete must keep the pending spinner hidden');
+      await assertGlobalRequestOverlayInactive(page, 'cancelled history delete');
+
+      const deleteGate = deferredGate();
+      let routedDelete = false;
+      const deleteRoute = (url) => /^\/chats\/\d+$/.test(url.pathname);
+      const deleteRouteHandler = async (route) => {
+        if (route.request().method() !== 'DELETE') {
+          await route.continue();
+          return;
+        }
+        routedDelete = true;
+        await deleteGate.promise;
+        await route.continue();
+      };
+      await page.route(deleteRoute, deleteRouteHandler);
+      try {
+        let acceptedMessage = '';
+        const acceptedDialog = new Promise((resolve, reject) => {
+          page.once('dialog', async (dialog) => {
+            try {
+              acceptedMessage = dialog.message();
+              await dialog.accept();
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          });
+        });
+        await deleteButton.click();
+        await acceptedDialog;
+        assert.match(acceptedMessage, /^Permanently delete .+\?$/, 'accepted delete confirmation message changed');
+        await waitUntil(() => routedDelete, {
+          timeout: 10000,
+          label: 'gated history DELETE request to start',
+        });
+
+        const pendingState = await waitUntil(async () => {
+          const state = await historyDeleteState(targetRow);
+          return state.pending && state.spinnerVisible && state.spinnerAnimation === 'braille-spinner' &&
+            !state.svgVisible ? state : false;
+        }, {
+          timeout: 10000,
+          label: 'clicked history delete button to show its braille spinner',
+        });
+        assert.equal(pendingState.indicator, 'this', 'pending delete must retain its own indicator');
+        assert.equal(pendingState.spinnerCount, 1, 'pending delete must keep one spinner element');
+        assert.equal(pendingState.spinnerAriaHidden, 'true', 'pending delete spinner must stay aria-hidden');
+        assert.equal(pendingState.svgDisplay, 'none', 'pending delete must hide the trash SVG');
+        assertClose(pendingState.width, idleMetrics.width, 0.5, 'pending history delete width');
+        assertClose(pendingState.height, idleMetrics.height, 0.5, 'pending history delete height');
+
+        const survivorState = await historyDeleteState(survivorRow);
+        assert.equal(survivorState.pending, false, 'unclicked delete button must stay idle');
+        assert.equal(survivorState.svgVisible, true, 'unclicked delete button must keep its trash icon');
+        assert.equal(survivorState.spinnerVisible, false, 'unclicked delete button must keep its spinner hidden');
+        await assertGlobalRequestOverlayInactive(page, 'pending history delete');
+
+        const screenshot = await env.screenshot('history-delete-pending');
+        t.diagnostic(`History delete pending screenshot: ${screenshot}`);
+        console.log(`History delete pending screenshot: ${screenshot}`);
+
+        const responsePromise = page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return response.request().method() === 'DELETE' && /^\/chats\/\d+$/.test(url.pathname);
+        }, { timeout: 20000 });
+        deleteGate.release();
+        const response = await responsePromise;
+        const body = response.status() >= 400 ? await response.text().catch(() => '') : '';
+        assert.ok(
+          response.status() >= 200 && response.status() < 300,
+          `history DELETE returned ${response.status()}${body ? `: ${body}` : ''}`,
+        );
+
+        await waitUntil(async () => {
+          return (await historyRowForChat(page, target.chatID).count()) === 0 &&
+            (await historyRowForChat(page, survivor.chatID).count()) === 1;
+        }, {
+          timeout: 10000,
+          label: 'deleted history row to disappear while the survivor remains',
+        });
+        assert.equal(await page.locator('#history-page').isVisible(), true, 'History must remain open after delete');
+        await assertGlobalRequestOverlayInactive(page, 'completed history delete');
+      } finally {
+        deleteGate.release();
+        await page.unroute(deleteRoute, deleteRouteHandler).catch(() => {});
+        page.off('request', trackRequest);
+      }
+    },
+  });
+});
+
+test('history pagination shows its cursor loader spinner without the global overlay while the gated request is pending', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'history pagination pending indicator',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      await signup(page, username('historypage'), password);
+      const chats = [
+        await createPersistedChat(page, provider, 'Oldest pagination history chat', 'Oldest pagination answer'),
+        await createPersistedChat(page, provider, 'Middle pagination history chat', 'Middle pagination answer'),
+        await createPersistedChat(page, provider, 'Newest pagination history chat', 'Newest pagination answer'),
+      ];
+
+      const cursorGate = deferredGate();
+      let firstHistoryRewritten = false;
+      let cursorURL = '';
+      const historyRoute = (url) => url.pathname === '/history';
+      const historyRouteHandler = async (route) => {
+        if (route.request().method() !== 'GET') {
+          await route.continue();
+          return;
+        }
+        const url = new URL(route.request().url());
+        if (!url.searchParams.has('before') && !firstHistoryRewritten) {
+          firstHistoryRewritten = true;
+          url.searchParams.set('limit', '1');
+          await route.continue({ url: url.href });
+          return;
+        }
+        if (url.searchParams.has('before')) {
+          cursorURL = url.href;
+          await cursorGate.promise;
+        }
+        await route.continue();
+      };
+      await page.route(historyRoute, historyRouteHandler);
+      try {
+        await page.locator('#history-button').click();
+        await waitForPanels(page, 'history-page');
+        await waitUntil(() => firstHistoryRewritten, {
+          timeout: 10000,
+          label: 'initial History request to be limited to one row',
+        });
+        const entries = page.locator('#history-entries .history-entry');
+        await waitUntil(async () => (await entries.count()) === 1, {
+          timeout: 10000,
+          label: 'first History page to render one chat with a cursor loader',
+        });
+        const loader = page.locator('#history-entries .history-loader');
+        await loader.waitFor({ state: 'visible', timeout: 10000 });
+        assert.equal(await loader.getAttribute('hx-indicator'), 'this', 'history loader must use its own pending indicator');
+
+        await page.locator('#history-page').evaluate((element) => {
+          element.scrollTop = element.scrollHeight;
+        });
+        await loader.scrollIntoViewIfNeeded().catch(() => {});
+
+        const pendingState = await waitUntil(async () => {
+          const state = await historyLoaderState(loader);
+          return state.pending && state.spinnerVisible && state.spinnerAnimation === 'braille-spinner' ? state : false;
+        }, {
+          timeout: 15000,
+          label: 'cursor history loader to show its pending braille spinner',
+        });
+        assert.ok(cursorURL, 'gated History request must include a before cursor');
+        const cursor = new URL(cursorURL);
+        assert.equal(cursor.pathname, '/history', 'cursor request must use the History endpoint');
+        assert.ok(cursor.searchParams.get('before'), 'cursor request must include the before timestamp');
+        assert.ok(cursor.searchParams.get('before_id'), 'cursor request must include the before id');
+        assert.equal(cursor.searchParams.get('before_pinned'), '0', 'cursor request must include the pinned cursor');
+        assert.equal(pendingState.indicator, 'this', 'pending loader must retain its own indicator');
+        assert.equal(pendingState.spinnerCount, 1, 'pending loader must keep one spinner element');
+        assertClose(
+          pendingState.spinnerFontSize,
+          pendingState.loaderFontSize * 3,
+          0.5,
+          'pending history loader spinner font size',
+        );
+        await assertGlobalRequestOverlayInactive(page, 'pending history pagination');
+
+        const screenshot = await env.screenshot('history-pagination-pending');
+        t.diagnostic(`History pagination pending screenshot: ${screenshot}`);
+        console.log(`History pagination pending screenshot: ${screenshot}`);
+
+        const responsePromise = page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return response.request().method() === 'GET' && url.pathname === '/history' && url.searchParams.has('before');
+        }, { timeout: 20000 });
+        cursorGate.release();
+        const response = await responsePromise;
+        const body = response.status() >= 400 ? await response.text().catch(() => '') : '';
+        assert.ok(
+          response.status() >= 200 && response.status() < 300,
+          `cursor history request returned ${response.status()}${body ? `: ${body}` : ''}`,
+        );
+
+        await waitUntil(async () => (await entries.count()) === chats.length, {
+          timeout: 10000,
+          label: 'older History page rows to replace the loader',
+        });
+        const hrefs = await page.locator('#history-entries .history-entry .history-title-link').evaluateAll(
+          (nodes) => nodes.map((node) => node.getAttribute('href')),
+        );
+        const expectedHrefs = chats.slice().reverse().map((chat) => `/?chat=${chat.chatID}`);
+        assert.deepEqual(hrefs, expectedHrefs, 'History rows must insert once in newest-to-oldest order');
+        assert.equal(new Set(hrefs).size, chats.length, 'History pagination must not duplicate rows');
+        assert.equal(await page.locator('#history-entries .history-loader').count(), 0,
+          'loader must disappear after the final cursor page');
+        await assertGlobalRequestOverlayInactive(page, 'completed history pagination');
+      } finally {
+        cursorGate.release();
+        await page.unroute(historyRoute, historyRouteHandler).catch(() => {});
       }
     },
   });
