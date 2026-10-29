@@ -529,6 +529,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	kritui_db.MigrateSharedResponses,
 	kritui_db.MigrateEncryptedSharedResponses,
 	migrateStorageFormat31,
+	migrateToolCallResultElided,
 }
 
 // migrateStorageFormat31 reserves schema version 31 as the storage-format
@@ -540,6 +541,27 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 // writing new plaintext values into it.
 func migrateStorageFormat31(_ context.Context, _ *sql.Tx) error {
 	return nil
+}
+
+// migrateToolCallResultElided adds display-only metadata recording whether a
+// stored tool result was elided from a provider request. Existing tool calls
+// default to showing their full result. The flag is not part of message
+// content or completion snapshot digests, and this migration does not rewrite
+// any encrypted values.
+func migrateToolCallResultElided(ctx context.Context, tx *sql.Tx) error {
+	var tableCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'message_tool_calls'
+	`).Scan(&tableCount); err != nil {
+		return fmt.Errorf("inspect message_tool_calls table: %w", err)
+	}
+	if tableCount == 0 {
+		return nil
+	}
+	return addColumnIfMissing(ctx, tx, "message_tool_calls", "result_elided",
+		`INTEGER NOT NULL DEFAULT 0 CHECK (result_elided IN (0, 1))`)
 }
 
 // migrateTitleGenerationSettings adds the opt-in chat-title generation toggle

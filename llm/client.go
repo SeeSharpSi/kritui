@@ -223,6 +223,8 @@ type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
+	// ResultElided is display-only state and is never sent to providers.
+	ResultElided bool `json:"-"`
 }
 
 // FunctionCall identifies a tool and contains its JSON-encoded arguments.

@@ -54,6 +54,7 @@ type Conversation struct {
 	roundBoundary     func(context.Context, ConversationBoundary) (ConversationInput, error)
 	messages          []Message
 	toolResultElision ToolResultElisionConfig
+	elisionObserver   func(context.Context, []ToolResultElision) error
 	summarizer        *Client
 	summaryCache      map[int]string
 }
@@ -144,6 +145,17 @@ func (c *Conversation) SetToolResultElision(config ToolResultElisionConfig, summ
 	return nil
 }
 
+// SetToolResultElisionObserver configures a callback invoked after request
+// shaping succeeds and before each main provider request. State reports the
+// current elision status of every completed tool result, including false when
+// nothing was reduced. Observer errors abort the completion before the provider
+// request. Passing nil disables the callback.
+func (c *Conversation) SetToolResultElisionObserver(observer func(context.Context, []ToolResultElision) error) {
+	if c != nil {
+		c.elisionObserver = observer
+	}
+}
+
 // Messages returns a copy of the conversation history.
 func (c *Conversation) Messages() []Message {
 	if c == nil {
@@ -192,11 +204,12 @@ func (c *Conversation) Complete(ctx context.Context) error {
 	}
 
 	for {
-		requestMessages := c.messages
-		if c.toolResultElision.Mode != "" && c.toolResultElision.Mode != ToolResultElisionNone {
-			var err error
-			requestMessages, err = c.shapeToolResults(ctx)
-			if err != nil {
+		requestMessages, err := c.shapeToolResults(ctx)
+		if err != nil {
+			return err
+		}
+		if c.elisionObserver != nil {
+			if err := c.elisionObserver(ctx, toolResultElisionState(c.messages, requestMessages)); err != nil {
 				return err
 			}
 		}

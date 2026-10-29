@@ -635,6 +635,316 @@ func TestToolResultElisionConfigurationErrors(t *testing.T) {
 	}
 }
 
+func TestToolResultElisionObserverReportsActualStateForEveryMode(t *testing.T) {
+	allFalse := []ToolResultElision{
+		{MessageIndex: 2, ToolCallIndex: 0},
+		{MessageIndex: 2, ToolCallIndex: 1},
+		{MessageIndex: 7, ToolCallIndex: 0},
+		{MessageIndex: 7, ToolCallIndex: 1},
+	}
+	oldElided := []ToolResultElision{
+		{MessageIndex: 2, ToolCallIndex: 0, Elided: true},
+		{MessageIndex: 2, ToolCallIndex: 1, Elided: true},
+		{MessageIndex: 7, ToolCallIndex: 0},
+		{MessageIndex: 7, ToolCallIndex: 1},
+	}
+	for _, test := range []struct {
+		name  string
+		apply []ToolResultElisionConfig
+		want  []ToolResultElision
+	}{
+		{name: "zero value", want: allFalse},
+		{name: "explicit none", apply: []ToolResultElisionConfig{{Mode: ToolResultElisionNone}}, want: allFalse},
+		{name: "current turn", apply: []ToolResultElisionConfig{{Mode: ToolResultElisionCurrentTurn}}, want: oldElided},
+		{name: "last user turns", apply: []ToolResultElisionConfig{{Mode: ToolResultElisionLastUserTurns, UserTurns: 1}}, want: oldElided},
+		{name: "token budget", apply: []ToolResultElisionConfig{{Mode: ToolResultElisionBudget, TokenBudget: 1}}, want: oldElided},
+		{
+			name: "none clears previous mode",
+			apply: []ToolResultElisionConfig{
+				{Mode: ToolResultElisionCurrentTurn},
+				{Mode: ToolResultElisionNone},
+			},
+			want: allFalse,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := newElisionProvider(t, elisionTextResponse("chat", "done"))
+			conversation := elisionConversation(t, provider.client(t, "/v1/chat/completions", "main"), nil, elisionCrossProtocolHistory(t)...)
+			for _, config := range test.apply {
+				if err := conversation.SetToolResultElision(config, nil); err != nil {
+					t.Fatalf("SetToolResultElision(%q) error: %v", config.Mode, err)
+				}
+			}
+			var calls [][]ToolResultElision
+			var requestsAtCall []int
+			conversation.SetToolResultElisionObserver(func(_ context.Context, state []ToolResultElision) error {
+				calls = append(calls, append([]ToolResultElision(nil), state...))
+				requestsAtCall = append(requestsAtCall, len(provider.requests))
+				return nil
+			})
+			before := conversation.Messages()
+			if err := conversation.Complete(context.Background()); err != nil {
+				t.Fatalf("Complete() error: %v", err)
+			}
+			_ = provider.requestsFor(t, 1)
+			if len(calls) != 1 {
+				t.Fatalf("observer calls = %d, want one call before the single provider request", len(calls))
+			}
+			if requestsAtCall[0] != 0 {
+				t.Errorf("provider requests seen at observer call = %d, want 0 before completion", requestsAtCall[0])
+			}
+			if !reflect.DeepEqual(calls[0], test.want) {
+				t.Errorf("observer state = %#v, want %#v", calls[0], test.want)
+			}
+			after := conversation.Messages()
+			if !reflect.DeepEqual(after[:len(before)], before) {
+				t.Error("observer or elision changed canonical content, tool calls, or provider metadata")
+			}
+			for _, message := range after[:len(before)] {
+				for _, call := range message.ToolCalls {
+					if call.ResultElided {
+						t.Errorf("canonical tool call %q has display-only ResultElided set", call.ID)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestToolResultElisionObserverRunsBeforeEveryMainRequest(t *testing.T) {
+	provider := newElisionProvider(t,
+		elisionToolResponse(elisionToolCall("round-1", "round one")),
+		elisionTextResponse("chat", "done"),
+	)
+	registry, err := tools.NewRegistry(elisionValueTool{})
+	if err != nil {
+		t.Fatalf("NewRegistry() error: %v", err)
+	}
+	conversation := elisionConversation(t, provider.client(t, "/v1/chat/completions", "main"), registry)
+	if err := conversation.SetToolResultElision(ToolResultElisionConfig{Mode: ToolResultElisionNone}, nil); err != nil {
+		t.Fatalf("SetToolResultElision() error: %v", err)
+	}
+	var calls [][]ToolResultElision
+	var requestsAtCall []int
+	conversation.SetToolResultElisionObserver(func(_ context.Context, state []ToolResultElision) error {
+		calls = append(calls, append([]ToolResultElision{}, state...))
+		requestsAtCall = append(requestsAtCall, len(provider.requests))
+		return nil
+	})
+	if err := conversation.Send(context.Background(), "question"); err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+	_ = provider.requestsFor(t, 2)
+	wantCalls := [][]ToolResultElision{
+		{},
+		{{MessageIndex: 2, ToolCallIndex: 0}},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("observer calls = %#v, want %#v", calls, wantCalls)
+	}
+	if !reflect.DeepEqual(requestsAtCall, []int{0, 1}) {
+		t.Errorf("provider requests seen at observer calls = %v, want [0 1]", requestsAtCall)
+	}
+}
+
+func TestToolResultElisionObserverErrorsAbortBeforeProviderRequest(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode ToolResultElisionMode
+	}{
+		{name: "none", mode: ToolResultElisionNone},
+		{name: "current turn", mode: ToolResultElisionCurrentTurn},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := newElisionProvider(t, elisionTextResponse("chat", "done"))
+			conversation := elisionConversation(t, provider.client(t, "/v1/chat/completions", "main"), nil, elisionCrossProtocolHistory(t)...)
+			if err := conversation.SetToolResultElision(ToolResultElisionConfig{Mode: test.mode}, nil); err != nil {
+				t.Fatalf("SetToolResultElision() error: %v", err)
+			}
+			observerError := errors.New("observer stopped completion")
+			conversation.SetToolResultElisionObserver(func(context.Context, []ToolResultElision) error {
+				return observerError
+			})
+			before := conversation.Messages()
+			err := conversation.Complete(context.Background())
+			if !errors.Is(err, observerError) {
+				t.Fatalf("Complete() error = %v, want observer error", err)
+			}
+			if len(provider.requests) != 0 {
+				t.Error("provider was called after observer error")
+			}
+			if after := conversation.Messages(); !reflect.DeepEqual(after, before) {
+				t.Error("observer error mutated canonical history")
+			}
+		})
+	}
+}
+
+func TestToolResultElisionObserverMapsDuplicateCallIDsToClosestAssistant(t *testing.T) {
+	history := []Message{
+		{Role: "user", Content: "old question"},
+		{Role: "assistant", ToolCalls: []ToolCall{elisionToolCall("dup", "old")}},
+		{Role: "tool", ToolCallID: "dup", Content: strings.Repeat("old", 20)},
+		{Role: "user", Content: "new question"},
+		{Role: "assistant", ToolCalls: []ToolCall{elisionToolCall("dup", "new")}},
+		{Role: "tool", ToolCallID: "dup", Content: strings.Repeat("new", 20)},
+	}
+	provider := newElisionProvider(t, elisionTextResponse("chat", "done"))
+	conversation := elisionConversation(t, provider.client(t, "/v1/chat/completions", "main"), nil, history...)
+	if err := conversation.SetToolResultElision(ToolResultElisionConfig{Mode: ToolResultElisionCurrentTurn}, nil); err != nil {
+		t.Fatalf("SetToolResultElision() error: %v", err)
+	}
+	var got []ToolResultElision
+	conversation.SetToolResultElisionObserver(func(_ context.Context, state []ToolResultElision) error {
+		got = append([]ToolResultElision(nil), state...)
+		return nil
+	})
+	before := conversation.Messages()
+	if err := conversation.Complete(context.Background()); err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	_ = provider.requestsFor(t, 1)
+	want := []ToolResultElision{
+		{MessageIndex: 2, ToolCallIndex: 0, Elided: true},
+		{MessageIndex: 5, ToolCallIndex: 0},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("observer state = %#v, want %#v", got, want)
+	}
+	if before[2].ToolCalls[0].ID != "dup" || before[5].ToolCalls[0].ID != "dup" {
+		t.Fatalf("history does not place duplicate IDs at expected assistant messages: %#v", before)
+	}
+	if after := conversation.Messages(); !reflect.DeepEqual(after[:len(before)], before) {
+		t.Error("duplicate-ID elision changed canonical history")
+	}
+}
+
+func TestToolResultElisionObserverReportsOnlyAcceptedSummaries(t *testing.T) {
+	acceptedOriginal := strings.Repeat("accepted detail ", 8)
+	rejectedOriginal := "short original"
+	history := []Message{
+		{Role: "user", Content: "old question"},
+		{Role: "assistant", ToolCalls: []ToolCall{elisionToolCall("summary-ok", "ok"), elisionToolCall("summary-long", "long")}},
+		{Role: "tool", ToolCallID: "summary-ok", Content: acceptedOriginal},
+		{Role: "tool", ToolCallID: "summary-long", Content: rejectedOriginal},
+		{Role: "user", Content: "current question"},
+	}
+	main := newElisionProvider(t, elisionTextResponse("chat", "done"))
+	summary := newElisionProvider(t,
+		elisionTextResponse("chat", "brief summary"),
+		elisionTextResponse("chat", strings.Repeat("too long ", 8)),
+	)
+	conversation := elisionConversation(t, main.client(t, "/v1/chat/completions", "main"), nil, history...)
+	if err := conversation.SetToolResultElision(ToolResultElisionConfig{Mode: ToolResultElisionSummarize, SummaryModel: "summary"}, summary.client(t, "/v1/chat/completions", "summary")); err != nil {
+		t.Fatalf("SetToolResultElision() error: %v", err)
+	}
+	var got []ToolResultElision
+	conversation.SetToolResultElisionObserver(func(_ context.Context, state []ToolResultElision) error {
+		got = append([]ToolResultElision(nil), state...)
+		return nil
+	})
+	before := conversation.Messages()
+	if err := conversation.Complete(context.Background()); err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	results := chatToolResults(t, main.requestsFor(t, 1)[0])
+	if results["summary-ok"] != summarizedToolResultMarker+"brief summary" {
+		t.Errorf("accepted summary result = %q, want summarized content", results["summary-ok"])
+	}
+	if results["summary-long"] != rejectedOriginal {
+		t.Errorf("rejected summary result = %q, want original %q", results["summary-long"], rejectedOriginal)
+	}
+	want := []ToolResultElision{
+		{MessageIndex: 2, ToolCallIndex: 0, Elided: true},
+		{MessageIndex: 2, ToolCallIndex: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("observer state = %#v, want %#v", got, want)
+	}
+	_ = summary.requestsFor(t, 2)
+	if after := conversation.Messages(); !reflect.DeepEqual(after[:len(before)], before) {
+		t.Error("summary elision changed canonical content, tool calls, or provider metadata")
+	}
+}
+
+func TestToolResultElisionObserverNotCalledWhenSummarizationFails(t *testing.T) {
+	summary := &elisionProvider{requests: make(chan []byte, 32)}
+	summary.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		summary.requests <- body
+		http.Error(w, `{"error":{"message":"summary unavailable"}}`, http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(summary.server.Close)
+	main := newElisionProvider(t, elisionTextResponse("chat", "done"))
+	history := []Message{
+		{Role: "user", Content: "older"},
+		{Role: "assistant", ToolCalls: []ToolCall{elisionToolCall("error-result", "x")}},
+		{Role: "tool", ToolCallID: "error-result", Content: strings.Repeat("original ", 8)},
+		{Role: "assistant", Content: "older answer"},
+		{Role: "user", Content: "current"},
+	}
+	conversation := elisionConversation(t, main.client(t, "/v1/chat/completions", "main"), nil, history...)
+	if err := conversation.SetToolResultElision(ToolResultElisionConfig{Mode: ToolResultElisionSummarize, SummaryModel: "summary"}, summary.client(t, "/v1/chat/completions", "summary")); err != nil {
+		t.Fatalf("SetToolResultElision() error: %v", err)
+	}
+	observerCalled := false
+	conversation.SetToolResultElisionObserver(func(context.Context, []ToolResultElision) error {
+		observerCalled = true
+		return nil
+	})
+	before := conversation.Messages()
+	err := conversation.Complete(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("Complete() error = %v, want summarizer provider error", err)
+	}
+	if observerCalled {
+		t.Error("observer was called after summarization failed")
+	}
+	if len(main.requests) != 0 {
+		t.Error("main provider was called after summarization failed")
+	}
+	if after := conversation.Messages(); !reflect.DeepEqual(after, before) {
+		t.Error("failed summarization mutated canonical history")
+	}
+}
+
+func TestToolCallResultElidedIsExcludedFromEveryProviderProtocol(t *testing.T) {
+	for _, test := range []struct {
+		name, suffix, protocol string
+	}{
+		{name: "Chat Completions", suffix: "/v1/chat/completions", protocol: "chat"},
+		{name: "Messages", suffix: "/v1/chat/messages", protocol: "messages"},
+		{name: "Responses", suffix: "/v1/responses", protocol: "responses"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := newElisionProvider(t, elisionTextResponse(test.protocol, "done"))
+			history := []Message{
+				{Role: "user", Content: "question"},
+				{Role: "assistant", ToolCalls: []ToolCall{elisionToolCall("display-call", "value")}},
+				{Role: "tool", ToolCallID: "display-call", Content: "result"},
+			}
+			history[1].ToolCalls[0].ResultElided = true
+			conversation := elisionConversation(t, provider.client(t, test.suffix, "main"), nil, history...)
+			if err := conversation.SetToolResultElision(ToolResultElisionConfig{Mode: ToolResultElisionNone}, nil); err != nil {
+				t.Fatalf("SetToolResultElision() error: %v", err)
+			}
+			if err := conversation.Complete(context.Background()); err != nil {
+				t.Fatalf("Complete() error: %v", err)
+			}
+			request := provider.requestsFor(t, 1)[0]
+			for _, forbidden := range []string{"ResultElided", "result_elided"} {
+				if strings.Contains(string(request), forbidden) {
+					t.Errorf("provider request contains display-only field %q: %s", forbidden, request)
+				}
+			}
+			after := conversation.Messages()
+			if !after[2].ToolCalls[0].ResultElided {
+				t.Error("canonical display-only ResultElided state was cleared")
+			}
+		})
+	}
+}
+
 func elisionCrossProtocolHistory(t *testing.T) []Message {
 	t.Helper()
 	oldMetadata := elisionResponsesMetadata(t,

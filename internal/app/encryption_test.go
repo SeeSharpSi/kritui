@@ -171,11 +171,11 @@ func TestStorageEncryptionFreshDatabase(t *testing.T) {
 	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatalf("read user version: %v", err)
 	}
-	if len(databaseMigrations) != 31 {
-		t.Fatalf("databaseMigrations length = %d, want 31 storage-format boundary", len(databaseMigrations))
+	if len(databaseMigrations) != 32 {
+		t.Fatalf("databaseMigrations length = %d, want 32 tool-call metadata version", len(databaseMigrations))
 	}
-	if version != 31 {
-		t.Errorf("user_version = %d, want 31", version)
+	if version != 32 {
+		t.Errorf("user_version = %d, want 32", version)
 	}
 	var secureDelete int
 	if err := database.QueryRow(`PRAGMA secure_delete`).Scan(&secureDelete); err != nil {
@@ -226,8 +226,8 @@ func TestStorageFormat31NoOpReservesEncryptionBoundary(t *testing.T) {
 	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatalf("read user version: %v", err)
 	}
-	if version != 31 {
-		t.Fatalf("user_version = %d, want 31", version)
+	if version != len(databaseMigrations) {
+		t.Fatalf("user_version = %d, want %d", version, len(databaseMigrations))
 	}
 	marker, err := readStorageEncryptionMarker(context.Background(), database)
 	if err != nil {
@@ -797,8 +797,8 @@ func TestStorageEncryptionRepeatStartupIsIdempotent(t *testing.T) {
 	}
 
 	// An in-development encrypted database may still carry schema version 30.
-	// The reserved version-31 no-op must upgrade it after key verification
-	// without re-encrypting any value.
+	// The reserved version-31 no-op and version-32 metadata migration must
+	// upgrade it after key verification without re-encrypting any value.
 	if _, err := database.Exec(`PRAGMA user_version = 30`); err != nil {
 		t.Fatalf("set in-development version 30: %v", err)
 	}
@@ -809,8 +809,8 @@ func TestStorageEncryptionRepeatStartupIsIdempotent(t *testing.T) {
 	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatalf("read upgraded version: %v", err)
 	}
-	if version != 31 {
-		t.Errorf("user_version after encrypted upgrade = %d, want 31", version)
+	if version != len(databaseMigrations) {
+		t.Errorf("user_version after encrypted upgrade = %d, want %d", version, len(databaseMigrations))
 	}
 	var secondTitle, secondContent, secondSetting string
 	if err := database.QueryRow(`SELECT title FROM chats WHERE id = 1`).Scan(&secondTitle); err != nil {

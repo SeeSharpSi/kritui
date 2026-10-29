@@ -575,6 +575,24 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 	}
 	conversation.SetToolCallLogger(toolCallLogger)
 	conversation.SetToolCallObserver(tracker.observe)
+	conversation.SetToolResultElisionObserver(func(observerContext context.Context, results []llm.ToolResultElision) error {
+		toolCalls.workMu.Lock()
+		defer toolCalls.workMu.Unlock()
+
+		changed, err := applyToolResultElisions(observerContext, database, request.chatID, &snapshot, results)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+		inbox, err := kritui_db.GetInbox(observerContext, database, request.chatID)
+		if err != nil {
+			return fmt.Errorf("load inbox after tool result elision: %w", err)
+		}
+		tracker.presentCheckpoint(observerContext, request.chat, snapshot.Messages, inbox)
+		return nil
+	})
 	conversation.SetRoundBoundary(func(boundaryContext context.Context, boundary llm.ConversationBoundary) (llm.ConversationInput, error) {
 		toolCalls.workMu.Lock()
 		defer toolCalls.workMu.Unlock()
@@ -625,6 +643,66 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 	terminal = ""
 	succeeded = true
 	return
+}
+
+// toolResultElisionUpdate pairs a database update with its location in the
+// in-memory snapshot so display flags can be refreshed after persistence.
+type toolResultElisionUpdate struct {
+	update        kritui_db.ToolCallElision
+	messageIndex  int
+	toolCallIndex int
+}
+
+// applyToolResultElisions persists display-only elision flags reported by the
+// conversation and mirrors successful writes into the current snapshot. The
+// conversation index includes the leading system message, so stored history is
+// offset by one. Snapshot versions and digests are intentionally unchanged:
+// elision flags never affect provider payloads or conflict detection.
+func applyToolResultElisions(ctx context.Context, database *sql.DB, chatID int64, snapshot *kritui_db.MessageSnapshot, results []llm.ToolResultElision) (bool, error) {
+	updates := make([]toolResultElisionUpdate, 0, len(results))
+	for _, result := range results {
+		messageIndex := result.MessageIndex - 1
+		if messageIndex < 0 || messageIndex >= len(snapshot.Messages) {
+			return false, fmt.Errorf("tool result elision references message %d outside conversation", result.MessageIndex)
+		}
+		message := &snapshot.Messages[messageIndex]
+		if message.Role != "assistant" {
+			return false, fmt.Errorf("tool result elision references %s message %d", message.Role, result.MessageIndex)
+		}
+		if result.ToolCallIndex < 0 || result.ToolCallIndex >= len(message.ToolCalls) {
+			return false, fmt.Errorf("tool result elision references call %d outside message %d", result.ToolCallIndex, result.MessageIndex)
+		}
+		if message.ToolCalls[result.ToolCallIndex].ResultElided == result.Elided {
+			continue
+		}
+		if message.ID <= 0 {
+			return false, fmt.Errorf("tool result elision references unstored message %d", result.MessageIndex)
+		}
+		updates = append(updates, toolResultElisionUpdate{
+			update: kritui_db.ToolCallElision{
+				MessageID: message.ID,
+				Position:  result.ToolCallIndex,
+				Elided:    result.Elided,
+			},
+			messageIndex:  messageIndex,
+			toolCallIndex: result.ToolCallIndex,
+		})
+	}
+	if len(updates) == 0 {
+		return false, nil
+	}
+
+	stored := make([]kritui_db.ToolCallElision, len(updates))
+	for index, pending := range updates {
+		stored[index] = pending.update
+	}
+	if err := kritui_db.SetToolCallElisions(ctx, database, chatID, stored); err != nil {
+		return false, fmt.Errorf("persist tool result elisions: %w", err)
+	}
+	for _, pending := range updates {
+		snapshot.Messages[pending.messageIndex].ToolCalls[pending.toolCallIndex].ResultElided = pending.update.Elided
+	}
+	return true, nil
 }
 
 func scheduleNtfyCompletion(ctx context.Context, database *sql.DB, chatID int64) {

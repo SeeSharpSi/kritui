@@ -602,6 +602,69 @@ func TestMigrateVersion22AddsDefaultToolResultElisionSettings(t *testing.T) {
 	assertMigratedToolElisionSettings(t, database, defaultModel, llmEndpoint, llmAPIKey, ntfyEndpoint, ntfyTopic, ntfyAPIKey)
 }
 
+func TestMigrateVersion32AddsToolCallResultElidedMetadata(t *testing.T) {
+	database, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "version31.db"))
+	if err != nil {
+		t.Fatalf("open isolated database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = database.Close() })
+
+	if _, err := database.Exec(version31SchemaFixture(t)); err != nil {
+		t.Fatalf("initialize version-31 schema: %v", err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (id, chat_id, position, role, content) VALUES (10, 1, 0, 'assistant', 'answer');
+		INSERT INTO message_tool_calls (message_id, message_role, position, call_id, call_type, function_name, arguments)
+		VALUES (10, 'assistant', 0, 'call-1', 'function', 'lookup', '{"q":"value"}');
+	`); err != nil {
+		t.Fatalf("seed version-31 tool call: %v", err)
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("migrate version 31: %v", err)
+	}
+	var version int
+	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("read migrated schema version: %v", err)
+	}
+	if version != len(databaseMigrations) {
+		t.Fatalf("schema version = %d, want %d", version, len(databaseMigrations))
+	}
+
+	var typeName string
+	var notNull int
+	var defaultValue sql.NullString
+	if err := database.QueryRow(`
+		SELECT type, "notnull", dflt_value
+		FROM pragma_table_info('message_tool_calls')
+		WHERE name = 'result_elided'
+	`).Scan(&typeName, &notNull, &defaultValue); err != nil {
+		t.Fatalf("inspect migrated result_elided column: %v", err)
+	}
+	if typeName != "INTEGER" || notNull != 1 || !defaultValue.Valid || defaultValue.String != "0" {
+		t.Errorf("result_elided column = type %q, notnull %d, default %#v; want INTEGER, 1, 0", typeName, notNull, defaultValue)
+	}
+	var flag int
+	if err := database.QueryRow(`SELECT result_elided FROM message_tool_calls WHERE message_id = 10 AND position = 0`).Scan(&flag); err != nil {
+		t.Fatalf("read migrated flag: %v", err)
+	}
+	if flag != 0 {
+		t.Errorf("existing tool call result_elided = %d, want default 0", flag)
+	}
+	if _, err := database.Exec(`UPDATE message_tool_calls SET result_elided = 1 WHERE message_id = 10 AND position = 0`); err != nil {
+		t.Fatalf("set migrated flag: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE message_tool_calls SET result_elided = 2 WHERE message_id = 10 AND position = 0`); err == nil {
+		t.Error("migrated result_elided column accepted invalid value 2")
+	}
+
+	if err := migrateDatabase(database); err != nil {
+		t.Fatalf("rerun migration: %v", err)
+	}
+}
+
 type toolElisionChatRequest struct {
 	Model    string            `json:"model"`
 	Messages []llm.Message     `json:"messages"`
@@ -882,6 +945,20 @@ func assertToolElisionMigrationConstraints(t *testing.T, database *sql.DB) {
 	}
 }
 
+func version31SchemaFixture(t *testing.T) string {
+	t.Helper()
+	const resultElidedColumn = "    result_elided INTEGER NOT NULL DEFAULT 0 CHECK (result_elided IN (0, 1)),\n"
+	if !strings.Contains(schema, resultElidedColumn) {
+		t.Fatal("schema does not contain tool-call result elision metadata")
+	}
+	fixture := strings.Replace(schema, resultElidedColumn, "", 1)
+	const currentVersion = "PRAGMA user_version = 32;"
+	if !strings.Contains(fixture, currentVersion) {
+		t.Fatalf("schema version marker is not 32: %s", currentVersion)
+	}
+	return strings.Replace(fixture, currentVersion, "PRAGMA user_version = 31;", 1)
+}
+
 func version22SchemaFixture(t *testing.T) string {
 	t.Helper()
 	const firstNewColumn = "    tool_result_elision_mode TEXT NOT NULL DEFAULT 'none'"
@@ -895,9 +972,9 @@ func version22SchemaFixture(t *testing.T) string {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	fixture := prefix + schema[start+relativeEnd:]
-	const currentVersion = "PRAGMA user_version = 31;"
+	const currentVersion = "PRAGMA user_version = 32;"
 	if !strings.Contains(fixture, currentVersion) {
-		t.Fatalf("schema version marker is not 31: %s", currentVersion)
+		t.Fatalf("schema version marker is not 32: %s", currentVersion)
 	}
 	return strings.Replace(fixture, currentVersion, "PRAGMA user_version = 22;", 1)
 }

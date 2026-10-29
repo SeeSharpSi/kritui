@@ -37,6 +37,15 @@ type ToolResultElisionConfig struct {
 	SummaryModel string
 }
 
+// ToolResultElision reports the request-only state of one completed tool
+// result. MessageIndex indexes Conversation.Messages(), including its prepended
+// system message. ToolCallIndex indexes that assistant message's ToolCalls.
+type ToolResultElision struct {
+	MessageIndex  int
+	ToolCallIndex int
+	Elided        bool
+}
+
 // Validate checks only parameters used by the selected mode. Empty Mode is
 // equivalent to ToolResultElisionNone.
 func (config ToolResultElisionConfig) Validate() error {
@@ -67,8 +76,12 @@ func (config ToolResultElisionConfig) Validate() error {
 
 func (c *Conversation) shapeToolResults(ctx context.Context) ([]Message, error) {
 	canonical := c.messages
-	shaped := cloneMessages(canonical)
 	config := c.toolResultElision
+	switch config.Mode {
+	case "", ToolResultElisionNone:
+		return canonical, nil
+	}
+	shaped := cloneMessages(canonical)
 	freshStart := trailingToolBatchStart(canonical)
 	eligible := eligibleToolResults(canonical, freshStart, config)
 
@@ -101,6 +114,44 @@ func (c *Conversation) shapeToolResults(ctx context.Context) ([]Message, error) 
 		return nil, fmt.Errorf("llm: unsupported tool-result elision mode %q", config.Mode)
 	}
 	return shaped, nil
+}
+
+// toolResultElisionState reports actual reductions by comparing shaped request
+// messages with canonical history. Each tool result is associated with the
+// closest preceding assistant message that declares its call ID, so repeated
+// IDs in later rounds map to the correct round.
+func toolResultElisionState(canonical, shaped []Message) []ToolResultElision {
+	states := make([]ToolResultElision, 0)
+	if len(shaped) != len(canonical) {
+		return states
+	}
+	for index, message := range canonical {
+		if message.Role != "tool" || message.ToolCallID == "" {
+			continue
+		}
+		for previous := index - 1; previous >= 0; previous-- {
+			if canonical[previous].Role != "assistant" {
+				continue
+			}
+			matched := false
+			for callIndex, call := range canonical[previous].ToolCalls {
+				if call.ID != message.ToolCallID {
+					continue
+				}
+				states = append(states, ToolResultElision{
+					MessageIndex:  previous,
+					ToolCallIndex: callIndex,
+					Elided:        shaped[index].Content != message.Content,
+				})
+				matched = true
+				break
+			}
+			if matched {
+				break
+			}
+		}
+	}
+	return states
 }
 
 func trailingToolBatchStart(messages []Message) int {

@@ -2,7 +2,9 @@
 
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const { once } = require('node:events');
 const fs = require('node:fs/promises');
+const http = require('node:http');
 const path = require('node:path');
 const { after, before, test } = require('node:test');
 const { chromium } = require('playwright');
@@ -438,6 +440,306 @@ function deferredGate() {
     promise,
     release: () => release(),
   };
+}
+
+const elisionResultMarker = 'E2E_TOOL_RESULT_BODY_MARKER';
+const elisionErrorText = 'websearch: SearXNG returned no results';
+const elisionMarker = '[Tool result elided]';
+
+// SearchFixture is a deterministic in-process SearXNG stand-in. Queries
+// containing "empty" return no results so websearch produces a stable tool
+// error; all other queries return a body long enough to exceed a tiny budget.
+class SearchFixture {
+  constructor() {
+    this.server = null;
+    this.port = null;
+    this.queries = [];
+  }
+
+  async start() {
+    this.server = http.createServer((request, response) => {
+      const url = new URL(request.url, 'http://127.0.0.1');
+      if (request.method !== 'GET' || url.pathname !== '/search') {
+        response.writeHead(404, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ error: { message: 'unknown search fixture route' } }));
+        return;
+      }
+      const query = url.searchParams.get('q') ?? '';
+      this.queries.push(query);
+      const results = /empty/i.test(query)
+        ? []
+        : [{
+          title: 'Deterministic elision fixture result',
+          url: 'https://fixture.invalid/elision',
+          content: `${elisionResultMarker} ${'Deterministic search result payload for tool elision verification. '.repeat(48)}`,
+          engine: 'fixture',
+          publishedDate: '2026-01-01T00:00:00Z',
+          score: 1,
+        }];
+      response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      response.end(JSON.stringify({ query, results }));
+    });
+    this.server.listen(0, '127.0.0.1');
+    await once(this.server, 'listening');
+    this.port = this.server.address().port;
+    return this;
+  }
+
+  get url() {
+    if (!this.port) {
+      throw new Error('search fixture is not started');
+    }
+    return `http://127.0.0.1:${this.port}`;
+  }
+
+  async close() {
+    const server = this.server;
+    this.server = null;
+    if (!server) {
+      return;
+    }
+    const closed = new Promise((resolve) => server.close(resolve));
+    if (typeof server.closeAllConnections === 'function') {
+      server.closeAllConnections();
+    }
+    await Promise.race([
+      closed,
+      new Promise((resolve) => setTimeout(resolve, 2000)),
+    ]);
+  }
+}
+
+function multiToolCallResponse(calls, { tokens = 10 } = {}) {
+  return {
+    status: 200,
+    body: {
+      model: 'fake-model',
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: '',
+            tool_calls: calls.map(({ id, name, argumentsValue }) => ({
+              id,
+              type: 'function',
+              function: {
+                name,
+                arguments: typeof argumentsValue === 'string'
+                  ? argumentsValue
+                  : JSON.stringify(argumentsValue ?? {}),
+              },
+            })),
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: { total_tokens: tokens },
+    },
+  };
+}
+
+function toolResultContent(call, toolCallID) {
+  const message = [...call.messages].reverse().find(
+    (entry) => entry.role === 'tool' && entry.tool_call_id === toolCallID,
+  );
+  return message?.content ?? '';
+}
+
+async function selectChatTool(page, name) {
+  const options = page.locator('details.chat-options');
+  assert.equal(await options.count(), 1, 'chat options are missing');
+  if (!(await options.evaluate((element) => element.open))) {
+    await options.locator(':scope > summary').click();
+  }
+  const picker = page.locator('#tool-picker');
+  assert.equal(await picker.count(), 1, 'tool picker is missing');
+  await picker.locator(':scope > summary').waitFor({ state: 'visible', timeout: 10000 });
+  if (!(await picker.evaluate((element) => element.open))) {
+    await picker.locator(':scope > summary').click();
+  }
+  const checkbox = picker.locator(`input[name="tool"][value="${name}"]`);
+  assert.equal(await checkbox.count(), 1, `${name} tool checkbox is missing`);
+  await checkbox.check({ force: true });
+  assert.equal(await checkbox.isChecked(), true, `${name} tool checkbox did not turn on`);
+}
+
+async function configureToolResultElision(page, { mode, tokenBudget, userTurns } = {}) {
+  await page.locator('#settings-button').click();
+  await waitForPanels(page, 'settings-page');
+  const modeControl = page.locator('#tool-result-elision-mode');
+  await modeControl.waitFor({ state: 'visible' });
+  await modeControl.selectOption(mode);
+  if (mode === 'tool_result_budget') {
+    const budget = page.locator('#tool-result-elision-token-budget');
+    await page.waitForFunction(() => {
+      const input = document.querySelector('#tool-result-elision-token-budget');
+      return input !== null && !input.disabled;
+    });
+    await budget.fill(String(tokenBudget));
+  }
+  if (mode === 'last_user_turns') {
+    await page.locator('#tool-result-elision-user-turns').fill(String(userTurns));
+  }
+  await page.locator('#settings-page .settings-save').click();
+  await page.locator('[data-settings-saved]').waitFor({ state: 'visible', timeout: 15000 });
+  assert.equal(
+    await page.locator('#tool-result-elision-mode').inputValue(),
+    mode,
+    `tool-result elision mode ${mode} did not persist`,
+  );
+  await page.locator('#settings-button').click();
+  await waitForPanels(page, null);
+}
+
+// expectedToolNameColors resolves the contract colors in the live document.
+// Chromium may serialize color-mix() as color(srgb ...), so comparing against a
+// probe element avoids assuming an rgb() representation.
+async function expectedToolNameColors(page) {
+  return page.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.style.cssText = 'position:absolute;left:-9999px;top:0;font-size:0;';
+    document.body.appendChild(probe);
+    const colorFor = (value) => {
+      probe.style.color = value;
+      return getComputedStyle(probe).color;
+    };
+    const colors = {
+      text: colorFor('var(--color-text)'),
+      muted: colorFor('var(--color-text-muted)'),
+      error: colorFor('var(--color-error)'),
+      errorMuted: colorFor('color-mix(in srgb, var(--color-error) 55%, var(--color-text-muted))'),
+    };
+    probe.remove();
+    return colors;
+  });
+}
+
+async function toolCallAppearance(scope) {
+  return scope.locator('.tool-call[data-tool-call-id]').evaluateAll((nodes) => nodes.map((node) => {
+    const name = node.querySelector('.tool-call-toggle, strong');
+    const code = node.querySelector(':scope > code');
+    const span = code ? code.querySelector(':scope > span') : null;
+    return {
+      id: node.getAttribute('data-tool-call-id') ?? '',
+      elided: node.classList.contains('tool-elided'),
+      errored: node.classList.contains('tool-error'),
+      name: (name?.textContent ?? '').trim(),
+      color: name ? getComputedStyle(name).color : '',
+      args: code ? (code.textContent ?? '') : '',
+      argsColor: code ? getComputedStyle(code).color : '',
+      argsSpanColor: span ? getComputedStyle(span).color : '',
+      text: (node.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    };
+  }));
+}
+
+async function assertToolCallAppearance(page, scope, expected, colors, label) {
+  let observed = [];
+  await waitUntil(async () => {
+    observed = await toolCallAppearance(scope);
+    return observed.length === expected.length && expected.every((want, index) => (
+      observed[index].id === want.id &&
+      observed[index].elided === want.elided &&
+      observed[index].errored === want.errored &&
+      observed[index].name === want.name
+    ));
+  }, {
+    timeout: 15000,
+    label: `${label} to publish expected tool-call IDs and elision flags`,
+  });
+
+  for (let index = 0; index < expected.length; index += 1) {
+    const want = expected[index];
+    const actual = observed[index];
+    const expectedColor = want.elided
+      ? (want.errored ? colors.errorMuted : colors.muted)
+      : (want.errored ? colors.error : colors.text);
+    assert.equal(
+      actual.color,
+      expectedColor,
+      `${label} ${want.id} name color: got ${actual.color}, want ${expectedColor}`,
+    );
+    const expectedArgsColor = want.errored ? colors.errorMuted : colors.muted;
+    if (actual.argsColor) {
+      assert.equal(
+        actual.argsColor,
+        expectedArgsColor,
+        `${label} ${want.id} argument code color: got ${actual.argsColor}, want ${expectedArgsColor}`,
+      );
+    }
+    if (actual.argsSpanColor) {
+      assert.equal(
+        actual.argsSpanColor,
+        expectedArgsColor,
+        `${label} ${want.id} argument span color: got ${actual.argsSpanColor}, want ${expectedArgsColor}`,
+      );
+    }
+    if (actual.args) {
+      assert.ok(
+        actual.args.includes('{') && actual.args.includes('}'),
+        `${label} ${want.id} must keep literal argument braces, got ${JSON.stringify(actual.args)}`,
+      );
+    }
+    assert.ok(
+      !/elided/i.test(actual.text),
+      `${label} ${want.id} must not expose a visible elision badge or marker, got ${JSON.stringify(actual.text)}`,
+    );
+  }
+  return observed;
+}
+
+async function completedToolDetails(page, expected, colors, label) {
+  const details = page.locator('#message-history .completed-tool-calls');
+  await waitUntil(async () => (await details.count()) === 1, {
+    timeout: 15000,
+    label: `${label} to render one completed tool group`,
+  });
+  const block = details.first();
+  assert.equal(await block.evaluate((element) => element.open), false, `${label} must start collapsed`);
+  await assertToolCallAppearance(page, block, expected, colors, `${label} collapsed`);
+  await block.locator('summary').click();
+  await waitUntil(() => block.evaluate((element) => element.open), {
+    timeout: 5000,
+    label: `${label} to expand`,
+  });
+  await assertToolCallAppearance(page, block, expected, colors, `${label} expanded`);
+  return block;
+}
+
+async function assertToolResultBodiesHidden(page, label) {
+  const history = page.locator('#message-history');
+  assert.equal(
+    (await history.innerText()).includes(elisionResultMarker),
+    false,
+    `${label} must not render successful tool-result bodies`,
+  );
+  const html = await page.content();
+  assert.equal(html.includes(elisionResultMarker), false, `${label} must not render tool-result bodies anywhere`);
+  assert.equal(html.includes(elisionMarker), false, `${label} must not render the internal elision marker`);
+}
+
+async function assertVisibleToolError(block, toolCallID, label, colors) {
+  const call = block.locator(`.tool-call[data-tool-call-id="${toolCallID}"]`);
+  const error = call.locator('.tool-call-error');
+  assert.equal(await error.count(), 1, `${label} must keep the original tool error element`);
+  assert.equal((await error.textContent()).trim(), elisionErrorText, `${label} must preserve the original error text`);
+  assert.equal(await call.evaluate((element) => element.classList.contains('tool-error')), true,
+    `${label} must mark the errored tool call`);
+  if (colors) {
+    assert.equal(
+      await error.evaluate((element) => getComputedStyle(element).color),
+      colors.error,
+      `${label} must keep the full error text color`,
+    );
+  }
+  if (!(await call.evaluate((element) => element.classList.contains('expanded')))) {
+    await call.locator('.tool-call-toggle').click();
+  }
+  await waitUntil(() => error.isVisible(), {
+    timeout: 5000,
+    label: `${label} to show the original tool error after expanding its tool call`,
+  });
 }
 
 function historyRowForChat(page, chatID) {
@@ -2339,6 +2641,241 @@ test('tools generated after steering stay live until the final response and surv
       assertNoCallOverride(provider.calls, 5);
     },
   });
+});
+
+test('tool-result budget elision mutes consumed live tool names before the next response and preserves flags through collapse and reload', { timeout: 240000 }, async (t) => {
+  const search = new SearchFixture();
+  await search.start();
+  try {
+    await runIsolatedCase(t, {
+      name: 'tool result budget elision',
+      browser,
+      build,
+      appEnv: { SEARXNG_URL: search.url },
+      async run(env) {
+        const { page, provider } = env;
+        await signup(page, username('elidebudget'), password);
+        const { chatID } = await openChat(page);
+        await selectChatTool(page, 'websearch');
+        await configureToolResultElision(page, { mode: 'tool_result_budget', tokenBudget: 1 });
+        const colors = await expectedToolNameColors(page);
+
+        const batchA = [
+          {
+            id: 'call_elide_a_ok',
+            name: 'websearch',
+            argumentsValue: { query: 'budget success long result', max_results: 2 },
+          },
+          {
+            id: 'call_elide_a_err',
+            name: 'websearch',
+            argumentsValue: { query: 'empty budget failure', max_results: 2 },
+          },
+        ];
+        const batchB = [
+          {
+            id: 'call_elide_b_ok',
+            name: 'websearch',
+            argumentsValue: { query: 'fresh success long result', max_results: 2 },
+          },
+          {
+            id: 'call_elide_b_err',
+            name: 'websearch',
+            argumentsValue: { query: 'empty fresh failure', max_results: 2 },
+          },
+        ];
+        const expectedLive = [
+          { id: batchA[0].id, name: 'websearch', elided: true, errored: false },
+          { id: batchA[1].id, name: 'websearch', elided: true, errored: true },
+          { id: batchB[0].id, name: 'websearch', elided: false, errored: false },
+          { id: batchB[1].id, name: 'websearch', elided: false, errored: true },
+        ];
+
+        await submitPrompt(page, 'budget elision primary');
+        await waitCompletionActive(page);
+        await provider.waitForCallCount(1);
+        await provider.release(0, multiToolCallResponse(batchA));
+
+        const afterFirstBatch = await provider.waitForCallCount(2);
+        assert.ok(
+          toolResultContent(afterFirstBatch, batchA[0].id).includes(elisionResultMarker),
+          'the first continuation must receive the full fresh successful result',
+        );
+        assert.equal(
+          toolResultContent(afterFirstBatch, batchA[1].id),
+          `Tool error: ${elisionErrorText}`,
+          'the first continuation must receive the original error result',
+        );
+
+        await provider.release(1, multiToolCallResponse(batchB));
+        const gated = await provider.waitForCallCount(3);
+        assert.equal(
+          toolResultContent(gated, batchA[0].id),
+          elisionMarker,
+          'the consumed successful result must be elided before the gated provider request',
+        );
+        assert.equal(
+          toolResultContent(gated, batchA[1].id),
+          elisionMarker,
+          'the consumed errored result must be elided before the gated provider request',
+        );
+        assert.ok(
+          toolResultContent(gated, batchB[0].id).includes(elisionResultMarker),
+          'the fresh successful result must remain intact in the gated provider request',
+        );
+        assert.equal(
+          toolResultContent(gated, batchB[1].id),
+          `Tool error: ${elisionErrorText}`,
+          'the fresh errored result must remain intact in the gated provider request',
+        );
+
+        await waitCompletionActive(page);
+        const liveTools = page.locator('.loading-message .tool-call-list');
+        await assertToolCallAppearance(page, liveTools, expectedLive, colors, 'gated live tool list');
+        assert.equal(
+          await page.locator('.loading-message.completion-active').count(),
+          1,
+          'the completion must remain active while elided names are published',
+        );
+        await assertToolResultBodiesHidden(page, 'active budget completion');
+
+        await provider.release(2, finalResponse('budget elision final answer'));
+        await waitCompletionDone(page);
+        await waitForHistoryText(page, 'budget elision final answer');
+
+        const completed = await completedToolDetails(page, expectedLive, colors, 'completed budget turn');
+        await assertVisibleToolError(completed, batchA[1].id, 'expanded budget turn', colors);
+        await assertToolResultBodiesHidden(page, 'completed budget turn');
+
+        await reloadChat(page, chatID);
+        await waitForHistoryText(page, 'budget elision final answer');
+        const reloadedColors = await expectedToolNameColors(page);
+        const reloaded = await completedToolDetails(page, expectedLive, reloadedColors, 'reloaded budget turn');
+        await assertVisibleToolError(reloaded, batchA[1].id, 'reloaded budget turn', reloadedColors);
+        await assertToolResultBodiesHidden(page, 'reloaded budget turn');
+        assertNoCallOverride(provider.calls, 3);
+      },
+    });
+  } finally {
+    await search.close();
+  }
+});
+
+test('current-turn elision updates archived tool names before the next response and none mode clears them when full results return', { timeout: 240000 }, async (t) => {
+  const search = new SearchFixture();
+  await search.start();
+  try {
+    await runIsolatedCase(t, {
+      name: 'archived tool result elision reset',
+      browser,
+      build,
+      appEnv: { SEARXNG_URL: search.url },
+      async run(env) {
+        const { page, provider } = env;
+        await signup(page, username('elidearchive'), password);
+        const { chatID } = await openChat(page);
+        await selectChatTool(page, 'websearch');
+        await configureToolResultElision(page, { mode: 'current_turn' });
+        const colors = await expectedToolNameColors(page);
+
+        const seedCalls = [
+          {
+            id: 'call_elide_seed_ok',
+            name: 'websearch',
+            argumentsValue: { query: 'current turn success long result', max_results: 2 },
+          },
+          {
+            id: 'call_elide_seed_err',
+            name: 'websearch',
+            argumentsValue: { query: 'empty current turn failure', max_results: 2 },
+          },
+        ];
+        const seedStates = [
+          { id: seedCalls[0].id, name: 'websearch', elided: false, errored: false },
+          { id: seedCalls[1].id, name: 'websearch', elided: false, errored: true },
+        ];
+        const elidedSeedStates = seedStates.map((state) => ({ ...state, elided: true }));
+
+        await submitPrompt(page, 'current turn seed');
+        await waitCompletionActive(page);
+        await provider.waitForCallCount(1);
+        await provider.release(0, multiToolCallResponse(seedCalls));
+        await provider.waitForCallCount(2);
+        await provider.release(1, finalResponse('current turn seed answer'));
+        await waitCompletionDone(page);
+        await waitForHistoryText(page, 'current turn seed answer');
+        const seedBlock = await completedToolDetails(page, seedStates, colors, 'seed turn');
+        await assertVisibleToolError(seedBlock, seedCalls[1].id, 'seed turn', colors);
+        await assertToolResultBodiesHidden(page, 'seed turn');
+
+        await submitPrompt(page, 'current turn follow-up');
+        await waitCompletionActive(page);
+        const followUp = await provider.waitForCallCount(3);
+        assert.equal(
+          toolResultContent(followUp, seedCalls[0].id),
+          elisionMarker,
+          'current-turn mode must elide the prior successful result in the follow-up request',
+        );
+        assert.equal(
+          toolResultContent(followUp, seedCalls[1].id),
+          elisionMarker,
+          'current-turn mode must elide the prior errored result in the follow-up request',
+        );
+
+        const history = page.locator('#message-history');
+        await assertToolCallAppearance(page, history, elidedSeedStates, colors, 'archived tools while follow-up is gated');
+        assert.equal(
+          await page.locator('.loading-message.completion-active').count(),
+          1,
+          'the follow-up completion must remain active while archived flags update',
+        );
+        await assertToolResultBodiesHidden(page, 'gated current-turn follow-up');
+
+        await provider.release(2, finalResponse('current turn follow-up answer'));
+        await waitCompletionDone(page);
+        await waitForHistoryText(page, 'current turn follow-up answer');
+
+        await configureToolResultElision(page, { mode: 'none' });
+        await submitPrompt(page, 'none reset follow-up');
+        await waitCompletionActive(page);
+        const reset = await provider.waitForCallCount(4);
+        assert.ok(
+          toolResultContent(reset, seedCalls[0].id).includes(elisionResultMarker),
+          'none mode must resend the full prior successful result',
+        );
+        assert.equal(
+          toolResultContent(reset, seedCalls[1].id),
+          `Tool error: ${elisionErrorText}`,
+          'none mode must resend the full prior error result',
+        );
+        assert.equal(
+          toolResultContent(reset, seedCalls[0].id).includes(elisionMarker),
+          false,
+          'none mode must not send the internal elision marker',
+        );
+
+        await assertToolCallAppearance(page, page.locator('#message-history'), seedStates, colors, 'archived tools after none reset while gated');
+        assert.equal(
+          await page.locator('.loading-message.completion-active').count(),
+          1,
+          'the reset completion must remain active while archived flags clear',
+        );
+
+        await provider.release(3, finalResponse('none reset answer'));
+        await waitCompletionDone(page);
+        await waitForHistoryText(page, 'none reset answer');
+        await reloadChat(page, chatID);
+        await waitForHistoryText(page, 'none reset answer');
+        const reloadedColors = await expectedToolNameColors(page);
+        const reloaded = await completedToolDetails(page, seedStates, reloadedColors, 'reloaded none reset turn');
+        await assertVisibleToolError(reloaded, seedCalls[1].id, 'reloaded none reset turn', reloadedColors);
+        await assertToolResultBodiesHidden(page, 'reloaded none reset turn');
+        assertNoCallOverride(provider.calls, 4);
+      },
+    });
+  } finally {
+    await search.close();
+  }
 });
 
 test('pending inbox sits above the toolbar without visible heading, counter, or Resume', { timeout: 180000 }, async (t) => {

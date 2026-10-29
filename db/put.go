@@ -359,11 +359,15 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 	}
 
 	for callPosition, call := range message.ToolCalls {
+		resultElided := 0
+		if call.ResultElided {
+			resultElided = 1
+		}
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO message_tool_calls
-				(message_id, message_role, position, call_id, call_type, function_name, arguments)
-			VALUES (?, 'assistant', ?, ?, ?, ?, ?)
-		`, id, callPosition, call.ID, call.Type, call.Function.Name, toolCallArguments[callPosition]); err != nil {
+				(message_id, message_role, position, call_id, call_type, function_name, arguments, result_elided)
+			VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?)
+		`, id, callPosition, call.ID, call.Type, call.Function.Name, toolCallArguments[callPosition], resultElided); err != nil {
 			return 0, fmt.Errorf("store tool call %d for message %d: %w", callPosition, id, err)
 		}
 	}

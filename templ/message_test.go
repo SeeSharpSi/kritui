@@ -5,6 +5,7 @@ import (
 	"context"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 
 	"seesharpsi/kritui/llm"
@@ -12,6 +13,80 @@ import (
 
 func usagePointer[T int | float64](value T) *T {
 	return &value
+}
+
+func TestToolCallElisionPresentation(t *testing.T) {
+	const elisionTitle = `title="Tool result elided from model context"`
+	render := func(t *testing.T, calls []llm.ToolCall, errors map[string]string) string {
+		t.Helper()
+		var output bytes.Buffer
+		if err := ToolCalls(calls, "", errors).Render(context.Background(), &output); err != nil {
+			t.Fatal(err)
+		}
+		return output.String()
+	}
+
+	t.Run("elided success keeps arguments and mutes the name class", func(t *testing.T) {
+		call := llm.ToolCall{
+			ID: "call-ok", Type: "function", ResultElided: true,
+			Function: llm.FunctionCall{Name: "lookup", Arguments: `{"key":"value"}`},
+		}
+		markup := render(t, []llm.ToolCall{call}, nil)
+		for _, want := range []string{`class="tool-call tool-elided"`, elisionTitle, `class="tool-call-toggle"`, "</button>"} {
+			if !strings.Contains(markup, want) {
+				t.Fatalf("elided success markup missing %q: %s", want, markup)
+			}
+		}
+		if strings.Count(markup, "tool-elided") != 1 {
+			t.Fatalf("elision class leaked outside the name: %s", markup)
+		}
+		if strings.Count(markup, "<code") != 1 || strings.Contains(markup, `<code class=`) {
+			t.Fatalf("argument body should remain unclassified: %s", markup)
+		}
+	})
+
+	t.Run("elided error keeps the original error body", func(t *testing.T) {
+		call := llm.ToolCall{
+			ID: "call-error", Type: "function", ResultElided: true,
+			Function: llm.FunctionCall{Name: "lookup", Arguments: `{"key":"value"}`},
+		}
+		markup := render(t, []llm.ToolCall{call}, map[string]string{"call-error": "provider rejected input"})
+		for _, want := range []string{`class="tool-call tool-error tool-elided"`, elisionTitle, `class="tool-call-error" role="alert"`, "provider rejected input"} {
+			if !strings.Contains(markup, want) {
+				t.Fatalf("elided error markup missing %q: %s", want, markup)
+			}
+		}
+		if strings.Count(markup, "tool-elided") != 1 {
+			t.Fatalf("elision class leaked into the error body: %s", markup)
+		}
+	})
+
+	t.Run("elided no-argument call marks the strong name", func(t *testing.T) {
+		call := llm.ToolCall{
+			ID: "call-bare", Type: "function", ResultElided: true,
+			Function: llm.FunctionCall{Name: "lookup", Arguments: "{}"},
+		}
+		markup := render(t, []llm.ToolCall{call}, nil)
+		for _, want := range []string{`class="tool-call tool-elided"`, `<strong ` + elisionTitle + `>lookup</strong>`} {
+			if !strings.Contains(markup, want) {
+				t.Fatalf("elided no-argument markup missing %q: %s", want, markup)
+			}
+		}
+	})
+
+	t.Run("full results keep the normal name presentation", func(t *testing.T) {
+		calls := []llm.ToolCall{
+			{ID: "call-full", Type: "function", Function: llm.FunctionCall{Name: "lookup", Arguments: `{"key":"value"}`}},
+			{ID: "call-bare", Type: "function", Function: llm.FunctionCall{Name: "lookup", Arguments: "{}"}},
+		}
+		markup := render(t, calls, nil)
+		if strings.Contains(markup, "tool-elided") || strings.Contains(markup, elisionTitle) {
+			t.Fatalf("full results gained elision presentation: %s", markup)
+		}
+		if !strings.Contains(markup, `<strong title="">lookup</strong>`) {
+			t.Fatalf("full no-argument name lost its normal presentation: %s", markup)
+		}
+	})
 }
 
 func TestMessagesResponseUsage(t *testing.T) {

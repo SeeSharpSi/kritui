@@ -610,7 +610,7 @@ func scanStoredMessage(ctx context.Context, row rowScanner) (storedMessage, erro
 
 func loadMessageToolCalls(ctx context.Context, db messageQueryer, chatID int64, messages []storedMessage, indexes map[int64]int) error {
 	rows, err := db.QueryContext(ctx, `
-		SELECT calls.message_id, calls.position, calls.call_id, calls.call_type, calls.function_name, calls.arguments
+		SELECT calls.message_id, calls.position, calls.call_id, calls.call_type, calls.function_name, calls.arguments, calls.result_elided
 		FROM message_tool_calls AS calls
 		JOIN messages ON messages.id = calls.message_id
 		WHERE messages.chat_id = ? AND messages.undo_sequence IS NULL
@@ -623,10 +623,12 @@ func loadMessageToolCalls(ctx context.Context, db messageQueryer, chatID int64, 
 	for rows.Next() {
 		var messageID int64
 		var position int
+		var resultElided int
 		var call llm.ToolCall
-		if err := rows.Scan(&messageID, &position, &call.ID, &call.Type, &call.Function.Name, &call.Function.Arguments); err != nil {
+		if err := rows.Scan(&messageID, &position, &call.ID, &call.Type, &call.Function.Name, &call.Function.Arguments, &resultElided); err != nil {
 			return fmt.Errorf("scan message tool call: %w", err)
 		}
+		call.ResultElided = resultElided != 0
 		index, ok := indexes[messageID]
 		if !ok {
 			return fmt.Errorf("message tool call references unloaded message %d", messageID)

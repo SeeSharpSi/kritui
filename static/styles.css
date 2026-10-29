@@ -2236,6 +2236,10 @@ main {
                 &.tool-error {
                     color: var(--color-error);
 
+                    >code {
+                        color: color-mix(in srgb, var(--color-error) 55%, var(--color-text-muted));
+                    }
+
                     .tool-call-toggle {
                         color: var(--color-error);
                     }
@@ -2250,6 +2254,16 @@ main {
                     &.expanded .tool-call-error {
                         display: block;
                     }
+                }
+
+                &.tool-elided strong,
+                &.tool-elided .tool-call-toggle {
+                    color: var(--color-text-muted);
+                }
+
+                &.tool-error.tool-elided strong,
+                &.tool-error.tool-elided .tool-call-toggle {
+                    color: color-mix(in srgb, var(--color-error) 55%, var(--color-text-muted));
                 }
             }
         }

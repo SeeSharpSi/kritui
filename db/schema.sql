@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS message_tool_calls (
     call_type TEXT NOT NULL CHECK (call_type <> ''),
     function_name TEXT NOT NULL CHECK (function_name <> ''),
     arguments TEXT NOT NULL,
+    result_elided INTEGER NOT NULL DEFAULT 0 CHECK (result_elided IN (0, 1)),
     PRIMARY KEY (message_id, position),
     UNIQUE (message_id, call_id),
     FOREIGN KEY (message_id, message_role) REFERENCES messages(id, role) ON DELETE CASCADE
@@ -314,4 +315,4 @@ CREATE TABLE IF NOT EXISTS completion_state_tools (
     PRIMARY KEY (chat_id, position)
 ) STRICT;
 
-PRAGMA user_version = 31;
+PRAGMA user_version = 32;
