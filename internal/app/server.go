@@ -1,12 +1,12 @@
-package main
+package app
 
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -27,10 +27,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-//go:embed static
-var staticFiles embed.FS
-
-//go:embed db/schema.sql
+var staticFiles fs.FS
 var schema string
 
 const (
@@ -41,30 +38,37 @@ const (
 	staticAssetCacheControl = "public, max-age=31536000, immutable"
 )
 
-func main() {
+// Run starts the application using the supplied static assets and database
+// schema. The assets must contain the static/ paths served by the application.
+// Run opens or creates data.db in the working directory, applies migrations,
+// and then blocks while serving HTTP on :8080.
+func Run(files fs.FS, schemaSQL string) error {
+	staticFiles = files
+	schema = schemaSQL
+
 	databaseExists := true
 	if _, err := os.Stat("data.db"); errors.Is(err, os.ErrNotExist) {
 		databaseExists = false
 	} else if err != nil {
-		log.Fatalf("check database: %v", err)
+		return fmt.Errorf("check database: %w", err)
 	}
 
 	database, err := openDatabase("data.db")
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer database.Close()
 
 	if !databaseExists {
 		if _, err := database.Exec(schema); err != nil {
-			log.Fatalf("initialize database: %v", err)
+			return fmt.Errorf("initialize database: %w", err)
 		}
 	} else if err := migrateDatabase(database); err != nil {
-		log.Fatalf("migrate database: %v", err)
+		return fmt.Errorf("migrate database: %w", err)
 	}
 	ownerContext := kritui_db.WithUser(context.Background(), kritui_db.LegacyOwnerID)
 	if err := kritui_db.EnsureDefaultModel(ownerContext, database, os.Getenv("LLM_MODEL")); err != nil {
-		log.Fatalf("initialize settings: %v", err)
+		return fmt.Errorf("initialize settings: %w", err)
 	}
 	toolList := []tools.Tool{
 		tools.NewWebFetchTool(),
@@ -73,11 +77,11 @@ func main() {
 	toolList = append(toolList, git.NewGitTools()...)
 	toolRegistry, err := tools.NewRegistry(toolList...)
 	if err != nil {
-		log.Fatalf("register tools: %v", err)
+		return fmt.Errorf("register tools: %w", err)
 	}
 	commandRegistry, err := newCommandRegistry(database)
 	if err != nil {
-		log.Fatalf("register commands: %v", err)
+		return fmt.Errorf("register commands: %w", err)
 	}
 	var toolCallLogger *log.Logger
 	switch value := os.Getenv("SHOW_TOOLCALLS"); value {
@@ -85,12 +89,12 @@ func main() {
 	case "true":
 		toolCallLogger = log.Default()
 	default:
-		log.Fatalf("SHOW_TOOLCALLS must be true or false, got %q", value)
+		return fmt.Errorf("SHOW_TOOLCALLS must be true or false, got %q", value)
 	}
 
 	secureCookies, err := secureCookiesFromEnvironment()
 	if err != nil {
-		log.Fatalf("configure secure cookies: %v", err)
+		return fmt.Errorf("configure secure cookies: %w", err)
 	}
 	toolCalls := newToolCallStore()
 	auth := newAuthService(database, secureCookies)
@@ -99,9 +103,7 @@ func main() {
 	log.Println("listening on http://localhost:8080")
 	server := newHTTPServer(mux)
 	// SSE responses intentionally have no server-wide write deadline.
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatal(err)
-	}
+	return server.ListenAndServe()
 }
 
 // newMux registers every application route, the account routes, and wraps the
@@ -237,7 +239,7 @@ func newHTTPServer(handler http.Handler) *http.Server {
 	}
 }
 
-func staticHandler(files embed.FS) http.Handler {
+func staticHandler(files fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(files))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", staticAssetCacheControl)
@@ -245,8 +247,8 @@ func staticHandler(files embed.FS) http.Handler {
 	})
 }
 
-func faviconHandler(files embed.FS) http.HandlerFunc {
-	icon, err := files.ReadFile("static/favicon.ico")
+func faviconHandler(files fs.FS) http.HandlerFunc {
+	icon, err := fs.ReadFile(files, "static/favicon.ico")
 	if err != nil {
 		panic("embedded favicon missing")
 	}
@@ -257,8 +259,8 @@ func faviconHandler(files embed.FS) http.HandlerFunc {
 	}
 }
 
-func logoHandler(files embed.FS) http.HandlerFunc {
-	logo, err := files.ReadFile("static/logo.png")
+func logoHandler(files fs.FS) http.HandlerFunc {
+	logo, err := fs.ReadFile(files, "static/logo.png")
 	if err != nil {
 		panic("embedded logo missing")
 	}
@@ -270,8 +272,8 @@ func logoHandler(files embed.FS) http.HandlerFunc {
 	}
 }
 
-func serviceWorkerHandler(files embed.FS) http.HandlerFunc {
-	worker, err := files.ReadFile("static/sw.js")
+func serviceWorkerHandler(files fs.FS) http.HandlerFunc {
+	worker, err := fs.ReadFile(files, "static/sw.js")
 	if err != nil {
 		panic("embedded service worker missing")
 	}

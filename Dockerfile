@@ -13,6 +13,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY *.go ./
+COPY internal/ ./internal/
 COPY commands/ ./commands/
 COPY db/ ./db/
 COPY llm/ ./llm/

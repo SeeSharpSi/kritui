@@ -113,8 +113,8 @@ go vet ./...
 
 ## Structure
 
-- `server.go`, `*_handlers.go`, `tool_stream.go`: HTTP server, chat flow, and persistence wiring
-- `auth.go`, `auth_handlers.go`, `password.go`: accounts, sessions, and password hashing
+- `main.go`: embeds browser assets and the database schema, then launches `internal/app`
+- `internal/app/`: HTTP routes, authentication, chat/completion/inbox flow, migrations, and application tests
 - `templ/`, `static/`: server-rendered components and embedded browser assets
 - `llm/`: non-streaming API client and tool-capable conversation loop
 - `commands/`: slash-command registry and built-ins

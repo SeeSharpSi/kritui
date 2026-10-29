@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bytes"
@@ -14,6 +14,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -108,7 +109,7 @@ func TestStaticHandlerServesVersionedAssetsWithImmutableCache(t *testing.T) {
 }
 
 func TestStaticStylesDefineGlobalRequestOverlay(t *testing.T) {
-	styles, err := staticFiles.ReadFile("static/styles.css")
+	styles, err := fs.ReadFile(staticFiles, "static/styles.css")
 	if err != nil {
 		t.Fatalf("read embedded styles: %v", err)
 	}
@@ -549,7 +550,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	}
 	requireNotContains(t, body, `hx-get="/settings?chat=8"`, "Loaded lazily", "loadHistory")
 
-	script, err := staticFiles.ReadFile("static/app.js")
+	script, err := fs.ReadFile(staticFiles, "static/app.js")
 	if err != nil {
 		t.Fatalf("read app script: %v", err)
 	}
@@ -2355,7 +2356,7 @@ func TestMigrateDatabaseRetiresPlaintextSharesFromVersion29(t *testing.T) {
 	if end < 0 {
 		t.Fatal("schema has no table boundary after shared responses")
 	}
-	legacyDDL, err := os.ReadFile("db/share_schema.sql")
+	legacyDDL, err := os.ReadFile(filepath.Join(projectRoot, "db", "share_schema.sql"))
 	if err != nil {
 		t.Fatalf("read legacy share schema: %v", err)
 	}
@@ -7482,7 +7483,7 @@ func TestMessageCompletionUsesStoredLLMCredentials(t *testing.T) {
 }
 
 func TestStaticSaveCleanupClearsLLMSecretInput(t *testing.T) {
-	script, err := staticFiles.ReadFile("static/app.js")
+	script, err := fs.ReadFile(staticFiles, "static/app.js")
 	if err != nil {
 		t.Fatalf("read app script: %v", err)
 	}
