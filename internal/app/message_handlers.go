@@ -452,6 +452,12 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		terminal = renderCompletionFragment(ctx, templates.MessageError("No message is waiting for completion."))
 		return
 	}
+	systemPrompt, err := kritui_db.GetSystemPrompt(ctx, database)
+	if err != nil {
+		log.Printf("get system prompt: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load settings.", request.model, selectedTools))
+		return
+	}
 	conversationMessages := messagesWithPromptAppendTexts(messages)
 	effectiveConfig, err := effectiveLLMConfig(ctx, database)
 	if err != nil {
@@ -522,6 +528,7 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 	}
 
 	conversation, err := llm.NewConversation(client, conversationRegistry, llm.PromptContext{
+		SystemPrompt:   systemPrompt,
 		CurrentTime:    time.Now(),
 		ClientLocation: clientLocation(clientTimezone),
 		PDFLinks:       pdfPromptLinks(request.chatID, messages),
@@ -612,8 +619,10 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		}
 		if len(input.Messages) > 0 {
 			input.PromptContext = &llm.PromptContext{
-				CurrentTime: time.Now(), ClientLocation: clientLocation(clientTimezone),
-				PDFLinks: pdfPromptLinks(request.chatID, snapshot.Messages),
+				SystemPrompt:   systemPrompt,
+				CurrentTime:    time.Now(),
+				ClientLocation: clientLocation(clientTimezone),
+				PDFLinks:       pdfPromptLinks(request.chatID, snapshot.Messages),
 			}
 		}
 		return input, nil

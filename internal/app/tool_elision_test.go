@@ -952,7 +952,7 @@ func version31SchemaFixture(t *testing.T) string {
 		t.Fatal("schema does not contain tool-call result elision metadata")
 	}
 	fixture := strings.Replace(schema, resultElidedColumn, "", 1)
-	const currentVersion = "PRAGMA user_version = 32;"
+	const currentVersion = "PRAGMA user_version = 33;"
 	if !strings.Contains(fixture, currentVersion) {
 		t.Fatalf("schema version marker is not 32: %s", currentVersion)
 	}
@@ -972,7 +972,7 @@ func version22SchemaFixture(t *testing.T) string {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	fixture := prefix + schema[start+relativeEnd:]
-	const currentVersion = "PRAGMA user_version = 32;"
+	const currentVersion = "PRAGMA user_version = 33;"
 	if !strings.Contains(fixture, currentVersion) {
 		t.Fatalf("schema version marker is not 32: %s", currentVersion)
 	}

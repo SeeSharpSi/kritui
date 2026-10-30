@@ -27,17 +27,18 @@ func encryptedStorageTestContext(userID int64, cipher *StorageCipher) context.Co
 
 func rawSettingsColumns(t *testing.T, database *sql.DB, userID int64) map[string]sql.NullString {
 	t.Helper()
-	var llmEndpoint, llmAPIKey, ntfyEndpoint, ntfyTopic, ntfyAPIKey sql.NullString
+	var llmEndpoint, llmAPIKey, systemPrompt, ntfyEndpoint, ntfyTopic, ntfyAPIKey sql.NullString
 	if err := database.QueryRow(`
-		SELECT llm_endpoint, llm_api_key, ntfy_endpoint, ntfy_topic, ntfy_api_key
+		SELECT llm_endpoint, llm_api_key, system_prompt, ntfy_endpoint, ntfy_topic, ntfy_api_key
 		FROM settings
 		WHERE id = ?
-	`, userID).Scan(&llmEndpoint, &llmAPIKey, &ntfyEndpoint, &ntfyTopic, &ntfyAPIKey); err != nil {
+	`, userID).Scan(&llmEndpoint, &llmAPIKey, &systemPrompt, &ntfyEndpoint, &ntfyTopic, &ntfyAPIKey); err != nil {
 		t.Fatalf("read raw settings: %v", err)
 	}
 	return map[string]sql.NullString{
 		"settings.llm_endpoint":  llmEndpoint,
 		"settings.llm_api_key":   llmAPIKey,
+		"settings.system_prompt": systemPrompt,
 		"settings.ntfy_endpoint": ntfyEndpoint,
 		"settings.ntfy_topic":    ntfyTopic,
 		"settings.ntfy_api_key":  ntfyAPIKey,
@@ -132,6 +133,40 @@ func TestEncryptedSettingsRoundTripAndRawCiphertext(t *testing.T) {
 		t.Fatalf("GetLLMConfig() without cipher error: %v", err)
 	} else if !strings.HasPrefix(got.APIKey, encryptedStorageTestPrefix) {
 		t.Errorf("GetLLMConfig() without cipher = %#v, want raw ciphertext compatibility mode", got)
+	}
+}
+
+func TestEncryptedSystemPromptRoundTripAndOwnerBinding(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	cipher := newEncryptedStorageTestCipher(t)
+	ctx := encryptedStorageTestContext(LegacyOwnerID, cipher)
+	custom := "Private system instructions.\nKeep them secret."
+
+	if err := SaveSettings(ctx, database, SettingsUpdate{
+		Model:         "prompt-model",
+		MaxToolRounds: 6,
+		SystemPrompt:  &custom,
+	}); err != nil {
+		t.Fatalf("SaveSettings() error: %v", err)
+	}
+
+	raw := rawSettingsColumns(t, database, LegacyOwnerID)["settings.system_prompt"]
+	ciphertext := assertEncryptedWithoutMarkers(t, "settings.system_prompt", raw, "Private system instructions")
+	prompt, err := GetSystemPrompt(ctx, database)
+	if err != nil {
+		t.Fatalf("GetSystemPrompt() error: %v", err)
+	}
+	if prompt != custom {
+		t.Errorf("GetSystemPrompt() = %q, want exact custom prompt", prompt)
+	}
+
+	foreign, err := CreateUser(context.Background(), database, "PromptForeign", "prompt-foreign-hash")
+	if err != nil {
+		t.Fatalf("CreateUser() error: %v", err)
+	}
+	foreignCtx := encryptedStorageTestContext(foreign.ID, cipher)
+	if _, err := DecryptStorageText(foreignCtx, "settings.system_prompt", storageRowID(LegacyOwnerID), ciphertext); !errors.Is(err, ErrStorageDecryption) {
+		t.Errorf("foreign-owner decrypt error = %v, want ErrStorageDecryption", err)
 	}
 }
 

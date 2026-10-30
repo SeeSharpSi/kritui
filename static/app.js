@@ -712,6 +712,18 @@ function settingsClearState(button, pending) {
     pendingMessage.hidden = !pending;
 }
 
+function resetSystemPrompt(button) {
+    const field = button.closest('.settings-main-form')?.querySelector('#system-prompt');
+    const defaultValue = field?.dataset.defaultSystemPrompt;
+    if (!field || defaultValue === undefined) {
+        return;
+    }
+    field.value = defaultValue;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    field.focus({ preventScroll: true });
+}
+
 function syncToolResultElisionControls(root = document) {
     const forms = [];
     if (root?.matches?.('.settings-main-form')) {
@@ -1923,6 +1935,12 @@ document.addEventListener('click', (event) => {
     const clearUndo = event.target.closest('[data-settings-clear-undo]');
     if (clearUndo) {
         settingsClearState(clearUndo, false);
+        return;
+    }
+
+    const systemPromptReset = event.target.closest('[data-settings-reset-system-prompt]');
+    if (systemPromptReset) {
+        resetSystemPrompt(systemPromptReset);
         return;
     }
 

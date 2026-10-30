@@ -530,6 +530,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	kritui_db.MigrateEncryptedSharedResponses,
 	migrateStorageFormat31,
 	migrateToolCallResultElided,
+	migrateSystemPromptSettings,
 }
 
 // migrateStorageFormat31 reserves schema version 31 as the storage-format
@@ -562,6 +563,23 @@ func migrateToolCallResultElided(ctx context.Context, tx *sql.Tx) error {
 	}
 	return addColumnIfMissing(ctx, tx, "message_tool_calls", "result_elided",
 		`INTEGER NOT NULL DEFAULT 0 CHECK (result_elided IN (0, 1))`)
+}
+
+// migrateSystemPromptSettings adds the optional per-account system prompt base.
+// Existing and new accounts default to NULL, which uses the built-in prompt.
+func migrateSystemPromptSettings(ctx context.Context, tx *sql.Tx) error {
+	var tableCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'settings'
+	`).Scan(&tableCount); err != nil {
+		return fmt.Errorf("inspect settings table: %w", err)
+	}
+	if tableCount == 0 {
+		return nil
+	}
+	return addColumnIfMissing(ctx, tx, "settings", "system_prompt", `TEXT`)
 }
 
 // migrateTitleGenerationSettings adds the opt-in chat-title generation toggle

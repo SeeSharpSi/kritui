@@ -4713,3 +4713,145 @@ test('encrypted PDF attachment uploads, streams authenticated ranges, and surviv
     },
   });
 });
+
+test('editable system prompt saves, resets without saving, and reaches provider calls', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'editable system prompt',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      const suffix = `${Date.now().toString(36)}_${process.pid.toString(36)}`;
+      const marker = `SYSTEM_PROMPT_MARKER_${suffix}`;
+      const customPrompt = [
+        '',
+        '',
+        '  You are the editable system prompt regression assistant. ',
+        `Always include the token ${marker} in answers.`,
+        '  ',
+        '',
+        '',
+      ].join('\n');
+      const firstPrompt = `system prompt custom ${suffix}`;
+      const firstReply = `system prompt custom reply ${suffix}`;
+      const secondPrompt = `system prompt default ${suffix}`;
+      const secondReply = `system prompt default reply ${suffix}`;
+      const settingsPosts = [];
+      page.on('request', (request) => {
+        if (request.method() === 'POST' && new URL(request.url()).pathname === '/settings') {
+          settingsPosts.push(request);
+        }
+      });
+
+      await signup(page, username('sysprompt'), password);
+      const { chatID } = await openChat(page);
+
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, 'settings-page');
+      const promptField = page.locator('#system-prompt');
+      await promptField.waitFor({ state: 'visible' });
+      assert.equal(
+        await page.locator('.settings-main-form input[type="hidden"][name="system_prompt_form"]').getAttribute('value'),
+        '1',
+        'settings form must submit the system prompt marker',
+      );
+      const defaultPrompt = await promptField.getAttribute('data-default-system-prompt');
+      assert.ok(defaultPrompt, 'system prompt must expose the editable default');
+      assert.ok(defaultPrompt.includes('Your name is bob'), `unexpected default system prompt: ${defaultPrompt}`);
+      assert.equal(await promptField.inputValue(), defaultPrompt, 'default system prompt must be visible in the textarea');
+
+      await promptField.fill(customPrompt);
+      const firstSaveResponse = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return response.request().method() === 'POST' && url.pathname === '/settings';
+      }, { timeout: 20000 });
+      await page.locator('#settings-page .settings-save').click();
+      const firstSave = await firstSaveResponse;
+      assert.ok(firstSave.status() >= 200 && firstSave.status() < 400, `settings save returned ${firstSave.status()}`);
+      await page.locator('[data-settings-saved]').waitFor({ state: 'visible', timeout: 15000 });
+      assert.equal(await page.locator('#system-prompt').inputValue(), customPrompt, 'saved custom prompt must render verbatim');
+      assert.equal(settingsPosts.length, 1, 'saving the custom prompt must use one settings request');
+
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, null);
+
+      const firstCallIndex = provider.calls.length;
+      await submitPrompt(page, firstPrompt);
+      await waitCompletionActive(page);
+      const firstCall = await provider.waitForCallCount(firstCallIndex + 1);
+      const firstSystem = firstCall.messages.find((message) => message.role === 'system')?.content;
+      assert.equal(typeof firstSystem, 'string', 'provider call must include a system message');
+      assert.ok(
+        firstSystem.startsWith(`${customPrompt}\n\n`),
+        'provider system message must begin with the raw custom prompt, including leading and trailing whitespace, then the two-newline context separator',
+      );
+      assert.match(firstSystem, /## Current date and time/, 'provider must receive automatic date and time context');
+      assert.match(firstSystem, /Current UTC datetime: \d{4}-\d{2}-\d{2}T/, 'automatic context must include the UTC datetime');
+      assert.equal(firstSystem.includes('Your name is bob'), false, 'custom prompt must replace the default base');
+      await provider.release(firstCall.index, finalResponse(firstReply));
+      await waitCompletionDone(page);
+      await waitForHistoryText(page, firstReply);
+
+      await reloadChat(page, chatID);
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, 'settings-page');
+      assert.equal(
+        await page.locator('#system-prompt').inputValue(),
+        customPrompt,
+        'custom system prompt must persist across reload',
+      );
+
+      const maxRounds = page.locator('#max-tool-rounds');
+      await maxRounds.fill('7');
+      const postsBeforeReset = settingsPosts.length;
+      await page.locator('[data-settings-reset-system-prompt]').click();
+      assert.equal(await page.locator('#system-prompt').inputValue(), defaultPrompt, 'restore must show the default prompt');
+      assert.equal(await maxRounds.inputValue(), '7', 'restore must not discard another unsaved setting');
+      await waitForStableLayout(page);
+      assert.equal(settingsPosts.length, postsBeforeReset, 'restore must not submit or save settings');
+
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, null);
+      await reloadChat(page, chatID);
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, 'settings-page');
+      assert.equal(
+        await page.locator('#system-prompt').inputValue(),
+        customPrompt,
+        'restoring the field without Save all must leave the saved custom prompt unchanged',
+      );
+
+      await page.locator('[data-settings-reset-system-prompt]').click();
+      assert.equal(await page.locator('#system-prompt').inputValue(), defaultPrompt, 'restore must reset the saved custom prompt');
+      const resetSaveResponse = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return response.request().method() === 'POST' && url.pathname === '/settings';
+      }, { timeout: 20000 });
+      const postsBeforeDefaultSave = settingsPosts.length;
+      await page.locator('#settings-page .settings-save').click();
+      const resetSave = await resetSaveResponse;
+      assert.ok(resetSave.status() >= 200 && resetSave.status() < 400, `default prompt save returned ${resetSave.status()}`);
+      await page.locator('[data-settings-saved]').waitFor({ state: 'visible', timeout: 15000 });
+      assert.equal(settingsPosts.length, postsBeforeDefaultSave + 1, 'Save all must persist the restored default');
+      assert.equal(await page.locator('#system-prompt').inputValue(), defaultPrompt, 'saved default prompt must render verbatim');
+
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, null);
+      const secondCallIndex = provider.calls.length;
+      await submitPrompt(page, secondPrompt);
+      await waitCompletionActive(page);
+      const secondCall = await provider.waitForCallCount(secondCallIndex + 1);
+      const secondSystem = secondCall.messages.find((message) => message.role === 'system')?.content;
+      assert.equal(typeof secondSystem, 'string', 'restored provider call must include a system message');
+      assert.ok(
+        secondSystem.startsWith(`${defaultPrompt}\n\n`),
+        'provider must return to the default system prompt followed by the context separator',
+      );
+      assert.equal(secondSystem.includes(marker), false, 'custom prompt text must be gone after saving the default');
+      assert.match(secondSystem, /## Current date and time/, 'default prompt must keep automatic date and time context');
+      await provider.release(secondCall.index, finalResponse(secondReply));
+      await waitCompletionDone(page);
+      await waitForHistoryText(page, secondReply);
+    },
+  });
+});

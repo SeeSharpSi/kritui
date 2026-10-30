@@ -14,6 +14,10 @@ import (
 
 const MaxConfigurableToolRounds = 100
 
+// MaxSystemPromptBytes bounds the raw UTF-8 bytes accepted for an account's
+// custom system prompt base.
+const MaxSystemPromptBytes = 64 << 10
+
 // storageRowID returns the stable AAD row identifier for one account-scoped
 // settings row. The owner ID itself is authenticated separately by the storage
 // helpers from the context.
@@ -61,8 +65,8 @@ type settingWriter interface {
 }
 
 // SettingsUpdate describes the desired settings for one atomic save.
-// Nil PromptAppends, MCPServers, Ntfy, LLM, ToolResultElision, or
-// TitleGeneration values, and an empty Theme, leave those settings untouched.
+// Nil PromptAppends, MCPServers, Ntfy, LLM, ToolResultElision, TitleGeneration,
+// or SystemPrompt values, and an empty Theme, leave those settings untouched.
 type SettingsUpdate struct {
 	Model             string
 	MaxToolRounds     int
@@ -73,6 +77,7 @@ type SettingsUpdate struct {
 	LLM               *LLMSettingsUpdate
 	ToolResultElision *llm.ToolResultElisionConfig
 	TitleGeneration   *TitleGenerationSettingsUpdate
+	SystemPrompt      *string
 	Theme             string
 }
 
@@ -208,6 +213,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 	}
 	if update.TitleGeneration != nil {
 		if err := setTitleGeneration(ctx, tx, *update.TitleGeneration); err != nil {
+			return err
+		}
+	}
+	if update.SystemPrompt != nil {
+		if err := setSystemPrompt(ctx, tx, *update.SystemPrompt); err != nil {
 			return err
 		}
 	}
@@ -349,6 +359,65 @@ func setTitleGeneration(ctx context.Context, db settingWriter, update TitleGener
 		WHERE id = ?
 	`, update.Enabled, modelValue, userID); err != nil {
 		return fmt.Errorf("set title generation settings: %w", err)
+	}
+	return nil
+}
+
+// ValidateSystemPrompt checks the raw custom system prompt without writing it.
+// Blank text is valid and resets the account to the built-in default.
+func ValidateSystemPrompt(value string) error {
+	if len([]byte(value)) > MaxSystemPromptBytes {
+		return fmt.Errorf("set system prompt: prompt must not exceed %d bytes", MaxSystemPromptBytes)
+	}
+	return nil
+}
+
+// GetSystemPrompt returns the effective account system prompt base. NULL, blank,
+// or the built-in default resolves to llm.DefaultSystemPrompt; custom nonblank
+// text is returned exactly as stored.
+func GetSystemPrompt(ctx context.Context, db *sql.DB) (string, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get system prompt: %w", err)
+	}
+	var stored sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT system_prompt FROM settings WHERE id = ?`, userID).Scan(&stored); err != nil {
+		return "", fmt.Errorf("get system prompt: %w", err)
+	}
+	if !stored.Valid {
+		return llm.DefaultSystemPrompt(), nil
+	}
+	decrypted, err := decryptSettingText(ctx, "settings.system_prompt", userID, stored.String)
+	if err != nil {
+		return "", fmt.Errorf("get system prompt: %w", err)
+	}
+	if strings.TrimSpace(decrypted) == "" {
+		return llm.DefaultSystemPrompt(), nil
+	}
+	return decrypted, nil
+}
+
+// setSystemPrompt stores a custom prompt or NULL when the value is blank or
+// merely restates the built-in default. Storing NULL keeps future default
+// updates effective for the account.
+func setSystemPrompt(ctx context.Context, db settingWriter, value string) error {
+	if err := ValidateSystemPrompt(value); err != nil {
+		return err
+	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set system prompt: %w", err)
+	}
+	var stored any
+	if trimmed := strings.TrimSpace(value); trimmed != "" && trimmed != llm.DefaultSystemPrompt() {
+		encrypted, err := encryptSettingText(ctx, "settings.system_prompt", userID, value)
+		if err != nil {
+			return fmt.Errorf("set system prompt: %w", err)
+		}
+		stored = encrypted
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET system_prompt = ? WHERE id = ?`, stored, userID); err != nil {
+		return fmt.Errorf("set system prompt: %w", err)
 	}
 	return nil
 }

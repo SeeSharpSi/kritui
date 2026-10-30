@@ -264,6 +264,18 @@ var storageMigrations = []storageMigration{
 		updateSQL: `UPDATE settings SET ntfy_topic = ? WHERE rowid = ?`,
 	},
 	{
+		name:               "settings.system_prompt",
+		scope:              "settings.system_prompt",
+		kind:               storageFieldText,
+		normalizeBlankNull: true,
+		selectSQL: `SELECT rowid, id, CAST(id AS TEXT), system_prompt
+			FROM settings
+			WHERE rowid >= ? AND system_prompt IS NOT NULL
+			ORDER BY rowid
+			LIMIT ?`,
+		updateSQL: `UPDATE settings SET system_prompt = ? WHERE rowid = ?`,
+	},
+	{
 		name:  "mcp_servers.name",
 		scope: "mcp_servers.name",
 		kind:  storageFieldText,

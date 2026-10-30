@@ -165,6 +165,64 @@ func TestConversationRoundBoundaryInitial(t *testing.T) {
 	}
 }
 
+func TestConversationRoundBoundaryPreservesCustomSystemPrompt(t *testing.T) {
+	custom := "Custom account base stays in place."
+	initialContext := PromptContext{
+		SystemPrompt: custom,
+		CurrentTime:  time.Date(2026, time.October, 7, 12, 0, 0, 0, time.UTC),
+	}
+	refreshedContext := PromptContext{
+		SystemPrompt: custom,
+		CurrentTime:  time.Date(2026, time.October, 8, 9, 30, 0, 0, time.UTC),
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		request := decodeBoundaryRequest(t, r)
+		if request.Messages[0].Role != "system" ||
+			request.Messages[0].Content != systemPromptWithContext(refreshedContext) {
+			t.Errorf("system message = %#v, want refreshed custom prompt", request.Messages[0])
+		}
+		if !strings.Contains(request.Messages[0].Content, custom) {
+			t.Errorf("system message dropped custom base: %q", request.Messages[0].Content)
+		}
+		if !strings.Contains(request.Messages[0].Content, invariantPDFInstructions) {
+			t.Errorf("system message dropped invariant PDF guidance: %q", request.Messages[0].Content)
+		}
+		_, _ = w.Write([]byte(boundaryFinalResponse("answer", 4)))
+	}))
+	defer server.Close()
+
+	conversation := newBoundaryTestConversation(t, server.URL+"/v1/chat/completions", nil, initialContext)
+	boundaries := 0
+	conversation.SetRoundBoundary(func(_ context.Context, boundary ConversationBoundary) (ConversationInput, error) {
+		boundaries++
+		switch boundaries {
+		case 1:
+			return ConversationInput{
+				Messages:      []Message{{Role: "user", Content: "initial steering"}},
+				PromptContext: &refreshedContext,
+			}, nil
+		case 2:
+			return ConversationInput{}, nil
+		default:
+			t.Fatalf("unexpected boundary %d", boundaries)
+			return ConversationInput{}, nil
+		}
+	})
+
+	if err := conversation.Send(context.Background(), "question"); err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+	if requests != 1 {
+		t.Errorf("requests = %d, want 1", requests)
+	}
+	messages := conversation.Messages()
+	if len(messages) == 0 || messages[0].Content != systemPromptWithContext(refreshedContext) {
+		t.Errorf("history system message = %#v, want refreshed custom prompt", messages)
+	}
+}
+
 func TestConversationRoundBoundarySteersAfterToolBatch(t *testing.T) {
 	requests := 0
 	executions := 0

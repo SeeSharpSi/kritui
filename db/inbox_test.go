@@ -1057,7 +1057,7 @@ func TestInboxSchemaFilesMatch(t *testing.T) {
 	if start < 0 {
 		t.Fatal("schema.sql has no inbox definitions")
 	}
-	end := strings.Index(messagesTestSchema[start:], "PRAGMA user_version = 32;")
+	end := strings.Index(messagesTestSchema[start:], "PRAGMA user_version = 33;")
 	if end < 0 {
 		t.Fatal("schema.sql has no version 32 marker")
 	}

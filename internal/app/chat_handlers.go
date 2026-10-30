@@ -178,6 +178,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			SelectedModel:            selectedModel,
 			DefaultModel:             renderSettings.defaultModel,
 			MaxToolRounds:            renderSettings.maxToolRounds,
+			SystemPrompt:             renderSettings.systemPrompt,
 			TitleGenerationEnabled:   renderSettings.titleGeneration.Enabled,
 			TitleGenerationModel:     renderSettings.titleGeneration.Model,
 			ToolResultElision:        renderSettings.toolResultElision,
@@ -213,6 +214,7 @@ type homeRenderSettings struct {
 	promptAppends     []kritui_db.PromptAppend
 	defaultModel      string
 	maxToolRounds     int
+	systemPrompt      string
 	titleGeneration   kritui_db.TitleGenerationSettings
 	toolResultElision llm.ToolResultElisionConfig
 	defaultTools      []string
@@ -246,6 +248,10 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 	if settings.maxToolRounds, err = kritui_db.GetMaxToolRounds(ctx, database, llm.DefaultMaxToolCallRounds); err != nil {
 		log.Printf("get max tool rounds: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load max tool rounds: %w", err)
+	}
+	if settings.systemPrompt, err = kritui_db.GetSystemPrompt(ctx, database); err != nil {
+		log.Printf("get system prompt: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load system prompt: %w", err)
 	}
 	if settings.toolResultElision, err = kritui_db.GetToolResultElision(ctx, database); err != nil {
 		log.Printf("get tool result elision: %v", err)
@@ -395,6 +401,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			ChatID:        r.URL.Query().Get("chat"),
 			SelectedModel: os.Getenv("LLM_MODEL"),
 			MaxToolRounds: llm.DefaultMaxToolCallRounds,
+			SystemPrompt:  llm.DefaultSystemPrompt(),
 			ToolNames:     registry.Names(),
 			PromptAppends: kritui_db.DefaultPromptAppends(),
 			Themes:        themes.Options(),
@@ -488,6 +495,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		}
 		page.LLMSettings = llmSettings
 		page.LLMEnvironmentConfigured = llmEnvironmentConfigured()
+		systemPrompt, err := kritui_db.GetSystemPrompt(r.Context(), database)
+		if err != nil {
+			log.Printf("get system prompt: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.SystemPrompt = systemPrompt
 		theme, err := loadStoredTheme(r.Context(), database)
 		if err != nil {
 			log.Printf("load theme: %v", err)
@@ -504,6 +518,21 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				}
 				render(http.StatusBadRequest, "Invalid settings form.")
 				return
+			}
+
+			systemPromptSubmitted := r.FormValue("system_prompt_form") == "1"
+			if _, ok := r.Form["system_prompt"]; ok {
+				systemPromptSubmitted = true
+			}
+			var submittedSystemPrompt *string
+			if systemPromptSubmitted {
+				value := r.FormValue("system_prompt")
+				submittedSystemPrompt = &value
+				page.SystemPrompt = value
+				if err := kritui_db.ValidateSystemPrompt(value); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("System prompt is invalid: %v.", err))
+					return
+				}
 			}
 
 			toolResultElisionSubmitted := r.FormValue("tool_result_elision_form") == "1"
@@ -788,6 +817,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				LLM:               llmUpdate,
 				ToolResultElision: toolResultElisionUpdate,
 				TitleGeneration:   &titleGenerationUpdate,
+				SystemPrompt:      submittedSystemPrompt,
 				Theme:             submittedTheme,
 			}
 			if r.FormValue("append_form") == "1" {
@@ -808,6 +838,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			if llmSubmitted {
 				page.ClearLLMAPIKey = false
 				page.LLMEnvironmentConfigured = llmEnvironmentConfigured()
+			}
+			if submittedSystemPrompt != nil {
+				if trimmed := strings.TrimSpace(*submittedSystemPrompt); trimmed == "" || trimmed == llm.DefaultSystemPrompt() {
+					page.SystemPrompt = llm.DefaultSystemPrompt()
+				} else {
+					page.SystemPrompt = *submittedSystemPrompt
+				}
 			}
 			page.Saved = true
 		}

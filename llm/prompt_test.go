@@ -97,6 +97,77 @@ func TestSystemPromptWithoutPDFLinksIsUnchanged(t *testing.T) {
 	}
 }
 
+func TestDefaultSystemPromptIsEditableBase(t *testing.T) {
+	got := DefaultSystemPrompt()
+	if got != "Your name is bob" {
+		t.Errorf("DefaultSystemPrompt() = %q, want built-in base", got)
+	}
+	if strings.Contains(got, "PDF") {
+		t.Errorf("DefaultSystemPrompt() includes invariant PDF guidance: %q", got)
+	}
+}
+
+func TestSystemPromptComposesCustomBaseInvariantAndRuntimeContext(t *testing.T) {
+	currentTime := time.Date(2026, time.August, 2, 18, 30, 0, 0, time.UTC)
+	clientLocation := time.FixedZone("America/New_York", -4*60*60)
+	custom := "You are Kritui.\nAnswer briefly."
+	prompt := systemPromptWithContext(PromptContext{
+		SystemPrompt:   custom,
+		CurrentTime:    currentTime,
+		ClientLocation: clientLocation,
+		PDFLinks:       []PDFLink{{Filename: "report.pdf", URL: "/chats/1/messages/2/attachments/0"}},
+	})
+
+	wantPrefix := custom + "\n\n" + invariantPDFInstructions + "\n\n## Current date and time\nCurrent UTC datetime: " +
+		currentTime.Format(time.RFC3339)
+	if !strings.HasPrefix(prompt, wantPrefix) {
+		t.Errorf("prompt = %q, want prefix %q", prompt, wantPrefix)
+	}
+	if count := strings.Count(prompt, invariantPDFInstructions); count != 1 {
+		t.Errorf("invariant PDF guidance count = %d, want 1: %q", count, prompt)
+	}
+	if count := strings.Count(prompt, custom); count != 1 {
+		t.Errorf("custom base count = %d, want 1: %q", count, prompt)
+	}
+	if !strings.Contains(prompt, "Client timezone: America/New_York") ||
+		!strings.Contains(prompt, `Filename: "report.pdf"; URL: /chats/1/messages/2/attachments/0`) {
+		t.Errorf("prompt lacks runtime context: %q", prompt)
+	}
+}
+
+func TestSystemPromptPreservesCustomBaseWhitespaceExactly(t *testing.T) {
+	currentTime := time.Date(2026, time.August, 2, 18, 30, 0, 0, time.UTC)
+	custom := "\n\n  Custom base keeps its spacing.  \n\nSecond paragraph.\n\n"
+	prompt := systemPromptWithContext(PromptContext{
+		SystemPrompt: custom,
+		CurrentTime:  currentTime,
+	})
+
+	if !strings.HasPrefix(prompt, custom+"\n\n"+invariantPDFInstructions+"\n\n## Current date and time\n") {
+		t.Errorf("prompt = %q, want raw custom prefix %q", prompt, custom+"\n\n"+invariantPDFInstructions)
+	}
+	if strings.HasPrefix(prompt, strings.TrimSpace(custom)) {
+		t.Errorf("prompt starts with trimmed custom text: %q", prompt)
+	}
+	if strings.Contains(prompt, DefaultSystemPrompt()) {
+		t.Errorf("prompt includes built-in base despite custom text: %q", prompt)
+	}
+	if count := strings.Count(prompt, custom); count != 1 {
+		t.Errorf("raw custom base count = %d, want 1: %q", count, prompt)
+	}
+}
+
+func TestSystemPromptWhitespaceUsesBuiltInBase(t *testing.T) {
+	promptContext := PromptContext{
+		SystemPrompt: " \t\n ",
+		CurrentTime:  time.Date(2026, time.August, 2, 18, 30, 0, 0, time.UTC),
+	}
+	want := systemPromptWithContext(PromptContext{CurrentTime: promptContext.CurrentTime})
+	if got := systemPromptWithContext(promptContext); got != want {
+		t.Errorf("whitespace custom prompt = %q, want built-in composition %q", got, want)
+	}
+}
+
 func TestSystemPromptEscapesPDFFilenamesAsSingleLineData(t *testing.T) {
 	filename := "line\nbreak\t\"quoted\".pdf"
 	links := []PDFLink{

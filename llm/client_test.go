@@ -371,7 +371,7 @@ func TestSystemPromptWithContext(t *testing.T) {
 		CurrentTime:    currentTime,
 		ClientLocation: clientLocation,
 	})
-	want := strings.TrimSpace(systemPrompt) + `
+	want := DefaultSystemPrompt() + "\n\n" + invariantPDFInstructions + `
 
 ## Current date and time
 Current UTC datetime: 2026-08-02T18:30:00Z
@@ -382,7 +382,7 @@ Client timezone: America/New_York`
 	}
 
 	got = systemPromptWithContext(PromptContext{CurrentTime: currentTime})
-	want = strings.TrimSpace(systemPrompt) + `
+	want = DefaultSystemPrompt() + "\n\n" + invariantPDFInstructions + `
 
 ## Current date and time
 Current UTC datetime: 2026-08-02T18:30:00Z
