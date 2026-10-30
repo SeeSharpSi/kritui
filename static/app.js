@@ -712,9 +712,9 @@ function settingsClearState(button, pending) {
     pendingMessage.hidden = !pending;
 }
 
-function resetSystemPrompt(button) {
-    const field = button.closest('.settings-main-form')?.querySelector('#system-prompt');
-    const defaultValue = field?.dataset.defaultSystemPrompt;
+function resetPromptField(button, selector, datasetKey) {
+    const field = button.closest('.settings-main-form')?.querySelector(selector);
+    const defaultValue = field?.dataset[datasetKey];
     if (!field || defaultValue === undefined) {
         return;
     }
@@ -722,6 +722,14 @@ function resetSystemPrompt(button) {
     field.dispatchEvent(new Event('input', { bubbles: true }));
     field.dispatchEvent(new Event('change', { bubbles: true }));
     field.focus({ preventScroll: true });
+}
+
+function resetSystemPrompt(button) {
+    resetPromptField(button, '#system-prompt', 'defaultSystemPrompt');
+}
+
+function resetCompactionPrompt(button) {
+    resetPromptField(button, '#compaction-prompt', 'defaultCompactionPrompt');
 }
 
 function syncToolResultElisionControls(root = document) {
@@ -1941,6 +1949,12 @@ document.addEventListener('click', (event) => {
     const systemPromptReset = event.target.closest('[data-settings-reset-system-prompt]');
     if (systemPromptReset) {
         resetSystemPrompt(systemPromptReset);
+        return;
+    }
+
+    const compactionPromptReset = event.target.closest('[data-settings-reset-compaction-prompt]');
+    if (compactionPromptReset) {
+        resetCompactionPrompt(compactionPromptReset);
         return;
     }
 

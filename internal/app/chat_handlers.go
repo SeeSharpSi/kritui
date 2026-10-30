@@ -179,6 +179,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			DefaultModel:             renderSettings.defaultModel,
 			MaxToolRounds:            renderSettings.maxToolRounds,
 			SystemPrompt:             renderSettings.systemPrompt,
+			CompactionPrompt:         renderSettings.compactionPrompt,
 			TitleGenerationEnabled:   renderSettings.titleGeneration.Enabled,
 			TitleGenerationModel:     renderSettings.titleGeneration.Model,
 			ToolResultElision:        renderSettings.toolResultElision,
@@ -215,6 +216,7 @@ type homeRenderSettings struct {
 	defaultModel      string
 	maxToolRounds     int
 	systemPrompt      string
+	compactionPrompt  string
 	titleGeneration   kritui_db.TitleGenerationSettings
 	toolResultElision llm.ToolResultElisionConfig
 	defaultTools      []string
@@ -252,6 +254,10 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 	if settings.systemPrompt, err = kritui_db.GetSystemPrompt(ctx, database); err != nil {
 		log.Printf("get system prompt: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load system prompt: %w", err)
+	}
+	if settings.compactionPrompt, err = kritui_db.GetCompactionPrompt(ctx, database); err != nil {
+		log.Printf("get compaction prompt: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load compaction prompt: %w", err)
 	}
 	if settings.toolResultElision, err = kritui_db.GetToolResultElision(ctx, database); err != nil {
 		log.Printf("get tool result elision: %v", err)
@@ -398,13 +404,14 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		page := templates.SettingsPanelData{
-			ChatID:        r.URL.Query().Get("chat"),
-			SelectedModel: os.Getenv("LLM_MODEL"),
-			MaxToolRounds: llm.DefaultMaxToolCallRounds,
-			SystemPrompt:  llm.DefaultSystemPrompt(),
-			ToolNames:     registry.Names(),
-			PromptAppends: kritui_db.DefaultPromptAppends(),
-			Themes:        themes.Options(),
+			ChatID:           r.URL.Query().Get("chat"),
+			SelectedModel:    os.Getenv("LLM_MODEL"),
+			MaxToolRounds:    llm.DefaultMaxToolCallRounds,
+			SystemPrompt:     llm.DefaultSystemPrompt(),
+			CompactionPrompt: llm.DefaultCompactionPrompt(),
+			ToolNames:        registry.Names(),
+			PromptAppends:    kritui_db.DefaultPromptAppends(),
+			Themes:           themes.Options(),
 		}
 		render := func(status int, message string) {
 			page.ErrorMessage = message
@@ -502,6 +509,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.SystemPrompt = systemPrompt
+		compactionPrompt, err := kritui_db.GetCompactionPrompt(r.Context(), database)
+		if err != nil {
+			log.Printf("get compaction prompt: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.CompactionPrompt = compactionPrompt
 		theme, err := loadStoredTheme(r.Context(), database)
 		if err != nil {
 			log.Printf("load theme: %v", err)
@@ -529,8 +543,28 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				value := r.FormValue("system_prompt")
 				submittedSystemPrompt = &value
 				page.SystemPrompt = value
-				if err := kritui_db.ValidateSystemPrompt(value); err != nil {
+			}
+
+			compactionPromptSubmitted := r.FormValue("compaction_prompt_form") == "1"
+			if _, ok := r.Form["compaction_prompt"]; ok {
+				compactionPromptSubmitted = true
+			}
+			var submittedCompactionPrompt *string
+			if compactionPromptSubmitted {
+				value := r.FormValue("compaction_prompt")
+				submittedCompactionPrompt = &value
+				page.CompactionPrompt = value
+			}
+
+			if submittedSystemPrompt != nil {
+				if err := kritui_db.ValidateSystemPrompt(*submittedSystemPrompt); err != nil {
 					render(http.StatusBadRequest, fmt.Sprintf("System prompt is invalid: %v.", err))
+					return
+				}
+			}
+			if submittedCompactionPrompt != nil {
+				if err := kritui_db.ValidateCompactionPrompt(*submittedCompactionPrompt); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("Compaction prompt is invalid: %v.", err))
 					return
 				}
 			}
@@ -818,6 +852,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				ToolResultElision: toolResultElisionUpdate,
 				TitleGeneration:   &titleGenerationUpdate,
 				SystemPrompt:      submittedSystemPrompt,
+				CompactionPrompt:  submittedCompactionPrompt,
 				Theme:             submittedTheme,
 			}
 			if r.FormValue("append_form") == "1" {
@@ -844,6 +879,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					page.SystemPrompt = llm.DefaultSystemPrompt()
 				} else {
 					page.SystemPrompt = *submittedSystemPrompt
+				}
+			}
+			if submittedCompactionPrompt != nil {
+				if trimmed := strings.TrimSpace(*submittedCompactionPrompt); trimmed == "" || trimmed == llm.DefaultCompactionPrompt() {
+					page.CompactionPrompt = llm.DefaultCompactionPrompt()
+				} else {
+					page.CompactionPrompt = *submittedCompactionPrompt
 				}
 			}
 			page.Saved = true

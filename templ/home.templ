@@ -24,6 +24,7 @@ type HomeData struct {
 	TitleGenerationEnabled   bool
 	TitleGenerationModel     string
 	SystemPrompt             string
+	CompactionPrompt         string
 	ToolResultElision        llm.ToolResultElisionConfig
 	Tools                    []string
 	EnabledTools             []string
@@ -65,6 +66,7 @@ templ Home(data HomeData) {
 									TitleGenerationEnabled:   data.TitleGenerationEnabled,
 									TitleGenerationModel:     data.TitleGenerationModel,
 									SystemPrompt:             data.SystemPrompt,
+									CompactionPrompt:         data.CompactionPrompt,
 									ToolResultElision:        data.ToolResultElision,
 									ToolNames:                data.Tools,
 									DefaultTools:             data.DefaultTools,

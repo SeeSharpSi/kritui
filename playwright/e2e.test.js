@@ -5068,6 +5068,101 @@ test('encrypted PDF attachment uploads, streams authenticated ranges, and surviv
   });
 });
 
+test('editable compaction prompt saves, resets without saving, and stays independent of the system prompt', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'editable compaction prompt',
+    browser,
+    build,
+    async run(env) {
+      const { page } = env;
+      const suffix = `${Date.now().toString(36)}_${process.pid.toString(36)}`;
+      const customCompaction = [
+        '',
+        '  Summarize older tool results with the account compaction prompt. ',
+        `Keep the token ${suffix}.`,
+        '  ',
+        '',
+      ].join('\n');
+      const customSystem = `system prompt for compaction test ${suffix}`;
+      const settingsPosts = [];
+      page.on('request', (request) => {
+        if (request.method() === 'POST' && new URL(request.url()).pathname === '/settings') {
+          settingsPosts.push(request);
+        }
+      });
+
+      await signup(page, username('compactprompt'), password);
+      const { chatID } = await openChat(page);
+
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, 'settings-page');
+      const compactionField = page.locator('#compaction-prompt');
+      const systemField = page.locator('#system-prompt');
+      await compactionField.waitFor({ state: 'visible' });
+      assert.equal(
+        await page.locator('.settings-main-form input[type="hidden"][name="compaction_prompt_form"]').getAttribute('value'),
+        '1',
+        'settings form must submit the compaction prompt marker',
+      );
+      const defaultCompaction = await compactionField.getAttribute('data-default-compaction-prompt');
+      assert.ok(defaultCompaction, 'compaction prompt must expose the editable default');
+      assert.ok(
+        defaultCompaction.includes('Summarize the tool result concisely'),
+        `unexpected default compaction prompt: ${defaultCompaction}`,
+      );
+      assert.equal(await compactionField.inputValue(), defaultCompaction, 'default compaction prompt must be visible');
+
+      await page.locator('#tool-result-elision-mode').selectOption('summarize');
+      await page.locator('#tool-result-elision-summary-model').fill('summary-model');
+      await compactionField.fill(customCompaction);
+      await systemField.fill(customSystem);
+      const saveResponse = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return response.request().method() === 'POST' && url.pathname === '/settings';
+      }, { timeout: 20000 });
+      await page.locator('#settings-page .settings-save').click();
+      const saved = await saveResponse;
+      assert.ok(saved.status() >= 200 && saved.status() < 400, `settings save returned ${saved.status()}`);
+      await page.locator('[data-settings-saved]').waitFor({ state: 'visible', timeout: 15000 });
+      assert.equal(await page.locator('#compaction-prompt').inputValue(), customCompaction, 'saved custom compaction prompt must render verbatim');
+      assert.equal(await page.locator('#system-prompt').inputValue(), customSystem, 'saved system prompt must render verbatim');
+
+      await reloadChat(page, chatID);
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, 'settings-page');
+      assert.equal(await page.locator('#compaction-prompt').inputValue(), customCompaction, 'custom compaction prompt must persist across reload');
+      assert.equal(await page.locator('#system-prompt').inputValue(), customSystem, 'custom system prompt must persist across reload');
+
+      const maxRounds = page.locator('#max-tool-rounds');
+      await maxRounds.fill('7');
+      const postsBeforeReset = settingsPosts.length;
+      await page.locator('[data-settings-reset-compaction-prompt]').click();
+      assert.equal(await page.locator('#compaction-prompt').inputValue(), defaultCompaction, 'restore must show the default compaction prompt');
+      assert.equal(await page.locator('#system-prompt').inputValue(), customSystem, 'restoring compaction must not change the system prompt');
+      assert.equal(await maxRounds.inputValue(), '7', 'restoring compaction must not discard another unsaved setting');
+      await waitForStableLayout(page);
+      assert.equal(settingsPosts.length, postsBeforeReset, 'restoring compaction must not submit or save settings');
+
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, null);
+      await reloadChat(page, chatID);
+      await page.locator('#settings-button').click();
+      await waitForPanels(page, 'settings-page');
+      assert.equal(
+        await page.locator('#compaction-prompt').inputValue(),
+        customCompaction,
+        'restoring the field without Save all must leave the saved compaction prompt unchanged',
+      );
+
+      await page.locator('[data-settings-reset-compaction-prompt]').click();
+      assert.equal(await page.locator('#compaction-prompt').inputValue(), defaultCompaction, 'restore must reset the saved custom compaction prompt');
+      await page.locator('[data-settings-reset-system-prompt]').click();
+      assert.equal(await page.locator('#system-prompt').inputValue(), await page.locator('#system-prompt').getAttribute('data-default-system-prompt'), 'system prompt reset must stay independent');
+      assert.equal(await page.locator('#compaction-prompt').inputValue(), defaultCompaction, 'resetting the system prompt must not change the compaction prompt');
+    },
+  });
+});
+
 test('editable system prompt saves, resets without saving, and reaches provider calls', { timeout: 240000 }, async (t) => {
   await runIsolatedCase(t, {
     name: 'editable system prompt',

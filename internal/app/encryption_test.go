@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	kritui_db "seesharpsi/kritui/db"
+	"seesharpsi/kritui/llm"
 )
 
 func storageTestKey(fill byte) []byte {
@@ -171,11 +172,11 @@ func TestStorageEncryptionFreshDatabase(t *testing.T) {
 	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatalf("read user version: %v", err)
 	}
-	if len(databaseMigrations) != 33 {
-		t.Fatalf("databaseMigrations length = %d, want 33 system prompt version", len(databaseMigrations))
+	if len(databaseMigrations) != 34 {
+		t.Fatalf("databaseMigrations length = %d, want 34 compaction prompt version", len(databaseMigrations))
 	}
-	if version != 33 {
-		t.Errorf("user_version = %d, want 33", version)
+	if version != 34 {
+		t.Errorf("user_version = %d, want 34", version)
 	}
 	var secureDelete int
 	if err := database.QueryRow(`PRAGMA secure_delete`).Scan(&secureDelete); err != nil {
@@ -384,10 +385,10 @@ func seedStorageMigrationFixture(t *testing.T, database *sql.DB) storageMigratio
 			VALUES (2, 'Alice', 'pbkdf2-hash-two', 0)`,
 		`INSERT INTO sessions (token_hash, user_id, expires_at)
 			VALUES ('session-hash-two', 2, 4102444800)`,
-		`INSERT OR REPLACE INTO settings (id, default_model, ntfy_endpoint, ntfy_topic, ntfy_api_key, llm_endpoint, llm_api_key)
+		`INSERT OR REPLACE INTO settings (id, default_model, ntfy_endpoint, ntfy_topic, ntfy_api_key, llm_endpoint, llm_api_key, compaction_prompt)
 			VALUES
-			(1, 'plain-model', 'https://ntfy.example/topic', 'legacy-ntfy-topic', 'legacy-ntfy-key', 'https://llm.example/v1', 'legacy-llm-key'),
-			(2, 'plain-model-two', '   ', '   ', '   ', 'https://llm.example/two', '   ')`,
+			(1, 'plain-model', 'https://ntfy.example/topic', 'legacy-ntfy-topic', 'legacy-ntfy-key', 'https://llm.example/v1', 'legacy-llm-key', 'Legacy compaction prompt'),
+			(2, 'plain-model-two', '   ', '   ', '   ', 'https://llm.example/two', '   ', '   ')`,
 		`INSERT INTO prompt_appends (user_id, id, position, name, text, enabled_by_default)
 			VALUES (1, 'append-1', 0, 'Legacy append name', 'Legacy append text', 0)`,
 		`INSERT INTO mcp_servers (user_id, id, position, name, url, authorization_token)
@@ -609,6 +610,7 @@ func TestStorageEncryptionMigratesLegacyPlaintext(t *testing.T) {
 		{1, "settings.llm_endpoint", "1", "https://llm.example/v1"},
 		{1, "settings.ntfy_endpoint", "1", "https://ntfy.example/topic"},
 		{1, "settings.ntfy_topic", "1", "legacy-ntfy-topic"},
+		{1, "settings.compaction_prompt", "1", "Legacy compaction prompt"},
 		{2, "settings.llm_endpoint", "2", "https://llm.example/two"},
 	} {
 		var stored string
@@ -621,7 +623,7 @@ func TestStorageEncryptionMigratesLegacyPlaintext(t *testing.T) {
 			t.Errorf("%s = %q, want %q", testCase.scope, got, testCase.value)
 		}
 	}
-	for _, column := range []string{"llm_api_key", "ntfy_api_key", "ntfy_endpoint", "ntfy_topic"} {
+	for _, column := range []string{"llm_api_key", "ntfy_api_key", "ntfy_endpoint", "ntfy_topic", "compaction_prompt"} {
 		var blank sql.NullString
 		if err := database.QueryRow(`SELECT ` + column + ` FROM settings WHERE id = 2`).Scan(&blank); err != nil {
 			t.Fatalf("read blank settings %s: %v", column, err)
@@ -643,6 +645,20 @@ func TestStorageEncryptionMigratesLegacyPlaintext(t *testing.T) {
 	}
 	if llmSettings.APIKeyConfigured {
 		t.Error("blank LLM API key migrated as configured")
+	}
+	compactionPrompt, err := kritui_db.GetCompactionPrompt(storageTestContext(storage, 1), database)
+	if err != nil {
+		t.Fatalf("GetCompactionPrompt() error: %v", err)
+	}
+	if compactionPrompt != "Legacy compaction prompt" {
+		t.Errorf("GetCompactionPrompt() = %q, want migrated custom prompt", compactionPrompt)
+	}
+	blankCompactionPrompt, err := kritui_db.GetCompactionPrompt(storageTestContext(storage, 2), database)
+	if err != nil {
+		t.Fatalf("GetCompactionPrompt(blank) error: %v", err)
+	}
+	if blankCompactionPrompt != llm.DefaultCompactionPrompt() {
+		t.Errorf("GetCompactionPrompt(blank) = %q, want default", blankCompactionPrompt)
 	}
 
 	for _, testCase := range []struct {
@@ -760,6 +776,7 @@ func TestStorageEncryptionMigratesLegacyPlaintext(t *testing.T) {
 		"legacy inbox attachment bytes",
 		"legacy-llm-key",
 		"legacy-ntfy-topic",
+		"Legacy compaction prompt",
 		"Legacy MCP name",
 		"legacy-mcp-token",
 		"Legacy append name",

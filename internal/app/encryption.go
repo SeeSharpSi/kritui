@@ -276,6 +276,18 @@ var storageMigrations = []storageMigration{
 		updateSQL: `UPDATE settings SET system_prompt = ? WHERE rowid = ?`,
 	},
 	{
+		name:               "settings.compaction_prompt",
+		scope:              "settings.compaction_prompt",
+		kind:               storageFieldText,
+		normalizeBlankNull: true,
+		selectSQL: `SELECT rowid, id, CAST(id AS TEXT), compaction_prompt
+			FROM settings
+			WHERE rowid >= ? AND compaction_prompt IS NOT NULL
+			ORDER BY rowid
+			LIMIT ?`,
+		updateSQL: `UPDATE settings SET compaction_prompt = ? WHERE rowid = ?`,
+	},
+	{
 		name:  "mcp_servers.name",
 		scope: "mcp_servers.name",
 		kind:  storageFieldText,

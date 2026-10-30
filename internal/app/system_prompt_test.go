@@ -178,7 +178,8 @@ func TestMigrateDatabaseAddsSystemPromptFromVersion32(t *testing.T) {
 		t.Fatal("schema does not contain system_prompt column")
 	}
 	previous := strings.Replace(schema, column, "", 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 33;", "PRAGMA user_version = 32;", 1)
+	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 34;", "PRAGMA user_version = 32;", 1)
 	if _, err := database.Exec(previous); err != nil {
 		t.Fatalf("initialize version 32 database: %v", err)
 	}

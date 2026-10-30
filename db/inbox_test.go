@@ -1057,7 +1057,7 @@ func TestInboxSchemaFilesMatch(t *testing.T) {
 	if start < 0 {
 		t.Fatal("schema.sql has no inbox definitions")
 	}
-	end := strings.Index(messagesTestSchema[start:], "PRAGMA user_version = 33;")
+	end := strings.Index(messagesTestSchema[start:], "PRAGMA user_version = 34;")
 	if end < 0 {
 		t.Fatal("schema.sql has no version 32 marker")
 	}
@@ -1074,6 +1074,8 @@ func TestMigrateInboxFromVersion25(t *testing.T) {
 		t.Fatal("schema fixture has no inbox tables")
 	}
 	version25 := fixture[:index] + "PRAGMA user_version = 25;"
+	version25 = strings.Replace(version25, "    system_prompt TEXT,\n", "", 1)
+	version25 = strings.Replace(version25, "    compaction_prompt TEXT,\n", "", 1)
 
 	database := openMessagesTestConnection(t, "")
 	if _, err := database.Exec(version25); err != nil {

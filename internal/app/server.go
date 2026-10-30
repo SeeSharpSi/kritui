@@ -531,6 +531,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateStorageFormat31,
 	migrateToolCallResultElided,
 	migrateSystemPromptSettings,
+	migrateCompactionPromptSettings,
 }
 
 // migrateStorageFormat31 reserves schema version 31 as the storage-format
@@ -580,6 +581,24 @@ func migrateSystemPromptSettings(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	}
 	return addColumnIfMissing(ctx, tx, "settings", "system_prompt", `TEXT`)
+}
+
+// migrateCompactionPromptSettings adds the optional per-account prompt used to
+// summarize older tool results. Existing and new accounts default to NULL,
+// which uses the built-in prompt.
+func migrateCompactionPromptSettings(ctx context.Context, tx *sql.Tx) error {
+	var tableCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'settings'
+	`).Scan(&tableCount); err != nil {
+		return fmt.Errorf("inspect settings table: %w", err)
+	}
+	if tableCount == 0 {
+		return nil
+	}
+	return addColumnIfMissing(ctx, tx, "settings", "compaction_prompt", `TEXT`)
 }
 
 // migrateTitleGenerationSettings adds the opt-in chat-title generation toggle

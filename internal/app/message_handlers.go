@@ -550,6 +550,12 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load settings.", request.model, selectedTools))
 		return
 	}
+	compactionPrompt, err := kritui_db.GetCompactionPrompt(ctx, database)
+	if err != nil {
+		log.Printf("get compaction prompt: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load settings.", request.model, selectedTools))
+		return
+	}
 	var summarizer *llm.Client
 	if toolResultElision.Mode == llm.ToolResultElisionSummarize {
 		summaryModel := toolResultElision.SummaryModel
@@ -580,6 +586,7 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure conversation.", request.model, selectedTools))
 		return
 	}
+	conversation.SetToolResultSummaryPrompt(compactionPrompt)
 	conversation.SetToolCallLogger(toolCallLogger)
 	conversation.SetToolCallObserver(tracker.observe)
 	conversation.SetToolResultElisionObserver(func(observerContext context.Context, results []llm.ToolResultElision) error {

@@ -56,6 +56,7 @@ type Conversation struct {
 	toolResultElision ToolResultElisionConfig
 	elisionObserver   func(context.Context, []ToolResultElision) error
 	summarizer        *Client
+	summaryPrompt     string
 	summaryCache      map[int]string
 }
 
@@ -153,6 +154,16 @@ func (c *Conversation) SetToolResultElision(config ToolResultElisionConfig, summ
 func (c *Conversation) SetToolResultElisionObserver(observer func(context.Context, []ToolResultElision) error) {
 	if c != nil {
 		c.elisionObserver = observer
+	}
+}
+
+// SetToolResultSummaryPrompt configures the system instruction sent with each
+// tool-result summarization request. Blank text keeps the built-in default.
+// Changing the prompt discards summaries cached under the previous prompt.
+func (c *Conversation) SetToolResultSummaryPrompt(prompt string) {
+	if c != nil && c.summaryPrompt != prompt {
+		c.summaryPrompt = prompt
+		c.summaryCache = nil
 	}
 }
 

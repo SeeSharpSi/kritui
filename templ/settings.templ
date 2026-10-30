@@ -19,6 +19,7 @@ type SettingsPanelData struct {
 	TitleGenerationEnabled      bool
 	TitleGenerationModel        string
 	SystemPrompt                string
+	CompactionPrompt            string
 	ToolResultElision           llm.ToolResultElisionConfig
 	ToolNames                   []string
 	DefaultTools                []string
@@ -124,6 +125,7 @@ templ SettingsPage(data SettingsPanelData) {
 			<input type="hidden" name="ntfy_form" value="1"/>
 			<input type="hidden" name="tool_result_elision_form" value="1"/>
 			<input type="hidden" name="system_prompt_form" value="1"/>
+			<input type="hidden" name="compaction_prompt_form" value="1"/>
 			if data.Saved {
 				<p class="settings-status" role="status" data-settings-saved>Settings saved.</p>
 			}
@@ -312,6 +314,29 @@ templ SettingsPage(data SettingsPanelData) {
 									<option value={ model }></option>
 								}
 							</datalist>
+						</div>
+					</div>
+					<div class="settings-field settings-system-prompt-field">
+						<div class="settings-field-copy">
+							<label for="compaction-prompt">Compaction prompt</label>
+							<p class="settings-help">Used for summarizing older tool results when Summarize older results is selected. Maximum 64 KiB. Blank uses the default. Restore resets this field only; Save all stores it.</p>
+						</div>
+						<div class="settings-control settings-system-prompt-control">
+							<textarea
+								id="compaction-prompt"
+								name="compaction_prompt"
+								rows="8"
+								data-default-compaction-prompt={ llm.DefaultCompactionPrompt() }
+							>{ "\n" + data.CompactionPrompt }</textarea>
+							<button
+								class="settings-reset-system-prompt"
+								type="button"
+								data-settings-reset-compaction-prompt
+								aria-label="Restore default compaction prompt"
+								title="Restore default compaction prompt"
+							>
+								@Icon("M3 12a9 9 0 1 0 3-6.7", "M3 4v5h5")
+							</button>
 						</div>
 					</div>
 					<div class="settings-field">

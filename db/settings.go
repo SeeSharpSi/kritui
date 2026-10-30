@@ -18,6 +18,10 @@ const MaxConfigurableToolRounds = 100
 // custom system prompt base.
 const MaxSystemPromptBytes = 64 << 10
 
+// MaxCompactionPromptBytes bounds the raw UTF-8 bytes accepted for an account's
+// custom tool-result compaction prompt.
+const MaxCompactionPromptBytes = 64 << 10
+
 // storageRowID returns the stable AAD row identifier for one account-scoped
 // settings row. The owner ID itself is authenticated separately by the storage
 // helpers from the context.
@@ -66,7 +70,8 @@ type settingWriter interface {
 
 // SettingsUpdate describes the desired settings for one atomic save.
 // Nil PromptAppends, MCPServers, Ntfy, LLM, ToolResultElision, TitleGeneration,
-// or SystemPrompt values, and an empty Theme, leave those settings untouched.
+// SystemPrompt, or CompactionPrompt values, and an empty Theme, leave those
+// settings untouched.
 type SettingsUpdate struct {
 	Model             string
 	MaxToolRounds     int
@@ -78,6 +83,7 @@ type SettingsUpdate struct {
 	ToolResultElision *llm.ToolResultElisionConfig
 	TitleGeneration   *TitleGenerationSettingsUpdate
 	SystemPrompt      *string
+	CompactionPrompt  *string
 	Theme             string
 }
 
@@ -218,6 +224,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 	}
 	if update.SystemPrompt != nil {
 		if err := setSystemPrompt(ctx, tx, *update.SystemPrompt); err != nil {
+			return err
+		}
+	}
+	if update.CompactionPrompt != nil {
+		if err := setCompactionPrompt(ctx, tx, *update.CompactionPrompt); err != nil {
 			return err
 		}
 	}
@@ -418,6 +429,68 @@ func setSystemPrompt(ctx context.Context, db settingWriter, value string) error 
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE settings SET system_prompt = ? WHERE id = ?`, stored, userID); err != nil {
 		return fmt.Errorf("set system prompt: %w", err)
+	}
+	return nil
+}
+
+// ValidateCompactionPrompt checks the raw tool-result compaction prompt without
+// writing it. Blank text is valid and resets the account to the built-in
+// default.
+func ValidateCompactionPrompt(value string) error {
+	if len([]byte(value)) > MaxCompactionPromptBytes {
+		return fmt.Errorf("set compaction prompt: prompt must not exceed %d bytes", MaxCompactionPromptBytes)
+	}
+	return nil
+}
+
+// GetCompactionPrompt returns the effective account prompt used to summarize
+// older tool results. NULL, blank, or the built-in default resolves to
+// llm.DefaultCompactionPrompt; custom nonblank text is returned exactly as
+// stored.
+func GetCompactionPrompt(ctx context.Context, db *sql.DB) (string, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get compaction prompt: %w", err)
+	}
+	var stored sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT compaction_prompt FROM settings WHERE id = ?`, userID).Scan(&stored); err != nil {
+		return "", fmt.Errorf("get compaction prompt: %w", err)
+	}
+	if !stored.Valid {
+		return llm.DefaultCompactionPrompt(), nil
+	}
+	decrypted, err := decryptSettingText(ctx, "settings.compaction_prompt", userID, stored.String)
+	if err != nil {
+		return "", fmt.Errorf("get compaction prompt: %w", err)
+	}
+	trimmed := strings.TrimSpace(decrypted)
+	if trimmed == "" || trimmed == llm.DefaultCompactionPrompt() {
+		return llm.DefaultCompactionPrompt(), nil
+	}
+	return decrypted, nil
+}
+
+// setCompactionPrompt stores a custom prompt or NULL when the value is blank or
+// merely restates the built-in default. Storing NULL keeps future default
+// updates effective for the account.
+func setCompactionPrompt(ctx context.Context, db settingWriter, value string) error {
+	if err := ValidateCompactionPrompt(value); err != nil {
+		return err
+	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set compaction prompt: %w", err)
+	}
+	var stored any
+	if trimmed := strings.TrimSpace(value); trimmed != "" && trimmed != llm.DefaultCompactionPrompt() {
+		encrypted, err := encryptSettingText(ctx, "settings.compaction_prompt", userID, value)
+		if err != nil {
+			return fmt.Errorf("set compaction prompt: %w", err)
+		}
+		stored = encrypted
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE settings SET compaction_prompt = ? WHERE id = ?`, stored, userID); err != nil {
+		return fmt.Errorf("set compaction prompt: %w", err)
 	}
 	return nil
 }

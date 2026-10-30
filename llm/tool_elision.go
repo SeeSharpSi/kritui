@@ -263,8 +263,12 @@ func (c *Conversation) summarizeToolResult(ctx context.Context, messages []Messa
 	prompt.WriteString("Tool result:\n")
 	prompt.WriteString(messages[index].Content)
 
+	summaryPrompt := c.summaryPrompt
+	if strings.TrimSpace(summaryPrompt) == "" {
+		summaryPrompt = DefaultCompactionPrompt()
+	}
 	completion, err := c.summarizer.complete(ctx, []Message{
-		{Role: "system", Content: "Summarize the tool result concisely. Preserve important facts, values, and errors. Do not invent information. Return summary text only."},
+		{Role: "system", Content: summaryPrompt},
 		{Role: "user", Content: prompt.String()},
 	}, nil)
 	if err != nil {

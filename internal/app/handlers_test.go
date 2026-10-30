@@ -412,10 +412,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=58`,
-		`/static/hx-sse.js?v=58`,
-		`/static/app.js?v=58`,
-		`/static/styles.css?v=58`,
+		`/static/htmx.min.js?v=59`,
+		`/static/hx-sse.js?v=59`,
+		`/static/app.js?v=59`,
+		`/static/styles.css?v=59`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -2274,7 +2274,9 @@ func TestMigrateDatabaseAddsChatPinsFromVersion26(t *testing.T) {
 	previous = strings.Replace(previous, `CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
     ON chats (user_id, pinned DESC, updated_at DESC, id DESC);`, `CREATE INDEX IF NOT EXISTS chats_user_updated_idx
     ON chats (user_id, updated_at DESC, id DESC);`, 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 33;", "PRAGMA user_version = 26;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 34;", "PRAGMA user_version = 26;", 1)
+	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
+	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "pinned") {
 		t.Fatal("failed to build version 26 schema fixture")
 	}
@@ -2335,7 +2337,9 @@ func TestMigrateDatabaseAddsTitleGenerationSettingsFromVersion27(t *testing.T) {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	previous := prefix + schema[start+relativeEnd:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 33;", "PRAGMA user_version = 27;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 34;", "PRAGMA user_version = 27;", 1)
+	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
+	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "title_generation") {
 		t.Fatal("failed to build version 27 schema fixture")
 	}
@@ -2389,7 +2393,9 @@ func TestMigrateDatabaseRetiresPlaintextSharesFromVersion29(t *testing.T) {
 		t.Fatalf("read legacy share schema: %v", err)
 	}
 	previous := schema[:start] + string(legacyDDL) + "\n\n" + schema[start+end:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 33;", "PRAGMA user_version = 29;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 34;", "PRAGMA user_version = 29;", 1)
+	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
+	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if !strings.Contains(previous, "PRAGMA user_version = 29;") {
 		t.Fatal("failed to construct version 29 fixture")
 	}

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS settings (
     llm_endpoint TEXT,
     llm_api_key TEXT,
     system_prompt TEXT,
+    compaction_prompt TEXT,
     theme TEXT CHECK (theme IS NULL OR theme IN ('rose-pine', 'rose-pine-dark', 'nord', 'forest-night', 'matte-black', '1975')),
     tool_result_elision_mode TEXT NOT NULL DEFAULT 'none'
         CHECK (tool_result_elision_mode IN ('none', 'current_turn', 'last_user_turns', 'tool_result_budget', 'summarize')),
@@ -316,4 +317,4 @@ CREATE TABLE IF NOT EXISTS completion_state_tools (
     PRIMARY KEY (chat_id, position)
 ) STRICT;
 
-PRAGMA user_version = 33;
+PRAGMA user_version = 34;

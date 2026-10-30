@@ -42,7 +42,8 @@ func TestUserSettingsAreIsolated(t *testing.T) {
 		ToolResultElision: &llm.ToolResultElisionConfig{
 			Mode: llm.ToolResultElisionLastUserTurns, UserTurns: 4,
 		},
-		Theme: "nord",
+		CompactionPrompt: strPtr("Alice compaction prompt."),
+		Theme:            "nord",
 	})
 	if err != nil {
 		t.Fatalf("save alice settings: %v", err)
