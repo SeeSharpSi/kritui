@@ -134,11 +134,13 @@ func TestPWAManifestIsPublicAndInstallable(t *testing.T) {
 	}
 
 	var manifest struct {
-		ID       string `json:"id"`
-		StartURL string `json:"start_url"`
-		Scope    string `json:"scope"`
-		Display  string `json:"display"`
-		Icons    []struct {
+		ID              string `json:"id"`
+		StartURL        string `json:"start_url"`
+		Scope           string `json:"scope"`
+		Display         string `json:"display"`
+		BackgroundColor string `json:"background_color"`
+		ThemeColor      string `json:"theme_color"`
+		Icons           []struct {
 			Src     string `json:"src"`
 			Sizes   string `json:"sizes"`
 			Type    string `json:"type"`
@@ -153,6 +155,12 @@ func TestPWAManifestIsPublicAndInstallable(t *testing.T) {
 	}
 	if manifest.Display != "standalone" {
 		t.Errorf("manifest display = %q, want standalone", manifest.Display)
+	}
+	if manifest.BackgroundColor != "#090909" {
+		t.Errorf("manifest background_color = %q, want #090909", manifest.BackgroundColor)
+	}
+	if manifest.ThemeColor != "#090909" {
+		t.Errorf("manifest theme_color = %q, want #090909", manifest.ThemeColor)
 	}
 
 	found := map[string]bool{}
@@ -224,10 +232,10 @@ func TestPWAAuthPagesIncludeMobileInstallMetadata(t *testing.T) {
 				"viewport-fit=cover",
 				`name="theme-color"`,
 				`rel="manifest"`,
-				`href="/static/manifest.json?v=59"`,
+				`href="/static/manifest.json?v=60"`,
 				`rel="apple-touch-icon"`,
-				`href="/static/icon-192.png?v=59"`,
-				`src="/static/app.js?v=59"`,
+				`href="/static/icon-192.png?v=60"`,
+				`src="/static/app.js?v=60"`,
 				"defer",
 				`name="username"`,
 				`name="password"`,
