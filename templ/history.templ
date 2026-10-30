@@ -34,6 +34,7 @@ templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
 					<a href="/">/new</a>
 					<button type="button" data-panel-target="history-page" aria-controls="history-page" aria-expanded="false">/history</button>
 				</div>
+				<span class="chat-empty-completion" aria-hidden="true"><span class="braille-spinner" aria-hidden="true"></span></span>
 			</div>
 		}
 	</div>

@@ -1723,6 +1723,17 @@ document.addEventListener('htmx:after:swap', (event) => {
         }
     }
     restoreMessageScroll(event.detail?.ctx?.target);
+    const swapCtx = event.detail?.ctx;
+    const swapSource = swapCtx?.sourceElement;
+    const swapForm = swapSource?.matches?.('#message-form')
+        ? swapSource
+        : swapSource?.closest?.('#message-form');
+    if (swapForm && swapCtx.response?.status === 200) {
+        const swapTarget = swapCtx.target;
+        if (swapTarget?.matches?.('#messages') && swapTarget.querySelector('[data-first-turn-completion]')) {
+            swapForm.setAttribute('hx-indicator', 'global #request-overlay, this');
+        }
+    }
     if (settingsPageScrollPending) {
         settingsPageScrollPending = false;
         const settingsPage = document.getElementById('settings-page');

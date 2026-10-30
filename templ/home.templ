@@ -126,6 +126,11 @@ templ Home(data HomeData) {
 						hx-swap="beforeend"
 						hx-trigger="submit"
 						hx-sync="#messages:drop"
+						if len(data.Messages) == 0 {
+							hx-indicator="this"
+						} else {
+							hx-indicator="global #request-overlay, this"
+						}
 						hx-disable="find button[type='submit']"
 						if data.ChatURL != "" {
 							hx-replace-url={ data.ChatURL }

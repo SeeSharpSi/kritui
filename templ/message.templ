@@ -462,6 +462,12 @@ templ pendingCompletion(chatID string, requestID string, model string, tools []s
 	<article
 		class="message loading-message completion-active"
 		id={ "completion-" + requestID }
+		if len(view.Messages) == 1 && view.Messages[0].Role == "user" {
+			data-first-turn-completion
+		}
+		if start && len(view.Messages) == 1 && view.Messages[0].Role == "user" {
+			hx-indicator="this"
+		}
 		if start {
 			hx-post={ "/messages/complete?chat=" + chatID }
 			hx-trigger="load"
