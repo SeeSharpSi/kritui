@@ -15,6 +15,7 @@ import (
 // sixteen-parameter positional list so same-typed values cannot transpose.
 type HomeData struct {
 	ChatID                   string
+	ChatTitle                string
 	ChatURL                  string
 	Messages                 []llm.Message
 	Models                   []string
@@ -48,7 +49,7 @@ templ Home(data HomeData) {
 		<main class="app-main">
 			<div class="shell-scroll">
 				<div class="shell-viewport">
-					<section class="chat">
+					<section class="chat" data-chat-title={ data.ChatTitle }>
 						<div class="message-panel">
 							@MessageList(data.ChatID, homeHistory(data), false) {
 								if data.CompletionRequestID != "" {

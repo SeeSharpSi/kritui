@@ -185,6 +185,37 @@ func TestGetShareSourceSelectsNearestActiveUserMessage(t *testing.T) {
 	}
 }
 
+func TestGetShareConversationFiltersHiddenAndToolMessagesAndScopesOwner(t *testing.T) {
+	database, ctx := openShareTestDatabase(t)
+	if _, err := database.Exec(`
+		INSERT INTO messages (id, chat_id, position, role, content, tool_call_id) VALUES
+			(3, 1, 2, 'assistant', '', NULL),
+			(4, 1, 3, 'tool', 'private tool result', 'call-1'),
+			(5, 1, 4, 'user', 'hidden question', NULL),
+			(6, 1, 5, 'assistant', 'visible answer', NULL);
+		INSERT INTO message_tool_calls (message_id, position, call_id, call_type, function_name, arguments)
+		VALUES (3, 0, 'call-1', 'function', 'private', '{"secret":true}');
+		UPDATE messages SET undo_sequence = 1 WHERE id = 5;
+	`); err != nil {
+		t.Fatalf("insert conversation fixtures: %v", err)
+	}
+
+	conversation, err := GetShareConversation(ctx, database, 1)
+	if err != nil {
+		t.Fatalf("GetShareConversation() error: %v", err)
+	}
+	if conversation.Title != "Share title" || len(conversation.Messages) != 3 ||
+		conversation.Messages[0] != (ShareConversationMessage{Role: "user", Content: "question"}) ||
+		conversation.Messages[1] != (ShareConversationMessage{Role: "assistant", Content: "<p>answer</p>"}) ||
+		conversation.Messages[2] != (ShareConversationMessage{Role: "assistant", Content: "visible answer"}) {
+		t.Fatalf("GetShareConversation() = %#v, want active conversational text only", conversation)
+	}
+	foreign := WithUser(context.Background(), insertShareTestUser(t, database, "conversation_foreign"))
+	if _, err := GetShareConversation(foreign, database, 1); !errors.Is(err, ErrChatNotFound) {
+		t.Fatalf("GetShareConversation(foreign) error = %v, want ErrChatNotFound", err)
+	}
+}
+
 func TestCreateSharedResponseValidatesPayload(t *testing.T) {
 	database, ctx := openShareTestDatabase(t)
 	base := validShareTestResponse()

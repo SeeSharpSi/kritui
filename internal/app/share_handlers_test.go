@@ -21,6 +21,7 @@ import (
 
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/templ"
+	"seesharpsi/kritui/themes"
 )
 
 var (
@@ -267,6 +268,77 @@ func TestMessageSharePrepareReturnsTransientSanitizedSnapshot(t *testing.T) {
 	)
 	if count := shareRowCount(t, database); count != 0 {
 		t.Fatalf("prepare stored %d rows, want 0", count)
+	}
+}
+
+func TestMessageSharePrepareUsesSelectedOptionsAndWholeConversation(t *testing.T) {
+	database := openTestDatabase(t)
+	server := newShareTestServer(t, database)
+	client := newAuthTestClient()
+	const username = "Share_Options_Owner"
+	_, cookie := authSignup(t, client, server.URL, username, authTestPassword, "")
+	userID := shareTestUserID(t, database, username)
+	chatID := seedShareChat(t, database, userID, "Original title")
+	seedShareMessage(t, database, chatID, 0, "user", "Earlier question")
+	seedShareMessage(t, database, chatID, 1, "assistant", "Earlier answer")
+	toolCallID := seedShareMessage(t, database, chatID, 2, "assistant", "")
+	if _, err := database.Exec(`
+		INSERT INTO message_tool_calls (message_id, position, call_id, call_type, function_name, arguments)
+		VALUES (?, 0, 'call-private', 'function', 'private', '{"secret":"arguments"}')
+	`, toolCallID); err != nil {
+		t.Fatalf("insert private tool history: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO messages (chat_id, position, role, content, tool_call_id) VALUES (?, 3, 'tool', 'private tool output', 'call-private')`, chatID); err != nil {
+		t.Fatalf("insert tool result: %v", err)
+	}
+	hiddenID := seedShareMessage(t, database, chatID, 4, "user", "Hidden prompt")
+	if _, err := database.Exec(`UPDATE messages SET undo_sequence = 1 WHERE id = ?`, hiddenID); err != nil {
+		t.Fatalf("hide prompt: %v", err)
+	}
+	messageID := seedShareMessage(t, database, chatID, 5, "assistant", "Current answer")
+
+	values := url.Values{
+		"title":    {"Custom share title"},
+		"theme":    {"1975"},
+		"mode":     {"whole"},
+		"markdown": {"Edited response should not replace whole chat"},
+	}
+	response, fragment := authPostForm(t, client, shareTarget(server.URL, chatID, messageID), values, cookie, map[string]string{"HX-Request": "true"})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("whole-chat prepare status = %d; body = %q", response.StatusCode, fragment)
+	}
+	_, encoded := sharePreparedValues(t, fragment)
+	snapshot := shareDecodedSnapshot(t, encoded)
+	requireContains(t, snapshot,
+		`data-theme="1975"`,
+		"Custom share title",
+		"<h2>User</h2>", "Earlier question",
+		"<h2>Assistant</h2>", "Earlier answer", "Current answer",
+	)
+	requireNotContains(t, snapshot,
+		"Original title", "Edited response should not replace whole chat",
+		"private tool", "secret", "Hidden prompt",
+	)
+}
+
+func TestParseShareOptionsRejectsInvalidValuesAndKeepsLegacyDefaults(t *testing.T) {
+	source := kritui_db.ShareSource{Title: "Stored title", UserContent: "Prompt", Content: "Stored Markdown"}
+	defaultTheme := themes.Default()
+	title, content, mode, theme, status := parseShareOptions(nil, source, defaultTheme)
+	if status != 0 || title != "Stored title" || content != "Stored Markdown" || mode != "recent" || theme.ID != defaultTheme.ID {
+		t.Fatalf("legacy defaults = (%q, %q, %q, %q, %d)", title, content, mode, theme.ID, status)
+	}
+	for _, values := range []map[string][]string{
+		{"title": {"title"}, "theme": {"nope"}, "mode": {"recent"}, "markdown": {"ok"}},
+		{"title": {"title"}, "theme": {"nord"}, "mode": {"unknown"}, "markdown": {"ok"}},
+		{"title": {" "}, "theme": {"nord"}, "mode": {"recent"}, "markdown": {"ok"}},
+		{"title": {"title", "duplicate"}, "theme": {"nord"}, "mode": {"recent"}, "markdown": {"ok"}},
+		{"title": {strings.Repeat("x", maxChatTitleRunes+1)}, "theme": {"nord"}, "mode": {"recent"}, "markdown": {"ok"}},
+		{"title": {"title"}, "theme": {"nord"}, "mode": {"recent"}, "markdown": {strings.Repeat("x", maxShareMarkdownBytes+1)}},
+	} {
+		if _, _, _, _, status := parseShareOptions(values, source, defaultTheme); status != http.StatusBadRequest {
+			t.Errorf("parseShareOptions(%v) status = %d, want 400", values, status)
+		}
 	}
 }
 

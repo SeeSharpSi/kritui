@@ -1,11 +1,15 @@
 package templates
 
-import "strconv"
+import (
+	"strconv"
+
+	"seesharpsi/kritui/themes"
+)
 
 // MessageShareActions renders the share control for one persisted assistant
 // response. An empty sharePath shows the create action; a completed share shows
 // an icon that copies the public link returned by the share handler.
-templ MessageShareActions(chatID string, messageID int64, sharePath string) {
+templ MessageShareActions(chatID string, messageID int64, content, sharePath string) {
 	{{
 		messageIDText := strconv.FormatInt(messageID, 10)
 		action := "/chats/" + chatID + "/messages/" + messageIDText + "/share"
@@ -37,15 +41,60 @@ templ MessageShareActions(chatID string, messageID int64, sharePath string) {
 			<span class="message-share-status" role="status" aria-live="polite"></span>
 		} else {
 			<button
-				type="submit"
+				type="button"
 				class="message-share-button"
+				data-share-open
+				data-share-action={ action }
+				aria-haspopup="dialog"
+				aria-controls="share-dialog"
 				aria-label="Share response"
 				title="Share response"
 			>
 				@Icon("M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M8.6 13.5l6.8 4", "M15.4 6.5l-6.8 4")
 			</button>
-			<span class="message-share-pending" role="status" aria-live="polite">Creating link...</span>
+			<template data-share-markdown>{ content }</template>
 			<span class="message-share-status" role="status" aria-live="polite"></span>
 		}
 	</form>
+}
+
+templ ShareDialog(options []themes.Theme, current themes.Theme) {
+	<dialog id="share-dialog" class="share-dialog" aria-labelledby="share-dialog-title">
+		<form id="share-options-form" class="share-options-form" method="dialog">
+			<header class="share-dialog-header">
+				<h2 id="share-dialog-title">Create share link</h2>
+				<button type="button" class="share-dialog-close" data-share-close aria-label="Close share dialog">
+					@Icon("M18 6 6 18", "M6 6l12 12")
+				</button>
+			</header>
+			<label class="share-field" for="share-theme">Theme</label>
+			<div class="share-theme-select">
+				<select id="share-theme" name="theme">
+					for _, option := range options {
+						<option value={ option.ID } if option.ID == current.ID { selected }>{ option.Label }</option>
+					}
+				</select>
+			</div>
+			<fieldset class="share-mode-options">
+				<legend>Content</legend>
+				<label class="share-mode-option">
+					<input type="radio" name="mode" value="whole"/>
+					<span>Whole chat</span>
+				</label>
+				<label class="share-mode-option">
+					<input type="radio" name="mode" value="recent" checked/>
+					<span>This prompt + response</span>
+				</label>
+			</fieldset>
+			<label class="share-field" for="share-title">Title</label>
+			<input id="share-title" name="title" type="text" maxlength="120" required/>
+			<label class="share-field" for="share-markdown">Assistant response (Markdown)</label>
+			<textarea id="share-markdown" name="markdown" rows="10" maxlength="1048576"></textarea>
+			<div class="share-dialog-actions">
+				<button type="button" data-share-close>Cancel</button>
+				<button type="submit">Create link</button>
+			</div>
+			<p class="share-dialog-status" role="status" aria-live="polite"></p>
+		</form>
+	</dialog>
 }

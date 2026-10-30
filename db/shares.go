@@ -38,6 +38,18 @@ type ShareSource struct {
 	Content     string
 }
 
+// ShareConversation contains active conversational text for a whole-chat share.
+// Tool calls, tool results, attachments, and hidden messages are excluded.
+type ShareConversation struct {
+	Title    string
+	Messages []ShareConversationMessage
+}
+
+type ShareConversationMessage struct {
+	Role    string
+	Content string
+}
+
 // SharedResponse is an immutable encrypted share payload. ChatID and MessageID
 // are metadata only; the ciphertext remains readable if the source is edited or
 // deleted. Encryption keys are never stored here or in the database.
@@ -210,6 +222,61 @@ func GetShareSource(ctx context.Context, database *sql.DB, chatID, messageID int
 		}
 	}
 	return source, nil
+}
+
+// GetShareConversation loads active user and assistant text for an owned chat.
+// Tool-only assistant rows and tool messages are skipped.
+func GetShareConversation(ctx context.Context, database *sql.DB, chatID int64) (ShareConversation, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return ShareConversation{}, fmt.Errorf("get share conversation: %w", err)
+	}
+	var conversation ShareConversation
+	err = database.QueryRowContext(ctx, `SELECT title FROM chats WHERE id = ? AND user_id = ?`, chatID, userID).Scan(&conversation.Title)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ShareConversation{}, ErrChatNotFound
+	}
+	if err != nil {
+		return ShareConversation{}, fmt.Errorf("get share conversation title: %w", err)
+	}
+	conversation.Title, err = openChatTitle(ctx, chatID, conversation.Title)
+	if err != nil {
+		return ShareConversation{}, fmt.Errorf("get share conversation title: %w", err)
+	}
+	rows, err := database.QueryContext(ctx, `
+		SELECT messages.id, messages.role, messages.content,
+			EXISTS (SELECT 1 FROM message_tool_calls WHERE message_tool_calls.message_id = messages.id)
+		FROM messages
+		JOIN chats ON chats.id = messages.chat_id
+		WHERE chats.user_id = ? AND messages.chat_id = ?
+			AND messages.undo_sequence IS NULL
+			AND messages.role IN ('user', 'assistant')
+		ORDER BY messages.position
+	`, userID, chatID)
+	if err != nil {
+		return ShareConversation{}, fmt.Errorf("query share conversation: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var hasToolCalls bool
+		var message ShareConversationMessage
+		if err := rows.Scan(&id, &message.Role, &message.Content, &hasToolCalls); err != nil {
+			return ShareConversation{}, fmt.Errorf("scan share conversation: %w", err)
+		}
+		message.Content, err = DecryptStorageText(ctx, storageScopeMessageContent, messageStorageRowID(id), message.Content)
+		if err != nil {
+			return ShareConversation{}, fmt.Errorf("decrypt share conversation message: %w", err)
+		}
+		if message.Role == "assistant" && hasToolCalls && strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		conversation.Messages = append(conversation.Messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return ShareConversation{}, fmt.Errorf("read share conversation: %w", err)
+	}
+	return conversation, nil
 }
 
 // CreateSharedResponse stores one immutable encrypted snapshot. Ownership and

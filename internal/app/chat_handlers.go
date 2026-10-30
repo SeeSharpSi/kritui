@@ -168,10 +168,17 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 		if model := renderSettings.titleGeneration.Model; model != "" && !slices.Contains(models, model) {
 			models = append(models, model)
 		}
+		chatTitle, err := kritui_db.GetChatTitle(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("get chat title: %v", err)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat title.")
+			return
+		}
 
 		var page bytes.Buffer
 		home := templates.HomeData{
 			ChatID:                   chat,
+			ChatTitle:                chatTitle,
 			ChatURL:                  chatURL,
 			Messages:                 messages,
 			Models:                   models,

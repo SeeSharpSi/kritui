@@ -13,14 +13,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/templ"
+	"seesharpsi/kritui/themes"
 )
 
 const (
-	// maxShareBodyBytes caps the otherwise empty prepare form.
-	maxShareBodyBytes int64 = 16 << 10
+	// maxShareBodyBytes bounds editable Markdown plus share options.
+	maxShareBodyBytes     int64 = (3 << 20) + (32 << 10)
+	maxShareMarkdownBytes       = 1 << 20
 	// maxSharePublishBodyBytes bounds the encoded ciphertext upload. The
 	// decoded ciphertext itself is capped by kritui_db.MaxSharedResponseBytes.
 	maxSharePublishBodyBytes int64 = 24 << 20
@@ -86,13 +89,50 @@ func messageShareHandler(database *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		title := strings.TrimSpace(source.Title)
-		if title == "" {
-			title = "Shared response"
+		title, content, mode, theme, status := parseShareOptions(r.PostForm, source, theme)
+		if status != 0 {
+			http.Error(w, http.StatusText(status)+".", status)
+			return
+		}
+		if mode == "whole" {
+			conversation, err := kritui_db.GetShareConversation(r.Context(), database, chatID)
+			switch {
+			case errors.Is(err, kritui_db.ErrChatNotFound):
+				http.Error(w, "Chat not found.", http.StatusNotFound)
+				return
+			case err != nil:
+				log.Printf("get share conversation: %v", err)
+				http.Error(w, "Failed to share conversation.", http.StatusInternalServerError)
+				return
+			}
+			var transcript strings.Builder
+			for _, message := range conversation.Messages {
+				if strings.TrimSpace(message.Content) == "" {
+					continue
+				}
+				if transcript.Len()+len(message.Content)+16 > kritui_db.MaxSharedResponseBytes-16 {
+					http.Error(w, "Shared response is too large.", http.StatusRequestEntityTooLarge)
+					return
+				}
+				if transcript.Len() > 0 {
+					transcript.WriteString("\n\n")
+				}
+				if message.Role == "user" {
+					transcript.WriteString("## User\n\n")
+				} else {
+					transcript.WriteString("## Assistant\n\n")
+				}
+				transcript.WriteString(message.Content)
+			}
+			content = transcript.String()
 		}
 		createdAt := time.Now().UTC()
 		var snapshot bytes.Buffer
-		if err := templates.SharedResponsePage(title, source.UserContent, source.Content, createdAt, theme).Render(r.Context(), &snapshot); err != nil {
+		userContent := source.UserContent
+		if mode == "whole" {
+			userContent = ""
+		}
+		if err := templates.SharedResponsePage(title, userContent, content, createdAt, theme).Render(r.Context(), &snapshot); err != nil {
 			log.Printf("render shared response: %v", err)
 			http.Error(w, "Failed to share message.", http.StatusInternalServerError)
 			return
@@ -115,6 +155,42 @@ func messageShareHandler(database *sql.DB) http.HandlerFunc {
 			log.Printf("render prepared message share: %v", err)
 		}
 	}
+}
+
+func parseShareOptions(values map[string][]string, source kritui_db.ShareSource, currentTheme themes.Theme) (title, content, mode string, theme themes.Theme, status int) {
+	theme = currentTheme
+	title = strings.TrimSpace(source.Title)
+	if title == "" {
+		title = "Shared response"
+	}
+	content = source.Content
+	mode = "recent"
+	allowed := map[string]bool{"title": true, "markdown": true, "mode": true, "theme": true}
+	if len(values) == 0 {
+		return title, content, mode, theme, 0
+	}
+	for key, entries := range values {
+		if !allowed[key] || len(entries) != 1 {
+			return "", "", "", themes.Theme{}, http.StatusBadRequest
+		}
+	}
+	for _, name := range []string{"title", "markdown", "mode", "theme"} {
+		if len(values[name]) != 1 {
+			return "", "", "", themes.Theme{}, http.StatusBadRequest
+		}
+	}
+	title = strings.TrimSpace(values["title"][0])
+	content = values["markdown"][0]
+	mode = values["mode"][0]
+	if title == "" || !utf8.ValidString(title) || utf8.RuneCountInString(title) > maxChatTitleRunes ||
+		!utf8.ValidString(content) || len(content) > maxShareMarkdownBytes || (mode != "recent" && mode != "whole") {
+		return "", "", "", themes.Theme{}, http.StatusBadRequest
+	}
+	selectedTheme, err := themes.ByID(values["theme"][0])
+	if err != nil {
+		return "", "", "", themes.Theme{}, http.StatusBadRequest
+	}
+	return title, content, mode, selectedTheme, 0
 }
 
 // messageSharePublishHandler stores only the ciphertext prepared and encrypted
@@ -174,7 +250,7 @@ func messageSharePublishHandler(database *sql.DB) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.MessageShareActions(strconv.FormatInt(chatID, 10), messageID, "/s/"+token).Render(r.Context(), w); err != nil {
+		if err := templates.MessageShareActions(strconv.FormatInt(chatID, 10), messageID, "", "/s/"+token).Render(r.Context(), w); err != nil {
 			log.Printf("render message share actions: %v", err)
 		}
 	}

@@ -29,6 +29,7 @@ const shareEncryptionScript = `<script>
 	var SHARE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 	var BASE64URL = /^[A-Za-z0-9_-]+$/;
 	var busyForms = new WeakSet();
+	var sourceForms = new WeakMap();
 
 	function parseInert(html) {
 		var template = document.createElement('template');
@@ -72,6 +73,12 @@ const shareEncryptionScript = `<script>
 	}
 
 	function setStatus(form, message, state) {
+		var dialogStatus = form.querySelector('.share-dialog-status');
+		if (dialogStatus) {
+			dialogStatus.textContent = message;
+			dialogStatus.dataset.state = state || '';
+			return;
+		}
 		if (typeof window.setShareStatus === 'function') {
 			window.setShareStatus(form, message, state || '');
 		}
@@ -136,8 +143,17 @@ const shareEncryptionScript = `<script>
 				throw shareError('Encrypted shares require HTTPS. Try again over a secure connection.');
 			}
 
-			var url = actionURL(form);
-			var preparationResponse = await post(url, new URLSearchParams());
+			var sourceForm = sourceForms.get(form);
+			if (!sourceForm || !sourceForm.isConnected) {
+				throw new Error('Share source is no longer available.');
+			}
+			var url = actionURL(sourceForm);
+			var options = new URLSearchParams();
+			options.set('title', form.elements.title.value);
+			options.set('theme', form.elements.theme.value);
+			options.set('mode', form.elements.mode.value);
+			options.set('markdown', form.elements.mode.value === 'whole' ? '' : form.elements.markdown.value);
+			var preparationResponse = await post(url, options);
 			if (followHXRedirect(preparationResponse)) {
 				return;
 			}
@@ -215,12 +231,16 @@ const shareEncryptionScript = `<script>
 			rawKey.fill(0);
 			copyButton.dataset.shareUrl = sharePath + '#key=' + encodedKey;
 
-			if (!form.isConnected) {
+			if (!sourceForm.isConnected) {
 				return;
 			}
-			form.replaceWith(replacement);
+			sourceForm.replaceWith(replacement);
 			if (window.htmx && typeof window.htmx.process === 'function') {
 				window.htmx.process(replacement);
+			}
+			var dialog = form.closest('dialog');
+			if (dialog && dialog.open) {
+				dialog.close();
 			}
 			if (typeof window.copyShareLink === 'function') {
 				await window.copyShareLink(copyButton);
@@ -241,9 +261,79 @@ const shareEncryptionScript = `<script>
 		}
 	}
 
+	function refreshShareTitle(sourceForm, dialog, form, fallbackTitle) {
+		var action;
+		try {
+			action = new URL(sourceForm.getAttribute('action'), window.location.href);
+		} catch (error) {
+			return;
+		}
+		var match = action.pathname.match(/^\/chats\/([1-9]\d*)\/messages\/[1-9]\d*\/share$/);
+		if (!match) {
+			return;
+		}
+		fetch('/chats/' + match[1] + '/summary', {
+			credentials: 'same-origin',
+			headers: { 'Accept': 'text/html' }
+		})
+			.then(function (response) {
+				return response.ok ? response.text() : '';
+			})
+			.then(function (html) {
+				if (!html || !dialog.open || sourceForms.get(form) !== sourceForm || form.elements.title.value !== fallbackTitle) {
+					return;
+				}
+				var fragment = parseInert(html);
+				var title = fragment.querySelector('.chat-summary-title')?.textContent.trim();
+				if (title) {
+					form.elements.title.value = title;
+				}
+			})
+			.catch(function () {});
+	}
+
+	document.addEventListener('click', function (event) {
+		var opener = event.target.closest('[data-share-open]');
+		if (opener) {
+			var sourceForm = opener.closest('form.message-share-actions');
+			var dialog = document.getElementById('share-dialog');
+			var form = document.getElementById('share-options-form');
+			if (!sourceForm || !dialog || !form) return;
+			sourceForms.set(form, sourceForm);
+			form.action = opener.getAttribute('data-share-action') || sourceForm.action;
+			var chatTitle = document.querySelector('.chat[data-chat-title]')?.dataset.chatTitle || '';
+			var titleAtOpen = chatTitle || 'New chat';
+			form.elements.title.value = titleAtOpen;
+			var markdown = opener.parentElement.querySelector('template[data-share-markdown]');
+			form.elements.markdown.value = markdown ? markdown.content.textContent : '';
+			var currentTheme = document.documentElement.dataset.theme;
+			if (Array.from(form.elements.theme.options).some((option) => option.value === currentTheme)) {
+				form.elements.theme.value = currentTheme;
+			}
+			form.elements.mode.value = 'recent';
+			form.elements.markdown.disabled = false;
+			form.querySelector('.share-dialog-status').textContent = '';
+			dialog.showModal();
+			form.elements.title.focus();
+			refreshShareTitle(sourceForm, dialog, form, titleAtOpen);
+			return;
+		}
+		if (event.target.closest('[data-share-close]')) {
+			event.target.closest('dialog')?.close();
+		}
+	}, true);
+
+	document.addEventListener('change', function (event) {
+		if (event.target.matches('#share-options-form input[name="mode"]')) {
+			var form = event.target.form;
+			var disabled = form.elements.mode.value === 'whole';
+			form.elements.markdown.disabled = disabled;
+		}
+	}, true);
+
 	document.addEventListener('submit', function (event) {
 		var form = event.target;
-		if (!(form instanceof HTMLFormElement) || !form.classList.contains('message-share-actions')) {
+		if (!(form instanceof HTMLFormElement) || !form.classList.contains('share-options-form')) {
 			return;
 		}
 		var submitButton = form.querySelector('button[type="submit"]');
