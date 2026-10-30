@@ -2109,8 +2109,8 @@ func TestHistoryHandlerRendersDeleteButton(t *testing.T) {
 		`class="history-delete-spinner braille-spinner"`,
 		`aria-hidden="true"`,
 		`hx-delete="/chats/8?current=8"`,
-		`hx-target="#history-entries"`,
-		`hx-swap="innerHTML"`,
+		`hx-target="closest li"`,
+		`hx-swap="delete swapEmpty:true"`,
 		`hx-confirm="Permanently delete Project notes?"`,
 		`aria-label="Delete Project notes"`,
 	)
@@ -4117,8 +4117,19 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	requireContains(t, response.Body.String(), "Keep me")
-	requireNotContains(t, response.Body.String(), "Delete me")
+	body := response.Body.String()
+	requireContains(t, body,
+		`id="history-count"`,
+		"Browse · 1 chat",
+		`id="history-summary-count"`,
+		`hx-swap-oob="outerHTML"`,
+	)
+	requireNotContains(t, body,
+		"Delete me",
+		"Keep me",
+		`class="history-entry"`,
+		"No saved chats yet.",
+	)
 	var chats, deletedMessages, keptMessages int
 	if err := database.QueryRow(`
 		SELECT
@@ -4132,6 +4143,18 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 		t.Errorf("stored rows = chats %d, deleted messages %d, kept messages %d; want 1, 0, 1", chats, deletedMessages, keptMessages)
 	}
 
+	request = httptest.NewRequest(http.MethodDelete, "/chats/8?current=999", nil)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	requireHistoryMutationError(t, response, http.StatusNotFound, "Chat not found.")
+	if err := database.QueryRow(`SELECT COUNT(*) FROM chats WHERE id = 8`).Scan(&chats); err != nil {
+		t.Fatalf("count surviving chat: %v", err)
+	}
+	if chats != 1 {
+		t.Errorf("surviving chat count after failed delete = %d, want 1", chats)
+	}
+
 	request = httptest.NewRequest(http.MethodDelete, "/chats/8?current=8", nil)
 	response = httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
@@ -4142,12 +4165,16 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 	if redirect := response.Header().Get("HX-Redirect"); redirect != "" {
 		t.Errorf("unexpected HX-Redirect %q", redirect)
 	}
-	requireContains(t, response.Body.String(),
+	body = response.Body.String()
+	requireContains(t, body,
 		"No saved chats yet.",
+		`hx-swap-oob="innerHTML:#history-entries"`,
+		"Browse · 0 chats",
 		`id="message-list"`,
 		`hx-swap-oob="outerHTML"`,
 		"No messages yet",
 	)
+	requireNotContains(t, body, `class="history-entry"`, "Keep me")
 	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&chats); err != nil {
 		t.Fatalf("count chats: %v", err)
 	}

@@ -779,6 +779,19 @@ async function historyDeleteState(row) {
   });
 }
 
+function historyEntryHrefs(page) {
+  return page.locator('#history-entries .history-entry .history-title-link').evaluateAll(
+    (nodes) => nodes.map((node) => node.getAttribute('href')),
+  );
+}
+
+async function historyCountValue(page) {
+  return page.locator('#history-count').evaluate((element) => {
+    const match = /(\d+)/.exec(element.textContent ?? '');
+    return match ? Number.parseInt(match[1], 10) : null;
+  });
+}
+
 async function historyLoaderState(loader) {
   return loader.evaluate((node) => {
     const spinner = node.querySelector('.braille-spinner');
@@ -3311,6 +3324,347 @@ test('history pagination shows its cursor loader spinner without the global over
         cursorGate.release();
         await page.unroute(historyRoute, historyRouteHandler).catch(() => {});
       }
+    },
+  });
+});
+
+test('history delete keeps loaded rows, the pagination cursor, and scroll position', { timeout: 240000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'history delete scroll and pagination',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      await signup(page, username('historyscroll'), password);
+      const chats = [];
+      for (let index = 0; index < 30; index += 1) {
+        const label = String(index + 1).padStart(2, '0');
+        chats.push(await createPersistedChat(
+          page,
+          provider,
+          `History scroll chat ${label}`,
+          `History scroll answer ${label}`,
+        ));
+      }
+
+      const historyRoute = (url) => url.pathname === '/history';
+      const historyRouteHandler = async (route) => {
+        if (route.request().method() !== 'GET') {
+          await route.continue();
+          return;
+        }
+        const url = new URL(route.request().url());
+        url.searchParams.set('limit', '6');
+        await route.continue({ url: url.href });
+      };
+      await page.route(historyRoute, historyRouteHandler);
+      try {
+        await page.locator('#history-button').click();
+        await waitForPanels(page, 'history-page');
+        const panel = page.locator('#history-page');
+        const entries = page.locator('#history-entries .history-entry');
+
+        await waitUntil(async () => (await entries.count()) >= 6, {
+          timeout: 20000,
+          label: 'first limited History page',
+        });
+        await waitUntil(async () => (await historyCountValue(page)) === chats.length, {
+          timeout: 20000,
+          label: 'History count to include every chat',
+        });
+
+        // Load enough older rows to keep the next-page cursor and leave space below it.
+        while ((await entries.count()) < 24) {
+          const before = await entries.count();
+          const loader = page.locator('#history-entries .history-loader[hx-get]');
+          assert.equal(await loader.count(), 1, 'an older History page must remain available');
+          await panel.evaluate((element) => {
+            element.scrollTop = element.scrollHeight;
+          });
+          await waitUntil(async () => (await entries.count()) > before, {
+            timeout: 20000,
+            label: `History rows after ${before} loaded rows`,
+          });
+        }
+
+        // Stop further automatic pagination before measuring the loaded page.
+        await panel.evaluate((element) => {
+          element.scrollTop = 0;
+        });
+        await waitForStableLayout(page);
+        await waitUntil(async () => {
+          const loader = page.locator('#history-entries .history-loader[hx-get]');
+          return (await loader.count()) === 1 &&
+            !(await loader.evaluate((element) => element.classList.contains('htmx-request')));
+        }, {
+          timeout: 10000,
+          label: 'History pagination to settle before delete',
+        });
+
+        const loadedCount = await entries.count();
+        assert.ok(loadedCount >= 24, `History must load at least 24 rows, got ${loadedCount}`);
+        const loadedHrefs = await historyEntryHrefs(page);
+        assert.equal(loadedHrefs.length, loadedCount, 'every loaded History row must expose a chat link');
+
+        const cursor = page.locator('#history-entries .history-loader[hx-get]');
+        assert.equal(await cursor.count(), 1, 'History must keep its next-page cursor after loading older rows');
+        const cursorBefore = await cursor.getAttribute('hx-get');
+        assert.ok(cursorBefore && cursorBefore.includes('before='), 'History cursor must keep its before parameters');
+
+        const rowMetrics = await page.locator('#history-entries').evaluate((list) => {
+          const rows = list.querySelectorAll('.history-entry');
+          const first = rows[0];
+          const second = rows[1];
+          const firstBox = first?.getBoundingClientRect();
+          const secondBox = second?.getBoundingClientRect();
+          return {
+            height: firstBox?.height ?? 0,
+            gap: firstBox && secondBox ? secondBox.top - firstBox.bottom : 0,
+          };
+        });
+        const rowHeight = rowMetrics.height;
+        const rowGap = rowMetrics.gap;
+        assert.ok(rowHeight > 0, 'History rows must have a measurable height');
+
+        // Keep the loader far enough below the panel that removing the selected
+        // row cannot pull it into view and trigger another page.
+        const desiredBeforeGap = rowHeight * 2 + rowGap + 80;
+        await panel.evaluate((element, gap) => {
+          const loader = element.querySelector('#history-entries .history-loader[hx-get]');
+          if (!loader) {
+            return;
+          }
+          const panelRect = element.getBoundingClientRect();
+          const loaderRect = loader.getBoundingClientRect();
+          const desiredLoaderTop = panelRect.bottom + gap;
+          const maxScroll = element.scrollHeight - element.clientHeight;
+          element.scrollTop = Math.min(
+            maxScroll,
+            Math.max(0, element.scrollTop + loaderRect.top - desiredLoaderTop),
+          );
+        }, desiredBeforeGap);
+        await waitForStableLayout(page);
+
+        const panelBox = await panel.boundingBox();
+        const loaderBox = await page.locator('#history-entries .history-loader[hx-get]').boundingBox();
+        assert.ok(panelBox && loaderBox, 'History panel and loader must have layout boxes');
+        const loaderGapBefore = loaderBox.y - (panelBox.y + panelBox.height);
+        assert.ok(
+          loaderGapBefore > rowHeight * 2 + rowGap + 40,
+          `History loader must stay clear of the panel before delete, got ${loaderGapBefore}px`,
+        );
+
+        const candidates = [];
+        for (let index = 10; index <= loadedCount - 2; index += 1) {
+          const box = await entries.nth(index).boundingBox();
+          if (box && box.y >= panelBox.y + 8 && box.y + box.height <= panelBox.y + panelBox.height - 8) {
+            candidates.push({ index, box });
+          }
+        }
+        assert.ok(candidates.length > 0, 'History must show a loaded older row near the bottom while scrolled');
+        const targetIndex = candidates[candidates.length - 1].index;
+        const targetRow = entries.nth(targetIndex);
+        const targetHref = await targetRow.locator('.history-title-link').getAttribute('href');
+        assert.ok(targetHref, 'target History row must expose its chat link');
+        assert.ok(loadedHrefs.indexOf(targetHref) >= 10, 'target row must come from a loaded older page');
+
+        const deleteButton = targetRow.locator('.history-delete');
+        await deleteButton.scrollIntoViewIfNeeded();
+        await waitForStableLayout(page);
+
+        const settledPanelBox = await panel.boundingBox();
+        const settledLoaderBox = await page.locator('#history-entries .history-loader[hx-get]').boundingBox();
+        const settledTargetBox = await targetRow.boundingBox();
+        assert.ok(
+          settledPanelBox && settledLoaderBox && settledTargetBox,
+          'History panel, loader, and target row must have layout boxes',
+        );
+        const settledLoaderGap = settledLoaderBox.y - (settledPanelBox.y + settledPanelBox.height);
+        assert.ok(
+          settledLoaderGap > rowHeight * 2 + rowGap + 40,
+          `History loader must stay clear of the panel after scrollIntoView, got ${settledLoaderGap}px`,
+        );
+        assert.ok(
+          settledTargetBox.y > settledPanelBox.y + 8,
+          'target row must sit below the History viewport top',
+        );
+        assert.ok(
+          settledTargetBox.y + rowHeight <= settledPanelBox.y + settledPanelBox.height - 8,
+          'target row must stay fully visible inside the History viewport',
+        );
+
+        const beforeState = await panel.evaluate((element) => ({ scrollTop: element.scrollTop }));
+        assert.ok(beforeState.scrollTop > 0, 'History must be scrolled away from the top before delete');
+
+        let confirmation = '';
+        const dialogPromise = new Promise((resolve, reject) => {
+          page.once('dialog', async (dialog) => {
+            try {
+              confirmation = dialog.message();
+              await dialog.accept();
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          });
+        });
+        const responsePromise = page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return response.request().method() === 'DELETE' && /^\/chats\/\d+$/.test(url.pathname);
+        }, { timeout: 20000 });
+        await deleteButton.click();
+        await dialogPromise;
+        assert.match(confirmation, /^Permanently delete .+\?$/, 'delete confirmation message changed');
+        const response = await responsePromise;
+        const body = response.status() >= 400 ? await response.text().catch(() => '') : '';
+        assert.ok(
+          response.status() >= 200 && response.status() < 300,
+          `history DELETE returned ${response.status()}${body ? `: ${body}` : ''}`,
+        );
+
+        await waitUntil(async () => {
+          return (await entries.count()) === loadedCount - 1 &&
+            (await historyCountValue(page)) === chats.length - 1 &&
+            !(await historyEntryHrefs(page)).includes(targetHref);
+        }, {
+          timeout: 10000,
+          label: 'deleted History row to disappear and the count to update',
+        });
+
+        await waitForStableLayout(page);
+        const afterPanelBox = await panel.boundingBox();
+        const afterLoaderBox = await page.locator('#history-entries .history-loader[hx-get]').boundingBox();
+        assert.ok(afterPanelBox && afterLoaderBox, 'History panel and loader must keep layout boxes after delete');
+        const afterLoaderGap = afterLoaderBox.y - (afterPanelBox.y + afterPanelBox.height);
+        assert.ok(
+          afterLoaderGap > rowHeight + 40,
+          `History loader must stay below the viewport after delete, got ${afterLoaderGap}px`,
+        );
+        const remainingHrefs = await historyEntryHrefs(page);
+        assert.deepEqual(
+          remainingHrefs,
+          loadedHrefs.filter((href) => href !== targetHref),
+          'delete must keep every other loaded History row in order',
+        );
+        assert.ok(remainingHrefs.length > 10, 'delete must not truncate History to the first page');
+        const cursorAfter = page.locator('#history-entries .history-loader[hx-get]');
+        assert.equal(await cursorAfter.count(), 1, 'History must keep its next-page cursor after delete');
+        assert.equal(await cursorAfter.getAttribute('hx-get'), cursorBefore, 'History cursor must survive delete');
+
+        const afterScrollTop = await panel.evaluate((element) => element.scrollTop);
+        assertClose(afterScrollTop, beforeState.scrollTop, 1, 'History scroll position after delete');
+      } finally {
+        await page.unroute(historyRoute, historyRouteHandler).catch(() => {});
+      }
+    },
+  });
+});
+
+test('history delete failure keeps its row and deleting the final row shows the empty state', { timeout: 180000 }, async (t) => {
+  await runIsolatedCase(t, {
+    name: 'history delete failure and empty state',
+    browser,
+    build,
+    async run(env) {
+      const { page, provider } = env;
+      await signup(page, username('historyempty'), password);
+      const only = await createPersistedChat(page, provider, 'Final history chat', 'Final history answer');
+
+      await page.locator('#history-button').click();
+      await waitForPanels(page, 'history-page');
+      const row = historyRowForChat(page, only.chatID);
+      await row.waitFor({ state: 'visible', timeout: 10000 });
+      await waitUntil(async () => (await page.locator('#history-entries .history-entry').count()) === 1, {
+        timeout: 10000,
+        label: 'single History row',
+      });
+      assert.equal(await historyCountValue(page), 1, 'History count must start at one chat');
+
+      const deleteRoute = (url) => /^\/chats\/\d+$/.test(url.pathname);
+      const deleteRouteHandler = async (route) => {
+        if (route.request().method() !== 'DELETE') {
+          await route.continue();
+          return;
+        }
+        await route.fulfill({
+          status: 500,
+          contentType: 'text/html; charset=utf-8',
+          headers: {
+            'HX-Retarget': '#history-error',
+            'HX-Reswap': 'outerHTML',
+          },
+          body: '<p id="history-error" class="history-status" role="alert">Failed to delete chat.</p>',
+        });
+      };
+      await page.route(deleteRoute, deleteRouteHandler);
+      try {
+        const dialogPromise = new Promise((resolve, reject) => {
+          page.once('dialog', async (dialog) => {
+            try {
+              await dialog.accept();
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          });
+        });
+        const responsePromise = page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return response.request().method() === 'DELETE' && /^\/chats\/\d+$/.test(url.pathname);
+        }, { timeout: 20000 });
+        await row.locator('.history-delete').click();
+        await dialogPromise;
+        const response = await responsePromise;
+        assert.equal(response.status(), 500, 'failed history DELETE must return the routed status');
+        await waitUntil(async () => {
+          return !(await row.locator('.history-delete').evaluate((button) => button.classList.contains('htmx-request')));
+        }, {
+          timeout: 10000,
+          label: 'failed History delete to settle',
+        });
+        assert.equal(await row.count(), 1, 'failed delete must keep the History row');
+        assert.equal(await historyCountValue(page), 1, 'failed delete must keep the History count');
+      } finally {
+        await page.unroute(deleteRoute, deleteRouteHandler).catch(() => {});
+      }
+
+      const dialogPromise = new Promise((resolve, reject) => {
+        page.once('dialog', async (dialog) => {
+          try {
+            await dialog.accept();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+      const responsePromise = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return response.request().method() === 'DELETE' && /^\/chats\/\d+$/.test(url.pathname);
+      }, { timeout: 20000 });
+      await row.locator('.history-delete').click();
+      await dialogPromise;
+      const response = await responsePromise;
+      const body = response.status() >= 400 ? await response.text().catch(() => '') : '';
+      assert.ok(
+        response.status() >= 200 && response.status() < 300,
+        `history DELETE returned ${response.status()}${body ? `: ${body}` : ''}`,
+      );
+
+      await waitUntil(async () => {
+        return (await page.locator('#history-entries .history-entry').count()) === 0 &&
+          (await historyCountValue(page)) === 0;
+      }, {
+        timeout: 10000,
+        label: 'final History row to disappear and the count to reach zero',
+      });
+
+      const empty = page.locator('#history-entries .history-empty');
+      await empty.waitFor({ state: 'visible', timeout: 10000 });
+      assert.equal((await empty.innerText()).trim(), 'No saved chats yet.');
+      assert.equal(await historyCountValue(page), 0, 'final History delete must show zero chats');
+      assert.equal(await page.locator('#history-entries .history-loader').count(), 0,
+        'final History delete must not leave a pagination cursor');
     },
   });
 });

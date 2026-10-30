@@ -92,6 +92,20 @@ templ HistoryRefresh(chatID string, chats []kritui_db.Chat, firstPage bool, hasM
 	</hx-partial>
 }
 
+// HistoryDeletion updates the history count after a row is deleted. It leaves
+// surviving rows untouched so the loaded page and pagination cursor survive.
+// The empty marker is inserted out of band because the main swap deletes the
+// targeted row and the response carries no replacement content for it.
+templ HistoryDeletion(count int) {
+	if count == 0 {
+		<div hx-swap-oob="innerHTML:#history-entries">
+			<li class="history-empty">No saved chats yet.</li>
+		</div>
+	}
+	@HistoryError("", true)
+	@HistoryCount(count)
+}
+
 templ HistoryEntries(chatID string, chats []kritui_db.Chat, firstPage bool, hasMore bool) {
 	if firstPage && len(chats) == 0 {
 		<li class="history-empty">No saved chats yet.</li>
@@ -211,8 +225,8 @@ templ HistoryEntry(chatID string, chat kritui_db.Chat) {
 			type="button"
 			class="history-action history-delete"
 			hx-delete={ chatURL(chat.ID, chatID) }
-			hx-target="#history-entries"
-			hx-swap="innerHTML"
+			hx-target="closest li"
+			hx-swap="delete swapEmpty:true"
 			hx-indicator="this"
 			hx-confirm={ "Permanently delete " + historyTitle(chat) + "?" }
 			aria-label={ "Delete " + historyTitle(chat) }

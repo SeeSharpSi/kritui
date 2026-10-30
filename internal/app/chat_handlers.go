@@ -956,15 +956,15 @@ func deleteChatHandler(database *sql.DB) http.HandlerFunc {
 			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Failed to delete chat.")
 			return
 		}
-		if err := renderHistoryEntries(r.Context(), w, database, current, "", 0, false, defaultHistoryPageSize); err != nil {
-			log.Printf("render chat history after delete: %v", err)
+		count, err := chatHistoryCount(r.Context(), database)
+		if err != nil {
+			log.Printf("count chat history after delete: %v", err)
 			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Chat was deleted, but history could not be refreshed.")
 			return
 		}
-		if chatID == currentChatID {
-			if err := templates.MessageList("", nil, true).Render(r.Context(), w); err != nil {
-				log.Printf("clear deleted chat: %v", err)
-			}
+		if err := renderHistoryDeletion(r.Context(), w, count, chatID == currentChatID); err != nil {
+			log.Printf("render chat history after delete: %v", err)
+			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Chat was deleted, but history could not be refreshed.")
 		}
 	}
 }
@@ -1088,6 +1088,23 @@ func pinChatHandler(database *sql.DB) http.HandlerFunc {
 			renderHistoryMutationError(w, r, http.StatusInternalServerError, "Chat pin was updated, but history could not be refreshed.")
 		}
 	}
+}
+
+func renderHistoryDeletion(ctx context.Context, w http.ResponseWriter, count int, clearCurrent bool) error {
+	var fragment bytes.Buffer
+	if err := templates.HistoryDeletion(count).Render(ctx, &fragment); err != nil {
+		return fmt.Errorf("render history deletion: %w", err)
+	}
+	if clearCurrent {
+		if err := templates.MessageList("", nil, true).Render(ctx, &fragment); err != nil {
+			return fmt.Errorf("render cleared message list: %w", err)
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if _, err := io.WriteString(w, fragment.String()); err != nil {
+		return fmt.Errorf("write history deletion: %w", err)
+	}
+	return nil
 }
 
 func renderHistoryEntries(ctx context.Context, w http.ResponseWriter, database *sql.DB, current, beforeUpdatedAt string, beforeID int64, beforePinned bool, limit int) error {
