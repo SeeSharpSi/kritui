@@ -15,6 +15,9 @@ const (
 	maxPromptAppendTextBytes = 16 << 10
 	defaultLinkCheckAppendID = "link-check"
 	defaultResearchAppendID  = "research"
+	// PDFImagesAppendID is the built-in append used when a model cannot read a
+	// PDF directly and its pages are sent as images instead.
+	PDFImagesAppendID = "pdf-images"
 )
 
 // PromptAppend is a named text fragment that can be added to a user message.
@@ -51,6 +54,13 @@ func embeddedAppendText(name string) string {
 		panic(fmt.Sprintf("read embedded prompt append %q: %v", name, err))
 	}
 	return strings.TrimSpace(string(content))
+}
+
+// PDFImagesAppendText returns the hidden append snapshotted when a PDF is
+// converted to page images. It is not part of DefaultPromptAppends and does not
+// appear in the settings or chat append pickers.
+func PDFImagesAppendText() string {
+	return embeddedAppendText("default_appends/pdf-images.md")
 }
 
 // rowQueryer is satisfied by both *sql.DB and *sql.Tx.

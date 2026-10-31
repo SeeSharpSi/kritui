@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -22,6 +23,15 @@ import (
 
 func testPDFBytes() []byte {
 	return []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n")
+}
+
+func testPDFDocumentBytes(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile("testdata/two-page.pdf")
+	if err != nil {
+		t.Fatalf("read two-page PDF fixture: %v", err)
+	}
+	return data
 }
 
 func TestMessageHandlerPersistsPDFAttachmentFromContentSignature(t *testing.T) {
@@ -194,7 +204,7 @@ func TestMessageHandlerRejectsOversizedPDFAttachment(t *testing.T) {
 	}
 }
 
-func TestMessageHandlerPDFOnlySkipsImageCapabilityCheck(t *testing.T) {
+func TestMessageHandlerPDFOnlyChecksPDFAndImageCapabilities(t *testing.T) {
 	database := openTestDatabase(t)
 	seedCurrentChat(t, database, 77)
 	var modelRequests atomic.Int32
@@ -203,7 +213,7 @@ func TestMessageHandlerPDFOnlySkipsImageCapabilityCheck(t *testing.T) {
 			modelRequests.Add(1)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"data":[{"id":"vision-model","capabilities":{"image_input":{"supported":false}},"architecture":{"input_modalities":["text"]}}]}`)
+		_, _ = io.WriteString(w, `{"data":[{"id":"vision-model","modalities":{"input":["text","image/png"]}}]}`)
 	}))
 	defer server.Close()
 	t.Setenv("LLM_KEY", "test-key")
@@ -218,8 +228,8 @@ func TestMessageHandlerPDFOnlySkipsImageCapabilityCheck(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	if modelRequests.Load() != 0 {
-		t.Errorf("model discovery requests = %d, want 0 for PDF-only upload", modelRequests.Load())
+	if modelRequests.Load() != 1 {
+		t.Errorf("model discovery requests = %d, want 1 for PDF-only upload", modelRequests.Load())
 	}
 	messages, err := kritui_db.GetMessages(context.Background(), database, 77)
 	if err != nil {
@@ -227,6 +237,39 @@ func TestMessageHandlerPDFOnlySkipsImageCapabilityCheck(t *testing.T) {
 	}
 	if len(messages) != 1 || len(messages[0].Attachments) != 1 || messages[0].Attachments[0].MediaType != "application/pdf" {
 		t.Fatalf("messages = %#v", messages)
+	}
+	if len(messages[0].PromptAppendTexts) != 1 || messages[0].PromptAppendTexts[0] != kritui_db.PDFImagesAppendText() {
+		t.Errorf("message prompt appends = %#v, want hidden PDF image append", messages[0].PromptAppendTexts)
+	}
+}
+
+func TestMessageHandlerRejectsPDFForTextOnlyModel(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 80)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"vision-model","modalities":{"input":["text"]}}]}`)
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_ENDPOINT", server.URL+"/v1/chat/completions")
+
+	body, contentType := multipartImageRequest(t, "Review this PDF", []testUpload{{"report.pdf", "application/pdf", testPDFBytes()}})
+	request := httptest.NewRequest(http.MethodPost, "/messages?chat=80", bytes.NewReader(body))
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+	messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), newToolCallStore())(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	requireContains(t, response.Body.String(), "doesn&#39;t support PDFs or images.")
+	messages, err := kritui_db.GetMessages(context.Background(), database, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("persisted messages = %d, want 0", len(messages))
 	}
 }
 
@@ -263,16 +306,23 @@ func TestMessageHandlerMixedAttachmentsStillCheckImageCapability(t *testing.T) {
 	}
 }
 
-func TestMessageCompletionHandlerPDFOnlySkipsImageCapabilityCheck(t *testing.T) {
+func TestMessageCompletionHandlerConvertsPDFToImagesForNonPDFModel(t *testing.T) {
 	database := openTestDatabase(t)
 	var modelRequests atomic.Int32
+	requests := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodGet {
 			modelRequests.Add(1)
-			_, _ = io.WriteString(w, `{"data":[{"id":"vision-model","capabilities":{"image_input":{"supported":false}},"architecture":{"input_modalities":["text"]}}]}`)
+			_, _ = io.WriteString(w, `{"data":[{"id":"vision-model","modalities":{"input":["text","image/png"]}}]}`)
 			return
 		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		requests <- request
 		_, _ = io.WriteString(w, `{"model":"vision-model","choices":[{"message":{"role":"assistant","content":"Answer"},"finish_reason":"stop"}]}`)
 	}))
 	defer server.Close()
@@ -285,7 +335,7 @@ func TestMessageCompletionHandlerPDFOnlySkipsImageCapabilityCheck(t *testing.T) 
 	if _, err := kritui_db.InsertMessage(context.Background(), database, 1, 0, llm.Message{
 		Role:        "user",
 		Content:     "Review this PDF",
-		Attachments: []llm.UserAttachment{{Filename: "report.pdf", MediaType: "application/pdf", Data: testPDFBytes()}},
+		Attachments: []llm.UserAttachment{{Filename: "report.pdf", MediaType: "application/pdf", Data: testPDFDocumentBytes(t)}},
 	}); err != nil {
 		t.Fatalf("insert PDF message: %v", err)
 	}
@@ -301,8 +351,8 @@ func TestMessageCompletionHandlerPDFOnlySkipsImageCapabilityCheck(t *testing.T) 
 	if !strings.Contains(response.Body.String(), "Answer") {
 		t.Errorf("completion body = %q, want rendered answer", response.Body.String())
 	}
-	if modelRequests.Load() != 0 {
-		t.Errorf("model discovery requests = %d, want 0 for PDF-only completion", modelRequests.Load())
+	if modelRequests.Load() != 1 {
+		t.Errorf("model discovery requests = %d, want 1 for PDF-only completion", modelRequests.Load())
 	}
 	var assistants int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 1 AND role = 'assistant'`).Scan(&assistants); err != nil {
@@ -310,6 +360,33 @@ func TestMessageCompletionHandlerPDFOnlySkipsImageCapabilityCheck(t *testing.T) 
 	}
 	if assistants != 1 {
 		t.Errorf("stored assistants = %d, want 1", assistants)
+	}
+
+	request := <-requests
+	messages, ok := request["messages"].([]any)
+	if !ok || len(messages) < 2 {
+		t.Fatalf("provider messages = %#v", request["messages"])
+	}
+	userMessage, ok := messages[1].(map[string]any)
+	if !ok || userMessage["role"] != "user" {
+		t.Fatalf("provider user message = %#v", messages[1])
+	}
+	parts, ok := userMessage["content"].([]any)
+	if !ok || len(parts) != 3 {
+		t.Fatalf("provider user content = %#v", userMessage["content"])
+	}
+	textPart, _ := parts[2].(map[string]any)
+	text, _ := textPart["text"].(string)
+	for _, wantText := range []string{"converted to images", "Review this PDF"} {
+		if !strings.Contains(text, wantText) {
+			t.Errorf("provider text part = %q, want text containing %q", text, wantText)
+		}
+	}
+	for index := 0; index < 2; index++ {
+		part, _ := parts[index].(map[string]any)
+		if part["type"] != "image_url" {
+			t.Errorf("provider part %d = %#v, want image_url", index, part)
+		}
 	}
 }
 

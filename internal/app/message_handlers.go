@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -165,11 +166,24 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 		if !ok {
 			return
 		}
-		if hasImageAttachments(attachments) {
+		autoAppendText := ""
+		if len(attachments) > 0 {
 			effectiveConfig, configErr := effectiveLLMConfig(r.Context(), database)
-			if configErr == nil && modelKnownUnsupported(r.Context(), effectiveConfig, request.model, strconv.FormatInt(request.chatID, 10)) {
-				renderMessageError(w, r, http.StatusBadRequest, "Selected model does not support images.")
-				return
+			if configErr == nil {
+				support, known := modelSupport(r.Context(), effectiveConfig, request.model, strconv.FormatInt(request.chatID, 10))
+				if known {
+					if hasImageAttachments(attachments) && support.ImageSupport == llm.InputSupportUnsupported {
+						renderMessageError(w, r, http.StatusBadRequest, "Selected model does not support images.")
+						return
+					}
+					if hasPDFAttachments(attachments) && support.PDFSupport == llm.InputSupportUnsupported && support.ImageSupport == llm.InputSupportUnsupported {
+						renderMessageError(w, r, http.StatusBadRequest, "This model doesn't support PDFs or images.")
+						return
+					}
+					if hasPDFAttachments(attachments) && support.PDFSupport == llm.InputSupportUnsupported {
+						autoAppendText = kritui_db.PDFImagesAppendText()
+					}
+				}
 			}
 		}
 		delivery := r.FormValue("delivery")
@@ -185,7 +199,7 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 			renderMessageError(w, r, http.StatusBadRequest, "Invalid submission ID.")
 			return
 		}
-		admission, err := admitPrompt(r.Context(), database, request, toolCalls, message, attachments, r.Form["append"], submissionID, delivery)
+		admission, err := admitPrompt(r.Context(), database, request, toolCalls, message, attachments, r.Form["append"], autoAppendText, submissionID, delivery)
 		if err != nil {
 			switch {
 			case errors.Is(err, errInvalidAppendSelection):
@@ -458,7 +472,6 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load settings.", request.model, selectedTools))
 		return
 	}
-	conversationMessages := messagesWithPromptAppendTexts(messages)
 	effectiveConfig, err := effectiveLLMConfig(ctx, database)
 	if err != nil {
 		log.Printf("get LLM config: %v", err)
@@ -485,10 +498,18 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure model.", request.model, selectedTools))
 		return
 	}
-	if messagesHaveImageAttachments(messages) && modelKnownUnsupportedWithClient(ctx, client, request.model) {
-		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Selected model does not support images.", request.model, selectedTools))
+	var modelInfo llm.ModelInfo
+	modelInfoKnown := false
+	if messagesHaveImageAttachments(messages) || messagesHavePDFAttachments(messages) {
+		modelInfo, modelInfoKnown = modelSupportWithClient(ctx, client, request.model)
+	}
+	conversationMessages, err := prepareMessagesForModel(ctx, messages, modelInfo)
+	if err != nil {
+		log.Printf("prepare attachments: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, completionErrorMessage(err), request.model, selectedTools))
 		return
 	}
+	conversationMessages = messagesWithPromptAppendTexts(conversationMessages)
 
 	conversationRegistry := request.selected
 	var mcpSession *mcptools.Session
@@ -622,7 +643,15 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		tracker.presentCheckpoint(boundaryContext, request.chat, snapshot.Messages, inbox)
 		input := llm.ConversationInput{}
 		for _, item := range checkpoint.Delivered {
-			input.Messages = append(input.Messages, messagesWithPromptAppendTexts([]llm.Message{item.Message})...)
+			boundarySupport := modelInfo
+			if !modelInfoKnown && (hasImageAttachments(item.Message.Attachments) || hasPDFAttachments(item.Message.Attachments)) {
+				boundarySupport, _ = modelSupportWithClient(boundaryContext, client, request.model)
+			}
+			prepared, err := prepareMessagesForModel(boundaryContext, []llm.Message{item.Message}, boundarySupport)
+			if err != nil {
+				return llm.ConversationInput{}, err
+			}
+			input.Messages = append(input.Messages, messagesWithPromptAppendTexts(prepared)...)
 		}
 		if len(input.Messages) > 0 {
 			input.PromptContext = &llm.PromptContext{
@@ -985,10 +1014,18 @@ func editUserMessage(ctx context.Context, database *sql.DB, chatID, messageID in
 	if err != nil {
 		return err
 	}
+	existingAppendTexts, err := kritui_db.GetMessagePromptAppendTexts(ctx, tx, chatID, messageID)
+	if err != nil {
+		return err
+	}
+	appendTexts := promptAppendTexts(selectedAppends)
+	if slices.Contains(existingAppendTexts, kritui_db.PDFImagesAppendText()) {
+		appendTexts = appendPromptAppendText(appendTexts, kritui_db.PDFImagesAppendText())
+	}
 	if err := kritui_db.ReplaceUserMessage(ctx, tx, chatID, messageID, llm.Message{
 		Role:              "user",
 		Content:           message,
-		PromptAppendTexts: promptAppendTexts(selectedAppends),
+		PromptAppendTexts: appendTexts,
 	}); err != nil {
 		return err
 	}
@@ -1204,27 +1241,6 @@ func pdfPromptLinks(chatID int64, messages []llm.Message) []llm.PDFLink {
 	return links
 }
 
-func modelKnownUnsupported(ctx context.Context, config kritui_db.LLMConfig, model, sessionID string) bool {
-	client, err := llm.New(config.APIKey, model, config.Endpoint, llm.ClientOptions{SessionID: sessionID})
-	if err != nil {
-		return false
-	}
-	return modelKnownUnsupportedWithClient(ctx, client, model)
-}
-
-func modelKnownUnsupportedWithClient(ctx context.Context, client *llm.Client, model string) bool {
-	infos, err := client.ModelInfos(ctx)
-	if err != nil {
-		return false
-	}
-	for _, info := range infos {
-		if info.ID == model {
-			return info.ImageSupport == llm.ImageSupportUnsupported
-		}
-	}
-	return false
-}
-
 func parseMessageForm(w http.ResponseWriter, r *http.Request, limit int64) bool {
 	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mediaType != "multipart/form-data" && limit > maxMessageBodyBytes {
 		limit = maxMessageBodyBytes
@@ -1300,6 +1316,16 @@ func completionErrorMessage(err error) string {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "Completion request timed out. Check the model endpoint and retry the completion."
+	}
+	if errors.Is(err, errSelectedModelDoesNotSupportImages) {
+		return "Selected model does not support images."
+	}
+	if errors.Is(err, errModelDoesNotSupportPDFsOrImages) {
+		return "This model doesn't support PDFs or images."
+	}
+	var pdfError *pdfConversionError
+	if errors.As(err, &pdfError) {
+		return pdfError.message
 	}
 	var urlError *url.Error
 	if errors.As(err, &urlError) {

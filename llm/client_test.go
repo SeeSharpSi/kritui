@@ -1188,6 +1188,30 @@ func TestModelInfosCapabilities(t *testing.T) {
 	}
 }
 
+func TestModelInfosParsesTopLevelModalities(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"vision","modalities":{"input":["text","image/jpeg","image/png"]}},{"id":"document","modalities":{"input":["text","image/png","application/pdf"]}},{"id":"text","modalities":{"input":["text"]}},{"id":"empty","modalities":{"input":[]}}]}`))
+	}))
+	defer server.Close()
+	client, err := New("key", "model", server.URL+"/v1/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.ModelInfos(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ModelInfo{
+		{ID: "vision", ImageSupport: ImageSupportSupported, PDFSupport: InputSupportUnsupported},
+		{ID: "document", ImageSupport: ImageSupportSupported, PDFSupport: InputSupportSupported},
+		{ID: "text", ImageSupport: ImageSupportUnsupported, PDFSupport: InputSupportUnsupported},
+		{ID: "empty", ImageSupport: ImageSupportUnsupported, PDFSupport: InputSupportUnsupported},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
+	}
+}
+
 func TestAnthropicModelInfosPagination(t *testing.T) {
 	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -99,27 +99,40 @@ func isPDFAttachment(attachment UserAttachment) bool {
 	return attachment.MediaType == pdfMediaType
 }
 
-// ImageSupport reports provider knowledge about model image input.
-type ImageSupport uint8
+// InputSupport reports provider knowledge about one model input modality.
+type InputSupport uint8
 
 const (
-	// ImageSupportUnknown means provider model metadata did not declare support.
-	ImageSupportUnknown ImageSupport = iota
-	// ImageSupportUnsupported means provider metadata explicitly excludes images.
-	ImageSupportUnsupported
-	// ImageSupportSupported means provider metadata explicitly includes images.
-	ImageSupportSupported
+	// InputSupportUnknown means provider model metadata did not declare support.
+	InputSupportUnknown InputSupport = iota
+	// InputSupportUnsupported means provider metadata explicitly excludes the modality.
+	InputSupportUnsupported
+	// InputSupportSupported means provider metadata explicitly includes the modality.
+	InputSupportSupported
+)
+
+// ImageSupport is retained as the image-specific name for InputSupport.
+type ImageSupport = InputSupport
+
+const (
+	ImageSupportUnknown     = InputSupportUnknown
+	ImageSupportUnsupported = InputSupportUnsupported
+	ImageSupportSupported   = InputSupportSupported
 )
 
 // ModelInfo contains model identity and discovered input capabilities.
 type ModelInfo struct {
 	ID           string
-	ImageSupport ImageSupport
+	ImageSupport InputSupport
+	PDFSupport   InputSupport
 }
 
 type modelListResponse struct {
 	Data []struct {
-		ID           string `json:"id"`
+		ID         string `json:"id"`
+		Modalities struct {
+			Input []string `json:"input"`
+		} `json:"modalities"`
 		Architecture struct {
 			InputModalities []string `json:"input_modalities"`
 		} `json:"architecture"`
@@ -127,6 +140,12 @@ type modelListResponse struct {
 			ImageInput struct {
 				Supported *bool `json:"supported"`
 			} `json:"image_input"`
+			DocumentInput struct {
+				Supported *bool `json:"supported"`
+			} `json:"document_input"`
+			FileInput struct {
+				Supported *bool `json:"supported"`
+			} `json:"file_input"`
 		} `json:"capabilities"`
 	} `json:"data"`
 	HasMore bool   `json:"has_more"`
@@ -477,7 +496,9 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// ModelInfos lists provider models and image-input metadata when available.
+// ModelInfos lists provider models and input capability metadata when
+// available. A top-level modalities list is authoritative for both images and
+// PDFs; architecture and capability fields are used as fallbacks.
 func (c *Client) ModelInfos(ctx context.Context) ([]ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.modelsTimeout)
 	defer cancel()
@@ -531,23 +552,26 @@ func (c *Client) ModelInfos(ctx context.Context) ([]ModelInfo, error) {
 				continue
 			}
 			seenModels[model.ID] = struct{}{}
-			support := ImageSupportUnknown
-			if model.Capabilities.ImageInput.Supported != nil {
-				if *model.Capabilities.ImageInput.Supported {
-					support = ImageSupportSupported
-				} else {
-					support = ImageSupportUnsupported
-				}
+			imageSupport := InputSupportUnknown
+			pdfSupport := InputSupportUnknown
+			if model.Modalities.Input != nil {
+				imageSupport = modalityListSupport(model.Modalities.Input, true)
+				pdfSupport = modalityListSupport(model.Modalities.Input, false)
 			} else if model.Architecture.InputModalities != nil {
-				support = ImageSupportUnsupported
-				for _, modality := range model.Architecture.InputModalities {
-					if modality == "image" {
-						support = ImageSupportSupported
-						break
-					}
+				imageSupport = modalityListSupport(model.Architecture.InputModalities, true)
+				if modalityListSupport(model.Architecture.InputModalities, false) == InputSupportSupported {
+					pdfSupport = InputSupportSupported
 				}
 			}
-			models = append(models, ModelInfo{ID: model.ID, ImageSupport: support})
+			if model.Capabilities.ImageInput.Supported != nil {
+				imageSupport = boolSupport(*model.Capabilities.ImageInput.Supported)
+			}
+			if model.Capabilities.DocumentInput.Supported != nil {
+				pdfSupport = boolSupport(*model.Capabilities.DocumentInput.Supported)
+			} else if model.Capabilities.FileInput.Supported != nil {
+				pdfSupport = boolSupport(*model.Capabilities.FileInput.Supported)
+			}
+			models = append(models, ModelInfo{ID: model.ID, ImageSupport: imageSupport, PDFSupport: pdfSupport})
 		}
 
 		if c.configuredEndpoint != EndpointMessages || !response.HasMore {
@@ -565,6 +589,30 @@ func (c *Client) ModelInfos(ctx context.Context) ([]ModelInfo, error) {
 		query.Set("after_id", cursor)
 		modelsURL.RawQuery = query.Encode()
 	}
+}
+
+func boolSupport(value bool) InputSupport {
+	if value {
+		return InputSupportSupported
+	}
+	return InputSupportUnsupported
+}
+
+func modalityListSupport(modalities []string, image bool) InputSupport {
+	for _, modality := range modalities {
+		modality = strings.ToLower(strings.TrimSpace(modality))
+		if image {
+			if modality == "image" || strings.HasPrefix(modality, "image/") {
+				return InputSupportSupported
+			}
+			continue
+		}
+		switch modality {
+		case "application/pdf", "pdf", "file", "document":
+			return InputSupportSupported
+		}
+	}
+	return InputSupportUnsupported
 }
 
 func (c *Client) postJSON(ctx context.Context, endpoint endpointCandidate, payload any, target any) error {

@@ -25,7 +25,7 @@ type promptAdmission struct {
 	inbox     []kritui_db.InboxItem
 }
 
-func admitPrompt(ctx context.Context, database *sql.DB, request messageRequest, store *toolCallStore, content string, attachments []llm.UserAttachment, appendIDs []string, submissionID, delivery string) (promptAdmission, error) {
+func admitPrompt(ctx context.Context, database *sql.DB, request messageRequest, store *toolCallStore, content string, attachments []llm.UserAttachment, appendIDs []string, autoAppendText, submissionID, delivery string) (promptAdmission, error) {
 	store.workMu.Lock()
 	defer store.workMu.Unlock()
 	if submissionID == "" {
@@ -47,10 +47,14 @@ func admitPrompt(ctx context.Context, database *sql.DB, request messageRequest, 
 	if err != nil {
 		return promptAdmission{}, err
 	}
+	appendTexts := appendPromptAppendText(promptAppendTexts(appends), autoAppendText)
+	if oversized := appendPromptText(content, appendTexts); int64(len([]byte(oversized))) > maxMessageBodyBytes {
+		return promptAdmission{}, errPromptAppendTooLarge
+	}
 	item, err := kritui_db.EnqueuePrompt(ctx, tx, request.chatID, kritui_db.InboxItem{
 		SubmissionID: submissionID, Delivery: delivery, Model: request.model,
 		Tools: request.toolNames, AppendIDs: kritui_db.PromptAppendIDs(appends),
-		Message: llm.Message{Role: "user", Content: content, Attachments: attachments, PromptAppendTexts: promptAppendTexts(appends)},
+		Message: llm.Message{Role: "user", Content: content, Attachments: attachments, PromptAppendTexts: appendTexts},
 	})
 	if err != nil {
 		return promptAdmission{}, err

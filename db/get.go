@@ -647,6 +647,48 @@ func loadMessageToolCalls(ctx context.Context, db messageQueryer, chatID int64, 
 	return nil
 }
 
+// GetMessagePromptAppendTexts returns the prompt append snapshot for one
+// active user message. Callers can preserve hidden auto-applied appends when
+// replacing the message.
+func GetMessagePromptAppendTexts(ctx context.Context, db messageQueryer, chatID, messageID int64) ([]string, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get message prompt appends: %w", err)
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT appends.position, appends.text
+		FROM message_prompt_appends AS appends
+		JOIN messages ON messages.id = appends.message_id
+		JOIN chats ON chats.id = messages.chat_id
+		WHERE chats.user_id = ?
+			AND messages.chat_id = ?
+			AND messages.id = ?
+			AND messages.undo_sequence IS NULL
+		ORDER BY appends.position
+	`, userID, chatID, messageID)
+	if err != nil {
+		return nil, fmt.Errorf("get message prompt appends: %w", err)
+	}
+	defer rows.Close()
+	var texts []string
+	for rows.Next() {
+		var position int
+		var text string
+		if err := rows.Scan(&position, &text); err != nil {
+			return nil, fmt.Errorf("scan message prompt append: %w", err)
+		}
+		text, err := DecryptStorageText(ctx, storageScopePromptAppendText, messageChildStorageRowID(messageID, position), text)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt message prompt append %d for message %d: %w", position, messageID, err)
+		}
+		texts = append(texts, text)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate message prompt appends: %w", err)
+	}
+	return texts, nil
+}
+
 func loadMessagePromptAppends(ctx context.Context, db messageQueryer, chatID int64, messages []storedMessage, indexes map[int64]int) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT appends.message_id, appends.position, appends.text

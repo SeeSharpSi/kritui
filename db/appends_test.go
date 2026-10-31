@@ -19,6 +19,9 @@ func TestDefaultPromptAppendsReadEmbeddedMarkdown(t *testing.T) {
 	if values[1].ID != "research" || values[1].Name != "research" || values[1].Text == "" {
 		t.Errorf("research preset = %#v", values[1])
 	}
+	if text := PDFImagesAppendText(); !strings.Contains(text, "converted to images") {
+		t.Errorf("hidden PDF page images append = %q", text)
+	}
 	for _, value := range values {
 		if value.EnabledByDefault {
 			t.Errorf("default prompt append %q is enabled by default", value.ID)

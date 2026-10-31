@@ -4,7 +4,7 @@ FROM golang:1.25.3-alpine AS build
 
 LABEL io.github.seesharpsi.kritui="true"
 
-RUN apk add --no-cache git
+RUN apk add --no-cache git poppler-utils
 
 WORKDIR /src
 
@@ -42,6 +42,9 @@ LABEL io.github.seesharpsi.kritui="true" \
     org.opencontainers.image.revision="$VCS_REF"
 
 USER root
+
+RUN xbps-install -Sy poppler \
+    && xbps-remove -O
 
 COPY --from=build --chown=0:0 --chmod=0555 /out/kritui /usr/local/bin/kritui
 COPY --from=build /lib/ld-musl-*.so.1 /lib/
