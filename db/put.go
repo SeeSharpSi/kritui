@@ -297,11 +297,37 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 	if message.Cost != nil {
 		cost = *message.Cost
 	}
+	var inputTokens any
+	if message.InputTokens != nil {
+		inputTokens = *message.InputTokens
+	}
+	var outputTokens any
+	if message.OutputTokens != nil {
+		outputTokens = *message.OutputTokens
+	}
+	var cachedInputTokens any
+	if message.CachedInputTokens != nil {
+		cachedInputTokens = *message.CachedInputTokens
+	}
+	var cacheWriteTokens any
+	if message.CacheWriteTokens != nil {
+		cacheWriteTokens = *message.CacheWriteTokens
+	}
+	var reasoningTokens any
+	if message.ReasoningTokens != nil {
+		reasoningTokens = *message.ReasoningTokens
+	}
 
 	result, err := db.ExecContext(ctx, `
-		INSERT INTO messages (chat_id, position, role, content, model, total_tokens, cost, tool_call_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, chatID, position, message.Role, "", model, totalTokens, cost, toolCallID)
+		INSERT INTO messages (
+			chat_id, position, role, content, model, total_tokens, cost,
+			input_tokens, output_tokens, cached_input_tokens, cache_write_tokens,
+			reasoning_tokens, cost_estimated, tool_call_id
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, chatID, position, message.Role, "", model, totalTokens, cost,
+		inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens,
+		reasoningTokens, message.CostEstimated, toolCallID)
 	if err != nil {
 		return 0, fmt.Errorf("insert message: %w", err)
 	}
@@ -405,7 +431,11 @@ func ReplaceUserMessage(ctx context.Context, db databaseExecutor, chatID, messag
 	if message.Role != "user" {
 		return ErrMessageNotEditable
 	}
-	if message.Model != "" || message.TotalTokens != nil || message.Cost != nil || len(message.ToolCalls) > 0 || message.ToolCallID != "" || !message.ProviderMetadata.IsZero() {
+	if message.Model != "" || message.TotalTokens != nil || message.Cost != nil ||
+		message.InputTokens != nil || message.OutputTokens != nil ||
+		message.CachedInputTokens != nil || message.CacheWriteTokens != nil ||
+		message.ReasoningTokens != nil || message.CostEstimated ||
+		len(message.ToolCalls) > 0 || message.ToolCallID != "" || !message.ProviderMetadata.IsZero() {
 		return fmt.Errorf("replace user message: invalid user message metadata")
 	}
 	if len(message.Attachments) > 0 {

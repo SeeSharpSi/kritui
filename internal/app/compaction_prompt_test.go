@@ -245,7 +245,7 @@ func TestMigrateDatabaseAddsCompactionPromptFromVersion33(t *testing.T) {
 		t.Fatal("schema does not contain compaction_prompt column")
 	}
 	previous := strings.Replace(schema, column, "", 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 34;", "PRAGMA user_version = 33;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 35;", "PRAGMA user_version = 33;", 1)
 	if _, err := database.Exec(previous); err != nil {
 		t.Fatalf("initialize version 33 database: %v", err)
 	}

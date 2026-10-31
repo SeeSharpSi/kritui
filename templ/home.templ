@@ -19,6 +19,8 @@ type HomeData struct {
 	ChatURL                  string
 	Messages                 []llm.Message
 	Models                   []string
+	ModelListFallback        bool
+	ModelDetails             map[string]ModelDetail
 	SelectedModel            string
 	DefaultModel             string
 	MaxToolRounds            int
@@ -62,6 +64,8 @@ templ Home(data HomeData) {
 								@SettingsPage(SettingsPanelData{
 									ChatID:                   data.ChatID,
 									Models:                   data.Models,
+									ModelListFallback:        data.ModelListFallback,
+									ModelDetails:             data.ModelDetails,
 									SelectedModel:            data.DefaultModel,
 									MaxToolRounds:            data.MaxToolRounds,
 									TitleGenerationEnabled:   data.TitleGenerationEnabled,
@@ -106,8 +110,18 @@ templ Home(data HomeData) {
 													}
 													onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
 												/>
-												<span>{ model }</span>
+												<span class="model-name">{ model }</span>
+												if detail, ok := data.ModelDetails[model]; ok && len(detail.Modalities) > 0 {
+													<span class="model-modalities">
+														for _, modality := range detail.Modalities {
+															@ModelModalityIcon(modality)
+														}
+													</span>
+												}
 											</label>
+										}
+										if data.ModelListFallback {
+											<p class="model-fallback-note">Using models.dev fallback</p>
 										}
 									</div>
 								</details>

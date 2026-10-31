@@ -487,6 +487,7 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 	client, err := llm.New(effectiveConfig.APIKey, request.model, effectiveConfig.Endpoint, llm.ClientOptions{
 		SessionID:         strconv.FormatInt(request.chatID, 10),
 		PreferredEndpoint: preferredEndpoint,
+		EstimateCost:      modelCostEstimator(effectiveConfig.Endpoint, request.model),
 		EndpointSelected: func(endpointType llm.EndpointType) {
 			if err := kritui_db.SetModelEndpointType(ctx, database, request.model, endpointType); err != nil {
 				log.Printf("store model endpoint type: %v", err)
@@ -501,7 +502,7 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 	var modelInfo llm.ModelInfo
 	modelInfoKnown := false
 	if messagesHaveImageAttachments(messages) || messagesHavePDFAttachments(messages) {
-		modelInfo, modelInfoKnown = modelSupportWithClient(ctx, client, request.model)
+		modelInfo, modelInfoKnown = modelSupportWithClient(ctx, client, request.model, effectiveConfig.Endpoint)
 	}
 	conversationMessages, err := prepareMessagesForModel(ctx, messages, modelInfo)
 	if err != nil {
@@ -645,7 +646,7 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		for _, item := range checkpoint.Delivered {
 			boundarySupport := modelInfo
 			if !modelInfoKnown && (hasImageAttachments(item.Message.Attachments) || hasPDFAttachments(item.Message.Attachments)) {
-				boundarySupport, _ = modelSupportWithClient(boundaryContext, client, request.model)
+				boundarySupport, _ = modelSupportWithClient(boundaryContext, client, request.model, effectiveConfig.Endpoint)
 			}
 			prepared, err := prepareMessagesForModel(boundaryContext, []llm.Message{item.Message}, boundarySupport)
 			if err != nil {

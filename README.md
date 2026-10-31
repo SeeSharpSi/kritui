@@ -31,6 +31,8 @@ The server reads environment variables directly and does not load `.env` itself.
 
 `LLM_ENDPOINT` must be a full `/responses`, `/chat/messages`, or `/chat/completions` URL. Kritui starts with that protocol for an unknown model. On HTTP 500, it tries the remaining protocols and stores the successful per-model preference for the account. `SEARXNG_URL` configures the server used by the optional `websearch` tool. The SearXNG instance must have the JSON response format enabled.
 
+Kritui shows models.dev input-modality icons beside model names in the chat model picker and the Settings default-model and title-model pickers: text, image, PDF, audio, and video. Icons are right-aligned and gray, with accessible labels and tooltips. Provider `/models` metadata is always checked first; models.dev fills image/PDF fields the provider did not declare. If the provider model list fails or is empty, the pickers use models.dev provider models and show "Using models.dev fallback" beneath the list. Provider-reported usage cost and OpenCode list cost are authoritative; when a provider omits cost, Kritui estimates it from the catalog and shows the amount with a leading `~`. The public catalog is cached in `data.db` and refreshed in the background at most once per 6 hours. Set `MODELS_DEV=off` to disable catalog lookups, or `MODELS_DEV_URL` to use a mirror. Estimated costs are list prices, not negotiated prices or subscription charges.
+
 `KRITUI_SECURE_COOKIES=false` is only for direct local HTTP. Keep it set while launching or browsing at `http://localhost:8080`; use the default `true` whenever the app is served through HTTPS, including a TLS-terminating reverse proxy.
 
 Generate templates and start the server:

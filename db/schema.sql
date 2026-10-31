@@ -145,6 +145,12 @@ CREATE TABLE IF NOT EXISTS messages (
     model TEXT,
     total_tokens INTEGER,
     cost REAL,
+    input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
+    output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+    cached_input_tokens INTEGER CHECK (cached_input_tokens IS NULL OR cached_input_tokens >= 0),
+    cache_write_tokens INTEGER CHECK (cache_write_tokens IS NULL OR cache_write_tokens >= 0),
+    reasoning_tokens INTEGER CHECK (reasoning_tokens IS NULL OR reasoning_tokens >= 0),
+    cost_estimated INTEGER NOT NULL DEFAULT 0 CHECK (cost_estimated IN (0, 1)),
     tool_call_id TEXT,
     undo_sequence INTEGER CHECK (undo_sequence IS NULL OR undo_sequence > 0),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -317,4 +323,11 @@ CREATE TABLE IF NOT EXISTS completion_state_tools (
     PRIMARY KEY (chat_id, position)
 ) STRICT;
 
-PRAGMA user_version = 34;
+CREATE TABLE IF NOT EXISTS models_dev_cache (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    etag TEXT NOT NULL DEFAULT '',
+    fetched_at INTEGER NOT NULL,
+    payload BLOB NOT NULL
+) STRICT;
+
+PRAGMA user_version = 35;

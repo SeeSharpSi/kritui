@@ -605,6 +605,9 @@ func prepareInboxItem(item InboxItem) (InboxItem, error) {
 		return InboxItem{}, errors.New("message role must be user")
 	}
 	if message.ID != 0 || message.Model != "" || message.TotalTokens != nil || message.Cost != nil ||
+		message.InputTokens != nil || message.OutputTokens != nil ||
+		message.CachedInputTokens != nil || message.CacheWriteTokens != nil ||
+		message.ReasoningTokens != nil || message.CostEstimated ||
 		len(message.ToolCalls) > 0 || message.ToolCallID != "" || !message.ProviderMetadata.IsZero() {
 		return InboxItem{}, errors.New("user message contains non-user metadata")
 	}

@@ -320,6 +320,46 @@ func TestMessagesRoutesPreserveConfiguredHostAndQuery(t *testing.T) {
 	}
 }
 
+func TestOpenCodeModelListURLs(t *testing.T) {
+	tests := []struct {
+		endpoint string
+		want     string
+	}{
+		{
+			endpoint: "https://opencode.ai/inference/go/openai/v1/chat/completions?tenant=a%2Fb&region=eu",
+			want:     "https://opencode.ai/inference/go/v1/models?tenant=a%2Fb&region=eu",
+		},
+		{
+			endpoint: "https://opencode.ai/inference/go/anthropic/v1/messages",
+			want:     "https://opencode.ai/inference/go/v1/models",
+		},
+		{
+			endpoint: "https://opencode.ai/inference/openai/v1/responses",
+			want:     "https://opencode.ai/inference/v1/models",
+		},
+		{
+			endpoint: "https://opencode.ai/inference/anthropic/v1/chat/messages",
+			want:     "https://opencode.ai/inference/v1/models",
+		},
+		{
+			endpoint: "https://zen.opencode.ai/inference/go/openai/v1/responses",
+			want:     "https://zen.opencode.ai/inference/go/v1/models",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.endpoint, func(t *testing.T) {
+			parsed, err := url.Parse(test.endpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, modelsURL := configureEndpoints(parsed, test.endpoint)
+			if modelsURL != test.want {
+				t.Errorf("models URL = %q, want %q", modelsURL, test.want)
+			}
+		})
+	}
+}
+
 func TestOpenCodeGoMessagesUseConfiguredRouteAndAuthenticationHeaders(t *testing.T) {
 	transport := &headerCaptureTransport{onRequest: func(req *http.Request) (*http.Response, error) {
 		if req.URL.RequestURI() != "/zen/go/v1/messages?tenant=eu" {

@@ -487,7 +487,7 @@ func legacyShareVersion28Fixture(t *testing.T) string {
 		t.Fatal("schema fixture has no inbox_items block after shared_responses")
 	}
 	fixture := messagesTestSchema[:start] + messagesTestSchema[start+end:]
-	fixture = strings.Replace(fixture, "PRAGMA user_version = 34;", "PRAGMA user_version = 28;", 1)
+	fixture = strings.Replace(fixture, "PRAGMA user_version = 35;", "PRAGMA user_version = 28;", 1)
 	fixture = strings.Replace(fixture, "    system_prompt TEXT,\n", "", 1)
 	fixture = strings.Replace(fixture, "    compaction_prompt TEXT,\n", "", 1)
 	if !strings.Contains(fixture, "PRAGMA user_version = 28;") {
@@ -509,7 +509,7 @@ func legacyShareVersion29Fixture(t *testing.T) string {
 	fixture := messagesTestSchema[:start] +
 		strings.TrimSpace(shareSchema) + "\n\n" +
 		messagesTestSchema[start+end:]
-	fixture = strings.Replace(fixture, "PRAGMA user_version = 34;", "PRAGMA user_version = 29;", 1)
+	fixture = strings.Replace(fixture, "PRAGMA user_version = 35;", "PRAGMA user_version = 29;", 1)
 	fixture = strings.Replace(fixture, "    system_prompt TEXT,\n", "", 1)
 	fixture = strings.Replace(fixture, "    compaction_prompt TEXT,\n", "", 1)
 	if !strings.Contains(fixture, "PRAGMA user_version = 29;") {

@@ -1057,9 +1057,9 @@ func TestInboxSchemaFilesMatch(t *testing.T) {
 	if start < 0 {
 		t.Fatal("schema.sql has no inbox definitions")
 	}
-	end := strings.Index(messagesTestSchema[start:], "PRAGMA user_version = 34;")
+	end := strings.Index(messagesTestSchema[start:], "CREATE TABLE IF NOT EXISTS models_dev_cache")
 	if end < 0 {
-		t.Fatal("schema.sql has no version 32 marker")
+		t.Fatal("schema.sql has no models.dev cache block")
 	}
 	embedded := strings.TrimSpace(messagesTestSchema[start : start+end])
 	if embedded != strings.TrimSpace(inboxSchema) {

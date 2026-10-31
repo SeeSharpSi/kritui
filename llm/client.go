@@ -65,6 +65,14 @@ type Message struct {
 	Model       string           `json:"-"`
 	TotalTokens *int             `json:"-"`
 	Cost        *float64         `json:"-"`
+	// CostEstimated marks Cost as a catalog-derived estimate rather than a
+	// provider-reported charge.
+	CostEstimated     bool `json:"-"`
+	InputTokens       *int `json:"-"`
+	OutputTokens      *int `json:"-"`
+	CachedInputTokens *int `json:"-"`
+	CacheWriteTokens  *int `json:"-"`
+	ReasoningTokens   *int `json:"-"`
 	// PromptAppendTexts contains snapshotted append text expanded before
 	// provider requests.
 	PromptAppendTexts []string         `json:"-"`
@@ -262,10 +270,17 @@ type OpenCodeUsageMetadata struct {
 }
 
 // Usage reports the persisted token accounting returned by the endpoint.
+// InputTokens is the total prompt token count, including cached and
+// cache-write tokens. OutputTokens includes reasoning tokens.
 type Usage struct {
-	TotalTokens int                   `json:"total_tokens"`
-	Cost        *float64              `json:"cost,omitempty"`
-	OpenCode    OpenCodeUsageMetadata `json:"opencode,omitempty"`
+	InputTokens       int                   `json:"-"`
+	OutputTokens      int                   `json:"-"`
+	CachedInputTokens int                   `json:"-"`
+	CacheWriteTokens  int                   `json:"-"`
+	ReasoningTokens   int                   `json:"-"`
+	TotalTokens       int                   `json:"-"`
+	Cost              *float64              `json:"-"`
+	OpenCode          OpenCodeUsageMetadata `json:"-"`
 }
 
 // APIError describes a non-successful response from the endpoint.
@@ -293,6 +308,7 @@ type Client struct {
 	modelsTimeout       time.Duration
 	completeTimeout     time.Duration
 	maxResponseBodySize int64
+	estimateCost        func(Usage) (float64, bool)
 	endpointSelected    func(EndpointType)
 	endpointMu          sync.RWMutex
 	preferredEndpoint   EndpointType
@@ -313,6 +329,9 @@ type ClientOptions struct {
 	// EndpointSelected runs after a protocol produces a valid completion and
 	// differs from PreferredEndpoint. It must be safe for synchronous use.
 	EndpointSelected func(EndpointType)
+	// EstimateCost estimates USD cost when the provider response omits cost.
+	// The boolean reports whether pricing was available.
+	EstimateCost func(Usage) (float64, bool)
 	// SessionID is a stable per-conversation ID (plain chat ID decimal for
 	// completions, "models" fallback for model listing); only sent to
 	// OpenCode Go endpoints.
@@ -391,6 +410,7 @@ func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, err
 		modelsTimeout:       configuration.ModelsTimeout,
 		completeTimeout:     configuration.CompletionTimeout,
 		maxResponseBodySize: configuration.MaxResponseBodySize,
+		estimateCost:        configuration.EstimateCost,
 		endpointSelected:    configuration.EndpointSelected,
 		preferredEndpoint:   configuration.PreferredEndpoint,
 	}, nil
@@ -682,7 +702,11 @@ func configureEndpoints(parsedEndpoint *url.URL, configuredURL string) ([]endpoi
 
 	modelsURL := *parsedEndpoint
 	if recognized {
-		modelsURL.Path = strings.TrimRight(basePath, "/") + "/models"
+		if openCodeURL, ok := openCodeModelsEndpoint(parsedEndpoint, basePath); ok {
+			modelsURL = openCodeURL
+		} else {
+			modelsURL.Path = strings.TrimRight(basePath, "/") + "/models"
+		}
 	} else {
 		modelsURL.Path = strings.TrimRight(path, "/") + "/models"
 	}
@@ -711,6 +735,27 @@ func configureEndpoints(parsedEndpoint *url.URL, configuredURL string) ([]endpoi
 		endpoints = append(endpoints, candidate)
 	}
 	return endpoints, configuredType, modelsURL.String()
+}
+
+func openCodeModelsEndpoint(parsedEndpoint *url.URL, basePath string) (url.URL, bool) {
+	host := strings.ToLower(parsedEndpoint.Hostname())
+	if host != "opencode.ai" && !strings.HasSuffix(host, ".opencode.ai") {
+		return url.URL{}, false
+	}
+	path := strings.TrimRight(basePath, "/")
+	var modelsPath string
+	switch {
+	case strings.HasPrefix(path, "/inference/go/"):
+		modelsPath = "/inference/go/v1/models"
+	case strings.HasPrefix(path, "/inference/"):
+		modelsPath = "/inference/v1/models"
+	default:
+		return url.URL{}, false
+	}
+	modelsURL := *parsedEndpoint
+	modelsURL.Path = modelsPath
+	modelsURL.RawPath = ""
+	return modelsURL, true
 }
 
 func alternateMessagesURL(endpoint string) (string, error) {
@@ -915,18 +960,50 @@ func endpointError(resp *http.Response) error {
 }
 
 func (c *Client) applyUsage(message *Message, usage Usage) {
-	if usage.TotalTokens != 0 {
-		total := usage.TotalTokens
-		message.TotalTokens = &total
+	if usage.InputTokens != 0 {
+		input := usage.InputTokens
+		message.InputTokens = &input
+	}
+	if usage.OutputTokens != 0 {
+		output := usage.OutputTokens
+		message.OutputTokens = &output
+	}
+	if usage.CachedInputTokens != 0 {
+		cached := usage.CachedInputTokens
+		message.CachedInputTokens = &cached
+	}
+	if usage.CacheWriteTokens != 0 {
+		write := usage.CacheWriteTokens
+		message.CacheWriteTokens = &write
+	}
+	if usage.ReasoningTokens != 0 {
+		reasoning := usage.ReasoningTokens
+		message.ReasoningTokens = &reasoning
+	}
+	totalTokens := usage.TotalTokens
+	if totalTokens == 0 {
+		totalTokens = usage.InputTokens + usage.OutputTokens
+	}
+	if totalTokens != 0 {
+		message.TotalTokens = &totalTokens
 	}
 	if usage.OpenCode.ListCost != nil && (c.openCodeGo || isGoBillingSource(usage.OpenCode.BillingSource)) {
 		cost := *usage.OpenCode.ListCost
 		message.Cost = &cost
+		message.CostEstimated = false
 		return
 	}
 	if usage.Cost != nil {
 		cost := *usage.Cost
 		message.Cost = &cost
+		message.CostEstimated = false
+		return
+	}
+	if c.estimateCost != nil {
+		if cost, ok := c.estimateCost(usage); ok {
+			message.Cost = &cost
+			message.CostEstimated = true
+		}
 	}
 }
 

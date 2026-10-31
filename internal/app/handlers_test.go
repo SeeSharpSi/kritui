@@ -412,10 +412,10 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
-		`/static/htmx.min.js?v=68`,
-		`/static/hx-sse.js?v=68`,
-		`/static/app.js?v=68`,
-		`/static/styles.css?v=68`,
+		`/static/htmx.min.js?v=74`,
+		`/static/hx-sse.js?v=74`,
+		`/static/app.js?v=74`,
+		`/static/styles.css?v=74`,
 		`<body hx-indicator:inherited="global #request-overlay">`,
 		`<div id="request-overlay" class="request-overlay htmx-indicator" role="status" aria-live="polite" aria-label="Loading">`,
 		`<span class="braille-spinner" aria-hidden="true"></span>`,
@@ -643,9 +643,9 @@ func TestHomeHandlerUsesMostRecentResponseModel(t *testing.T) {
 	requireContains(t, response.Body.String(),
 		"<strong>latest-model</strong>",
 		`value="latest-model" form="message-form" checked`,
-		`<option value="default-model" selected>default-model</option>`,
+		`name="model" value="default-model" checked`,
 	)
-	requireNotContains(t, response.Body.String(), "<strong>default-model</strong>", `value="earlier-model" form="message-form" checked`)
+	requireNotContains(t, response.Body.String(), `class="model-picker"><summary><strong>default-model</strong></summary>`, `value="earlier-model" form="message-form" checked`)
 }
 
 func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
@@ -2274,7 +2274,7 @@ func TestMigrateDatabaseAddsChatPinsFromVersion26(t *testing.T) {
 	previous = strings.Replace(previous, `CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
     ON chats (user_id, pinned DESC, updated_at DESC, id DESC);`, `CREATE INDEX IF NOT EXISTS chats_user_updated_idx
     ON chats (user_id, updated_at DESC, id DESC);`, 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 34;", "PRAGMA user_version = 26;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 35;", "PRAGMA user_version = 26;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "pinned") {
@@ -2337,7 +2337,7 @@ func TestMigrateDatabaseAddsTitleGenerationSettingsFromVersion27(t *testing.T) {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	previous := prefix + schema[start+relativeEnd:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 34;", "PRAGMA user_version = 27;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 35;", "PRAGMA user_version = 27;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "title_generation") {
@@ -2393,7 +2393,7 @@ func TestMigrateDatabaseRetiresPlaintextSharesFromVersion29(t *testing.T) {
 		t.Fatalf("read legacy share schema: %v", err)
 	}
 	previous := schema[:start] + string(legacyDDL) + "\n\n" + schema[start+end:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 34;", "PRAGMA user_version = 29;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 35;", "PRAGMA user_version = 29;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if !strings.Contains(previous, "PRAGMA user_version = 29;") {
@@ -2515,7 +2515,7 @@ func TestSettingsHandlerStoresTitleGenerationSettings(t *testing.T) {
 		`id="title-generation-enabled"`,
 		`name="title_generation_enabled" value="1" checked`,
 		`id="title-generation-model"`,
-		`<option value="title-model" selected>title-model</option>`,
+		`name="title_generation_model" value="title-model" checked`,
 	)
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
@@ -2526,7 +2526,7 @@ func TestSettingsHandlerStoresTitleGenerationSettings(t *testing.T) {
 	}
 	requireContains(t, homeResponse.Body.String(),
 		`name="title_generation_enabled" value="1" checked`,
-		`<option value="title-model" selected>title-model</option>`,
+		`name="title_generation_model" value="title-model" checked`,
 	)
 }
 
@@ -2551,7 +2551,7 @@ func TestSettingsHandlerPreservesTitleModelWhileDisabled(t *testing.T) {
 	if settings.Enabled || settings.Model != "kept-model" {
 		t.Fatalf("title generation settings = %#v, want disabled with kept-model", settings)
 	}
-	requireContains(t, response.Body.String(), `<option value="kept-model" selected>kept-model</option>`)
+	requireContains(t, response.Body.String(), `name="title_generation_model" value="kept-model" checked`)
 }
 
 func TestSettingsHandlerRejectsEnabledTitleGenerationWithoutModel(t *testing.T) {
@@ -2591,7 +2591,7 @@ func TestSettingsHandlerPreservesTitleGenerationDuringAppendAction(t *testing.T)
 	}
 	requireContains(t, response.Body.String(),
 		`name="title_generation_enabled" value="1" checked`,
-		`<option value="title-model" selected>title-model</option>`,
+		`name="title_generation_model" value="title-model" checked`,
 	)
 }
 
@@ -2662,7 +2662,7 @@ func TestSettingsHandlerStoresDefaultModelAndMaxToolRounds(t *testing.T) {
 	if maxToolRounds != 32 {
 		t.Errorf("max tool rounds = %d, want 32", maxToolRounds)
 	}
-	requireContains(t, response.Body.String(), `value="saved-model" selected`, `name="max_tool_rounds"`, `value="32"`)
+	requireContains(t, response.Body.String(), `value="saved-model" checked`, `name="max_tool_rounds"`, `value="32"`)
 }
 
 func TestSettingsHandlerRejectsInvalidMaxToolRounds(t *testing.T) {

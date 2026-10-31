@@ -22,6 +22,48 @@ import (
 //go:embed schema.sql
 var messagesTestSchema string
 
+func TestDetailedMessageUsageRoundTrip(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`INSERT INTO chats (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	total, input, output, cached, write, reasoning := 170, 150, 20, 40, 10, 5
+	cost := 0.42
+	message := llm.Message{
+		Role:              "assistant",
+		Content:           "answer",
+		Model:             "test-model",
+		TotalTokens:       &total,
+		InputTokens:       &input,
+		OutputTokens:      &output,
+		CachedInputTokens: &cached,
+		CacheWriteTokens:  &write,
+		ReasoningTokens:   &reasoning,
+		Cost:              &cost,
+		CostEstimated:     true,
+	}
+	if _, err := InsertMessage(context.Background(), database, 1, 0, message); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("messages = %d, want 1", len(stored))
+	}
+	got := stored[0]
+	if got.TotalTokens == nil || *got.TotalTokens != total ||
+		got.InputTokens == nil || *got.InputTokens != input ||
+		got.OutputTokens == nil || *got.OutputTokens != output ||
+		got.CachedInputTokens == nil || *got.CachedInputTokens != cached ||
+		got.CacheWriteTokens == nil || *got.CacheWriteTokens != write ||
+		got.ReasoningTokens == nil || *got.ReasoningTokens != reasoning ||
+		got.Cost == nil || *got.Cost != cost || !got.CostEstimated {
+		t.Fatalf("stored usage = %#v", got)
+	}
+}
+
 func TestAppendCompletionUsesStoredLastPosition(t *testing.T) {
 	database := openMessagesTestDatabase(t, "")
 	if _, err := database.Exec(`

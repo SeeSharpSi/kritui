@@ -47,6 +47,12 @@ type storedMessage struct {
 	model                   sql.NullString
 	totalTokens             sql.NullInt64
 	cost                    sql.NullFloat64
+	inputTokens             sql.NullInt64
+	outputTokens            sql.NullInt64
+	cachedInputTokens       sql.NullInt64
+	cacheWriteTokens        sql.NullInt64
+	reasoningTokens         sql.NullInt64
+	costEstimated           bool
 	toolCallID              sql.NullString
 	toolCallPositions       []int
 	promptAppendPositions   []int
@@ -422,7 +428,9 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 	}
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, position, role, content, model, total_tokens, cost, tool_call_id
+		SELECT id, position, role, content, model, total_tokens, cost,
+			input_tokens, output_tokens, cached_input_tokens, cache_write_tokens,
+			reasoning_tokens, cost_estimated, tool_call_id
 		FROM messages
 		WHERE chat_id = ? AND undo_sequence IS NULL
 		ORDER BY position, id
@@ -581,6 +589,12 @@ func scanStoredMessage(ctx context.Context, row rowScanner) (storedMessage, erro
 		&stored.model,
 		&stored.totalTokens,
 		&stored.cost,
+		&stored.inputTokens,
+		&stored.outputTokens,
+		&stored.cachedInputTokens,
+		&stored.cacheWriteTokens,
+		&stored.reasoningTokens,
+		&stored.costEstimated,
 		&stored.toolCallID,
 	); err != nil {
 		return storedMessage{}, fmt.Errorf("scan message: %w", err)
@@ -601,6 +615,27 @@ func scanStoredMessage(ctx context.Context, row rowScanner) (storedMessage, erro
 	if stored.cost.Valid {
 		cost := stored.cost.Float64
 		stored.message.Cost = &cost
+	}
+	stored.message.CostEstimated = stored.costEstimated
+	if stored.inputTokens.Valid {
+		value := int(stored.inputTokens.Int64)
+		stored.message.InputTokens = &value
+	}
+	if stored.outputTokens.Valid {
+		value := int(stored.outputTokens.Int64)
+		stored.message.OutputTokens = &value
+	}
+	if stored.cachedInputTokens.Valid {
+		value := int(stored.cachedInputTokens.Int64)
+		stored.message.CachedInputTokens = &value
+	}
+	if stored.cacheWriteTokens.Valid {
+		value := int(stored.cacheWriteTokens.Int64)
+		stored.message.CacheWriteTokens = &value
+	}
+	if stored.reasoningTokens.Valid {
+		value := int(stored.reasoningTokens.Int64)
+		stored.message.ReasoningTokens = &value
 	}
 	if stored.toolCallID.Valid {
 		stored.message.ToolCallID = stored.toolCallID.String
@@ -776,6 +811,12 @@ func writeStoredMessage(digest hash.Hash, stored storedMessage) {
 	writeNullString(digest, stored.model)
 	writeNullInt64(digest, stored.totalTokens)
 	writeNullFloat64(digest, stored.cost)
+	writeNullInt64(digest, stored.inputTokens)
+	writeNullInt64(digest, stored.outputTokens)
+	writeNullInt64(digest, stored.cachedInputTokens)
+	writeNullInt64(digest, stored.cacheWriteTokens)
+	writeNullInt64(digest, stored.reasoningTokens)
+	writeBool(digest, stored.costEstimated)
 	writeNullString(digest, stored.toolCallID)
 	writeInt64(digest, int64(len(stored.message.ToolCalls)))
 	for index, call := range stored.message.ToolCalls {

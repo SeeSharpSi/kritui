@@ -58,9 +58,20 @@ func messageModelMeta(message llm.Message) string {
 		parts = append(parts, fmt.Sprintf("%d tokens", *message.TotalTokens))
 	}
 	if message.Cost != nil {
-		parts = append(parts, fmt.Sprintf("$%.4f", *message.Cost))
+		parts = append(parts, formatMessageCost(*message.Cost, message.CostEstimated))
 	}
 	return strings.Join(parts, " · ")
+}
+
+func formatMessageCost(cost float64, estimated bool) string {
+	formatted := fmt.Sprintf("$%.4f", cost)
+	if cost > 0 && cost < 0.00005 {
+		formatted = "<$0.0001"
+	}
+	if estimated {
+		return "~" + formatted
+	}
+	return formatted
 }
 
 // toolCallArgsBody is args without trailing `}` so CSS can ellipsis then keep `}`.
@@ -93,6 +104,7 @@ func messagesForView(messages []llm.Message) []messageView {
 	var pendingErrors map[string]string
 	var totalTokens *int
 	var cost *float64
+	costEstimated := false
 	flush := func() {
 		if len(pending) == 0 {
 			pendingErrors = nil
@@ -118,6 +130,9 @@ func messagesForView(messages []llm.Message) []messageView {
 			}
 			*cost += *message.Cost
 		}
+		if message.CostEstimated {
+			costEstimated = true
+		}
 	}
 	for i := range messages {
 		message := &messages[i]
@@ -139,9 +154,11 @@ func messagesForView(messages []llm.Message) []messageView {
 			view := *message
 			view.TotalTokens = totalTokens
 			view.Cost = cost
+			view.CostEstimated = costEstimated
 			views = append(views, messageView{Message: &view})
 			totalTokens = nil
 			cost = nil
+			costEstimated = false
 		default:
 			flush()
 			views = append(views, messageView{Message: message})

@@ -14,6 +14,8 @@ import (
 type SettingsPanelData struct {
 	ChatID                      string
 	Models                      []string
+	ModelListFallback           bool
+	ModelDetails                map[string]ModelDetail
 	SelectedModel               string
 	MaxToolRounds               int
 	TitleGenerationEnabled      bool
@@ -192,18 +194,45 @@ templ SettingsPage(data SettingsPanelData) {
 				<div class="settings-fields">
 						<div class="settings-field">
 							<div class="settings-field-copy">
-								<label for="default-model">Default model</label>
+								<span id="default-model-label" class="settings-field-label">Default model</span>
 								<p class="settings-help">Preselected for each new chat.</p>
 							</div>
-							<div class="settings-control">
+							<div class="settings-control settings-control-column">
 								if len(data.Models) == 0 {
 									<input id="default-model" type="text" name="model" value={ data.SelectedModel } placeholder="Provider model ID" required/>
 								} else {
-									<select id="default-model" name="model" required>
-										for _, model := range data.Models {
-											<option value={ model } if model == data.SelectedModel { selected }>{ model }</option>
-										}
-									</select>
+									<details id="default-model" class="settings-model-picker" aria-labelledby="default-model-label">
+										<summary>
+											<strong>{ data.SelectedModel }</strong>
+										</summary>
+										<div class="settings-model-options">
+											for _, model := range data.Models {
+												<label>
+													<input
+														type="radio"
+														name="model"
+														value={ model }
+														if model == data.SelectedModel {
+															checked
+														}
+														required
+														onchange="const picker = this.closest('details'); picker.querySelector('summary strong').textContent = this.value; picker.removeAttribute('open'); picker.querySelector('summary').focus()"
+													/>
+													<span class="model-name">{ model }</span>
+													if detail, ok := data.ModelDetails[model]; ok && len(detail.Modalities) > 0 {
+														<span class="model-modalities">
+															for _, modality := range detail.Modalities {
+																@ModelModalityIcon(modality)
+															}
+														</span>
+													}
+												</label>
+											}
+										</div>
+									</details>
+								}
+								if data.ModelListFallback {
+									<p class="settings-help settings-model-fallback">Using models.dev fallback</p>
 								}
 							</div>
 					</div>
@@ -221,19 +250,53 @@ templ SettingsPage(data SettingsPanelData) {
 					</div>
 					<div class="settings-field">
 						<div class="settings-field-copy">
-							<label for="title-generation-model">Title model</label>
+							<span id="title-generation-model-label" class="settings-field-label">Title model</span>
 							<p class="settings-help">Required when title generation is enabled. Uses the stored model connection.</p>
 						</div>
 						<div class="settings-control">
 							if len(data.Models) == 0 {
 								<input id="title-generation-model" type="text" name="title_generation_model" value={ data.TitleGenerationModel } maxlength="512" placeholder="Provider model ID"/>
 							} else {
-								<select id="title-generation-model" name="title_generation_model">
-									<option value=""></option>
-									for _, model := range data.Models {
-										<option value={ model } if model == data.TitleGenerationModel { selected }>{ model }</option>
-									}
-								</select>
+								<details id="title-generation-model" class="settings-model-picker" aria-labelledby="title-generation-model-label">
+									<summary>
+										<strong>{ modelPickerSelection(data.TitleGenerationModel) }</strong>
+									</summary>
+									<div class="settings-model-options">
+										<label>
+											<input
+												type="radio"
+												name="title_generation_model"
+												value=""
+												if data.TitleGenerationModel == "" {
+													checked
+												}
+												onchange="const picker = this.closest('details'); picker.querySelector('summary strong').textContent = this.value || 'None'; picker.removeAttribute('open'); picker.querySelector('summary').focus()"
+											/>
+											<span class="model-name">None</span>
+										</label>
+										for _, model := range data.Models {
+											<label>
+												<input
+													type="radio"
+													name="title_generation_model"
+													value={ model }
+													if model == data.TitleGenerationModel {
+														checked
+													}
+													onchange="const picker = this.closest('details'); picker.querySelector('summary strong').textContent = this.value || 'None'; picker.removeAttribute('open'); picker.querySelector('summary').focus()"
+												/>
+												<span class="model-name">{ model }</span>
+												if detail, ok := data.ModelDetails[model]; ok && len(detail.Modalities) > 0 {
+													<span class="model-modalities">
+														for _, modality := range detail.Modalities {
+															@ModelModalityIcon(modality)
+														}
+													</span>
+												}
+											</label>
+										}
+									</div>
+								</details>
 							}
 						</div>
 					</div>

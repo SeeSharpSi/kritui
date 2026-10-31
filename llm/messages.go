@@ -75,11 +75,13 @@ func (c *Client) completeMessages(ctx context.Context, endpoint endpointCandidat
 		Content    []messagesContentBlock `json:"content"`
 		StopReason string                 `json:"stop_reason"`
 		Usage      struct {
-			InputTokens  int                   `json:"input_tokens"`
-			OutputTokens int                   `json:"output_tokens"`
-			TotalTokens  int                   `json:"total_tokens"`
-			Cost         *float64              `json:"cost,omitempty"`
-			OpenCode     OpenCodeUsageMetadata `json:"opencode,omitempty"`
+			InputTokens              int                   `json:"input_tokens"`
+			OutputTokens             int                   `json:"output_tokens"`
+			CacheReadInputTokens     int                   `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int                   `json:"cache_creation_input_tokens"`
+			TotalTokens              int                   `json:"total_tokens"`
+			Cost                     *float64              `json:"cost,omitempty"`
+			OpenCode                 OpenCodeUsageMetadata `json:"opencode,omitempty"`
 		} `json:"usage"`
 	}
 	if err := c.postJSON(ctx, endpoint, payload, &response); err != nil {
@@ -112,14 +114,19 @@ func (c *Client) completeMessages(ctx context.Context, endpoint endpointCandidat
 	if err := validateMessagesCompletion(message, response.StopReason); err != nil {
 		return Message{}, err
 	}
+	inputTokens := response.Usage.InputTokens + response.Usage.CacheReadInputTokens + response.Usage.CacheCreationInputTokens
 	totalTokens := response.Usage.TotalTokens
 	if totalTokens == 0 {
-		totalTokens = response.Usage.InputTokens + response.Usage.OutputTokens
+		totalTokens = inputTokens + response.Usage.OutputTokens
 	}
 	c.applyUsage(&message, Usage{
-		TotalTokens: totalTokens,
-		Cost:        response.Usage.Cost,
-		OpenCode:    response.Usage.OpenCode,
+		InputTokens:       inputTokens,
+		OutputTokens:      response.Usage.OutputTokens,
+		CachedInputTokens: response.Usage.CacheReadInputTokens,
+		CacheWriteTokens:  response.Usage.CacheCreationInputTokens,
+		TotalTokens:       totalTokens,
+		Cost:              response.Usage.Cost,
+		OpenCode:          response.Usage.OpenCode,
 	})
 	return message, nil
 }

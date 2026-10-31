@@ -89,6 +89,18 @@ func TestToolCallElisionPresentation(t *testing.T) {
 	})
 }
 
+func TestFormatMessageCost(t *testing.T) {
+	if got := formatMessageCost(0.25, false); got != "$0.2500" {
+		t.Errorf("provider cost = %q", got)
+	}
+	if got := formatMessageCost(0.0025, true); got != "~$0.0025" {
+		t.Errorf("estimated cost = %q", got)
+	}
+	if got := formatMessageCost(0.000001, true); got != "~<$0.0001" {
+		t.Errorf("tiny estimated cost = %q", got)
+	}
+}
+
 func TestMessagesResponseUsage(t *testing.T) {
 	toolRound := func(tokens *int, cost *float64) llm.Message {
 		return llm.Message{

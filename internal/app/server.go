@@ -112,6 +112,7 @@ func Run(files fs.FS, schemaSQL string) error {
 	}
 	toolCalls := newToolCallStore()
 	auth := newAuthService(database, secureCookies)
+	configureModelsDev(startupContext, database)
 	mux := newMux(database, toolRegistry, commandRegistry, toolCalls, toolCallLogger, auth)
 	handler := withStorageEncryption(storage, mux)
 
@@ -532,6 +533,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateToolCallResultElided,
 	migrateSystemPromptSettings,
 	migrateCompactionPromptSettings,
+	migrateMessageUsageAndModelsDevCache,
 }
 
 // migrateStorageFormat31 reserves schema version 31 as the storage-format
@@ -599,6 +601,44 @@ func migrateCompactionPromptSettings(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	}
 	return addColumnIfMissing(ctx, tx, "settings", "compaction_prompt", `TEXT`)
+}
+
+// migrateMessageUsageAndModelsDevCache records detailed provider token usage,
+// estimated-cost provenance, and the public models.dev catalog cache. Existing
+// messages keep NULL usage fields and non-estimated provider costs.
+func migrateMessageUsageAndModelsDevCache(ctx context.Context, tx *sql.Tx) error {
+	var tableCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'messages'
+	`).Scan(&tableCount); err != nil {
+		return fmt.Errorf("inspect messages table: %w", err)
+	}
+	if tableCount > 0 {
+		for _, column := range []struct {
+			name       string
+			definition string
+		}{
+			{"input_tokens", `INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0)`},
+			{"output_tokens", `INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0)`},
+			{"cached_input_tokens", `INTEGER CHECK (cached_input_tokens IS NULL OR cached_input_tokens >= 0)`},
+			{"cache_write_tokens", `INTEGER CHECK (cache_write_tokens IS NULL OR cache_write_tokens >= 0)`},
+			{"reasoning_tokens", `INTEGER CHECK (reasoning_tokens IS NULL OR reasoning_tokens >= 0)`},
+			{"cost_estimated", `INTEGER NOT NULL DEFAULT 0 CHECK (cost_estimated IN (0, 1))`},
+		} {
+			if err := addColumnIfMissing(ctx, tx, "messages", column.name, column.definition); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS models_dev_cache (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		etag TEXT NOT NULL DEFAULT '',
+		fetched_at INTEGER NOT NULL,
+		payload BLOB NOT NULL
+	) STRICT`)
+	return err
 }
 
 // migrateTitleGenerationSettings adds the opt-in chat-title generation toggle

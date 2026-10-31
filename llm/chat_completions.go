@@ -81,7 +81,20 @@ func (c *Client) completeChat(ctx context.Context, endpoint endpointCandidate, m
 			Message      Message `json:"message"`
 			FinishReason string  `json:"finish_reason"`
 		} `json:"choices"`
-		Usage Usage `json:"usage"`
+		Usage struct {
+			PromptTokens        int      `json:"prompt_tokens"`
+			CompletionTokens    int      `json:"completion_tokens"`
+			TotalTokens         int      `json:"total_tokens"`
+			Cost                *float64 `json:"cost,omitempty"`
+			PromptTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+			PromptCacheHitTokens    int `json:"prompt_cache_hit_tokens"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+			OpenCode OpenCodeUsageMetadata `json:"opencode,omitempty"`
+		} `json:"usage"`
 	}
 	if err := c.postJSON(ctx, endpoint, payload, &response); err != nil {
 		return Message{}, err
@@ -104,7 +117,19 @@ func (c *Client) completeChat(ctx context.Context, endpoint endpointCandidate, m
 
 	message := choice.Message
 	message.Model = c.completionModel(response.Model)
-	c.applyUsage(&message, response.Usage)
+	cachedTokens := response.Usage.PromptTokensDetails.CachedTokens
+	if cachedTokens == 0 {
+		cachedTokens = response.Usage.PromptCacheHitTokens
+	}
+	c.applyUsage(&message, Usage{
+		InputTokens:       response.Usage.PromptTokens,
+		OutputTokens:      response.Usage.CompletionTokens,
+		CachedInputTokens: cachedTokens,
+		ReasoningTokens:   response.Usage.CompletionTokensDetails.ReasoningTokens,
+		TotalTokens:       response.Usage.TotalTokens,
+		Cost:              response.Usage.Cost,
+		OpenCode:          response.Usage.OpenCode,
+	})
 	return message, nil
 }
 

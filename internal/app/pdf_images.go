@@ -45,27 +45,29 @@ func newPDFConversionError(format string, values ...any) error {
 	return &pdfConversionError{message: fmt.Sprintf(format, values...)}
 }
 
-// modelSupportWithClient returns metadata for one model. The boolean is false
-// when the provider did not list the model or metadata could not be fetched.
-func modelSupportWithClient(ctx context.Context, client *llm.Client, model string) (llm.ModelInfo, bool) {
-	infos, err := client.ModelInfos(ctx)
-	if err != nil {
-		return llm.ModelInfo{}, false
-	}
-	for _, info := range infos {
-		if info.ID == model {
-			return info, true
+// modelSupportWithClient returns metadata for one model. Provider metadata is
+// authoritative; models.dev fills fields the provider did not declare. The
+// boolean is false when neither source knows the model.
+func modelSupportWithClient(ctx context.Context, client *llm.Client, model, endpoint string) (llm.ModelInfo, bool) {
+	providerInfo, providerKnown := llm.ModelInfo{}, false
+	if infos, err := client.ModelInfos(ctx); err == nil {
+		for _, info := range infos {
+			if info.ID == model {
+				providerInfo, providerKnown = info, true
+				break
+			}
 		}
 	}
-	return llm.ModelInfo{}, false
+	catalogInfo, catalogKnown := catalogModelSupport(endpoint, model)
+	return mergeModelSupport(providerInfo, providerKnown, catalogInfo, catalogKnown)
 }
 
 func modelSupport(ctx context.Context, config kritui_db.LLMConfig, model, sessionID string) (llm.ModelInfo, bool) {
 	client, err := llm.New(config.APIKey, model, config.Endpoint, llm.ClientOptions{SessionID: sessionID})
 	if err != nil {
-		return llm.ModelInfo{}, false
+		return catalogModelSupport(config.Endpoint, model)
 	}
-	return modelSupportWithClient(ctx, client, model)
+	return modelSupportWithClient(ctx, client, model, config.Endpoint)
 }
 
 // prepareMessagesForModel replaces PDF attachments with page images when the

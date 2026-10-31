@@ -161,7 +161,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			}
 			enabledTools = completionState.Tools
 		}
-		models, selectedModel := availableModels(r, database, selectedModel)
+		models, selectedModel, modelsFallback := availableModels(r, database, selectedModel)
 		if renderSettings.defaultModel != "" && !slices.Contains(models, renderSettings.defaultModel) {
 			models = append([]string{renderSettings.defaultModel}, models...)
 		}
@@ -182,6 +182,8 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			ChatURL:                  chatURL,
 			Messages:                 messages,
 			Models:                   models,
+			ModelListFallback:        modelsFallback,
+			ModelDetails:             availableModelDetails(r.Context(), database, models),
 			SelectedModel:            selectedModel,
 			DefaultModel:             renderSettings.defaultModel,
 			MaxToolRounds:            renderSettings.maxToolRounds,
@@ -1397,10 +1399,11 @@ func newMCPServerID() (string, error) {
 
 func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data templates.SettingsPanelData, database *sql.DB) {
 	data.Visible = true
-	data.Models, data.SelectedModel = availableModels(r, database, data.SelectedModel)
+	data.Models, data.SelectedModel, data.ModelListFallback = availableModels(r, database, data.SelectedModel)
 	if model := data.TitleGenerationModel; model != "" && !slices.Contains(data.Models, model) {
 		data.Models = append(data.Models, model)
 	}
+	data.ModelDetails = availableModelDetails(r.Context(), database, data.Models)
 	var page bytes.Buffer
 	if err := templates.SettingsPage(data).Render(r.Context(), &page); err != nil {
 		log.Printf("render settings: %v", err)
@@ -1522,7 +1525,7 @@ func effectiveLLMConfig(ctx context.Context, database *sql.DB) (kritui_db.LLMCon
 	return config, nil
 }
 
-func availableModels(r *http.Request, database *sql.DB, selected string) ([]string, string) {
+func availableModels(r *http.Request, database *sql.DB, selected string) ([]string, string, bool) {
 	selected = strings.TrimSpace(selected)
 	sessionID := ""
 	if id, ok := positiveID(r.URL.Query().Get("chat")); ok {
@@ -1531,29 +1534,57 @@ func availableModels(r *http.Request, database *sql.DB, selected string) ([]stri
 	config, err := effectiveLLMConfig(r.Context(), database)
 	if err != nil {
 		log.Printf("get LLM config: %v", err)
-		if selected == "" {
-			return nil, ""
-		}
-		return []string{selected}, selected
+		return selectedModelList(selected), selected, false
 	}
 	client, err := llm.New(config.APIKey, selected, config.Endpoint, llm.ClientOptions{SessionID: sessionID})
 	if err != nil {
-		if selected == "" {
-			return nil, ""
+		log.Printf("configure model list: %v", err)
+		fallback, _, ok := catalogModelsForSelection(config.Endpoint, selected)
+		if ok {
+			log.Printf("configure model list: using models.dev fallback (%d models)", len(fallback))
+			return fallback, selected, true
 		}
-		return []string{selected}, selected
+		return selectedModelList(selected), selected, false
 	}
 
 	models, err := client.Models(r.Context())
+	if err == nil && len(models) > 0 {
+		return mergeSelectedModel(models, selected), selected, false
+	}
 	if err != nil {
 		log.Printf("get models: %v", err)
-		return []string{selected}, selected
+	} else {
+		log.Printf("get models: provider returned no models")
 	}
-	if slices.Contains(models, selected) {
-		return models, selected
+	fallback, _, ok := catalogModelsForSelection(config.Endpoint, selected)
+	if ok {
+		log.Printf("get models: using models.dev fallback (%d models)", len(fallback))
+		return fallback, selected, true
 	}
+	return selectedModelList(selected), selected, false
+}
+
+func catalogModelsForSelection(endpoint, selected string) ([]string, string, bool) {
+	if modelsDevService == nil {
+		return selectedModelList(selected), selected, false
+	}
+	models, ok := modelsDevService.Models(endpoint)
+	if !ok || len(models) == 0 {
+		return selectedModelList(selected), selected, false
+	}
+	return mergeSelectedModel(models, selected), selected, true
+}
+
+func selectedModelList(selected string) []string {
 	if selected == "" {
-		return models, selected
+		return nil
 	}
-	return append([]string{selected}, models...), selected
+	return []string{selected}
+}
+
+func mergeSelectedModel(models []string, selected string) []string {
+	if selected == "" || slices.Contains(models, selected) {
+		return models
+	}
+	return append([]string{selected}, models...)
 }
