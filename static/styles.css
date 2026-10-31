@@ -146,92 +146,6 @@ main .chat > .image-previews .image-preview img[data-image-viewer]:focus-visible
     outline-offset: -3px;
 }
 
-.pdf-viewer {
-    place-items: stretch;
-    padding:
-        max(.75rem, env(safe-area-inset-top))
-        max(.75rem, env(safe-area-inset-right))
-        max(.75rem, env(safe-area-inset-bottom))
-        max(.75rem, env(safe-area-inset-left));
-    background: var(--color-background);
-}
-
-.pdf-viewer-panel {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    box-sizing: border-box;
-    border: 1px solid var(--color-border-strong);
-    background: var(--color-surface);
-    overflow: hidden;
-}
-
-.pdf-viewer-toolbar {
-    display: flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: .5rem;
-    min-width: 0;
-    min-height: 2.75rem;
-    box-sizing: border-box;
-    padding: .25rem .25rem .25rem .75rem;
-    border-bottom: 1px solid var(--color-border);
-    background: var(--color-surface);
-}
-
-.pdf-viewer-name {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    color: var(--color-text);
-    font: 500 .75rem/1.25 var(--font-mono);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.pdf-viewer-actions {
-    display: flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: .5rem;
-}
-
-.pdf-viewer-open {
-    flex: 0 0 auto;
-    padding: .5rem .6rem;
-    border: 1px solid var(--color-border-strong);
-    border-radius: 0;
-    color: var(--color-text);
-    font: 500 .75rem/1 var(--font-mono);
-    text-decoration: none;
-    white-space: nowrap;
-
-    &:hover,
-    &:focus-visible {
-        border-color: var(--color-accent);
-        color: var(--color-accent);
-    }
-}
-
-.pdf-viewer .image-viewer-close {
-    position: static;
-    flex: 0 0 auto;
-}
-
-.pdf-viewer-frame {
-    display: block;
-    flex: 1 1 0;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    border: 0;
-    background: var(--color-surface);
-}
-
 main {
     --shell-top-space: max(16px, env(safe-area-inset-top));
     width: min(60rem, calc(100% - 2rem));
@@ -1695,14 +1609,15 @@ main {
                     }
                 }
 
-                button.message-attachment-pdf {
+                a.message-attachment-pdf {
                     margin: 0;
                     appearance: none;
                     border-radius: 0;
                     color: inherit;
                     font: inherit;
                     text-align: left;
-                    cursor: zoom-in;
+                    text-decoration: none;
+                    cursor: pointer;
 
                     &:hover,
                     &:focus-visible {

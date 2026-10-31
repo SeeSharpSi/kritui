@@ -879,158 +879,6 @@ function handleImageViewerClose() {
 
 imageViewerDialog()?.addEventListener('close', handleImageViewerClose);
 
-const pdfViewer = {
-    trigger: null,
-    restoreFocus: true,
-};
-
-function pdfViewerDialog() {
-    return document.getElementById('pdf-viewer');
-}
-
-function pdfViewerFrame(dialog = pdfViewerDialog()) {
-    return dialog?.querySelector('#pdf-viewer-frame') ?? null;
-}
-
-function pdfViewerOpenLink(dialog = pdfViewerDialog()) {
-    return dialog?.querySelector('#pdf-viewer-open') ?? null;
-}
-
-function pdfViewerName(dialog = pdfViewerDialog()) {
-    return dialog?.querySelector('#pdf-viewer-name') ?? null;
-}
-
-const pdfCitationPathPattern = /^\/chats\/[1-9]\d*\/messages\/[1-9]\d*\/attachments\/\d+$/;
-
-function pdfCitationURL(anchor) {
-    if (!(anchor instanceof HTMLAnchorElement) || !anchor.closest('.message-content.markdown')) {
-        return null;
-    }
-    let url;
-    try {
-        url = new URL(anchor.getAttribute('href') ?? '', window.location.href);
-    } catch {
-        return null;
-    }
-    if (url.origin !== window.location.origin || !pdfCitationPathPattern.test(url.pathname)) {
-        return null;
-    }
-    return url;
-}
-
-function isPlainPrimaryClick(event) {
-    return event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey;
-}
-
-function pdfViewerTriggerFor(target) {
-    if (!(target instanceof Element)) {
-        return null;
-    }
-    const button = target.closest('button[data-pdf-viewer]');
-    if (button) {
-        return button;
-    }
-    const anchor = target.closest('.message-content.markdown a[href]');
-    return anchor && pdfCitationURL(anchor) ? anchor : null;
-}
-
-function openPdfViewer(trigger) {
-    const dialog = pdfViewerDialog();
-    const frame = pdfViewerFrame(dialog);
-    const link = pdfViewerOpenLink(dialog);
-    const nameElement = pdfViewerName(dialog);
-    if (!dialog || !frame || !link) {
-        return;
-    }
-
-    let url;
-    let name;
-    if (trigger instanceof HTMLButtonElement) {
-        url = trigger.dataset.pdfUrl;
-        name = trigger.dataset.pdfName || trigger.title || 'Attached PDF';
-    } else if (trigger instanceof HTMLAnchorElement) {
-        const citationURL = pdfCitationURL(trigger);
-        if (!citationURL) {
-            return;
-        }
-        url = citationURL.href;
-        name = trigger.dataset.pdfName || trigger.title || trigger.textContent.trim() || 'Attached PDF';
-    } else {
-        return;
-    }
-    if (!url) {
-        return;
-    }
-
-    const wasOpen = dialog.open;
-    pdfViewer.trigger = trigger;
-    pdfViewer.restoreFocus = true;
-    frame.src = url;
-    frame.title = `PDF document: ${name}`;
-    link.href = url;
-    if (nameElement) {
-        nameElement.textContent = name;
-    }
-    dialog.setAttribute('aria-label', `PDF viewer: ${name}`);
-    if (!wasOpen) {
-        dialog.showModal();
-    }
-}
-
-function clearPdfViewer() {
-    const dialog = pdfViewerDialog();
-    const frame = pdfViewerFrame(dialog);
-    const link = pdfViewerOpenLink(dialog);
-    const nameElement = pdfViewerName(dialog);
-    if (frame) {
-        frame.removeAttribute('src');
-        frame.title = 'PDF document';
-    }
-    if (link) {
-        link.removeAttribute('href');
-    }
-    if (nameElement) {
-        nameElement.textContent = '';
-    }
-    dialog?.setAttribute('aria-label', 'PDF viewer');
-}
-
-function closePdfViewer(restoreFocus = true) {
-    const dialog = pdfViewerDialog();
-    if (!dialog?.open) {
-        return;
-    }
-    pdfViewer.restoreFocus = restoreFocus;
-    dialog.close();
-}
-
-function closePdfViewerWithin(root, restoreFocus = true) {
-    const trigger = pdfViewer.trigger;
-    if (!trigger || !root) {
-        return;
-    }
-    if (root === trigger || root.contains?.(trigger)) {
-        closePdfViewer(restoreFocus);
-    }
-}
-
-function handlePdfViewerClose() {
-    if (pdfViewerDialog()?.open) {
-        return;
-    }
-
-    const trigger = pdfViewer.trigger;
-    const restoreFocus = pdfViewer.restoreFocus;
-    pdfViewer.trigger = null;
-    pdfViewer.restoreFocus = true;
-    clearPdfViewer();
-    if (restoreFocus && trigger?.isConnected) {
-        trigger.focus({ preventScroll: true });
-    }
-}
-
-pdfViewerDialog()?.addEventListener('close', handlePdfViewerClose);
-
 function renderAttachmentPreviews(input) {
     const main = input.closest('main');
     const previews = main?.querySelector('#image-previews');
@@ -1834,7 +1682,6 @@ document.addEventListener('kritui:message-edited', () => {
 document.addEventListener('htmx:before:cleanup', (event) => {
     const root = event.target;
     closeImageViewerWithin(root, false);
-    closePdfViewerWithin(root, false);
     clearComposerAttachments(root);
     destroyMessageListStates(root);
     destroyShell(root);
@@ -1897,28 +1744,6 @@ document.addEventListener('click', (event) => {
     const viewerDialog = event.target.closest?.('#image-viewer');
     if (viewerDialog && event.target === viewerDialog) {
         closeImageViewer();
-        return;
-    }
-
-    const pdfViewerTrigger = pdfViewerTriggerFor(event.target);
-    if (pdfViewerTrigger) {
-        if (pdfViewerTrigger instanceof HTMLAnchorElement && !isPlainPrimaryClick(event)) {
-            return;
-        }
-        event.preventDefault();
-        openPdfViewer(pdfViewerTrigger);
-        return;
-    }
-
-    const pdfViewerClose = event.target.closest?.('[data-pdf-viewer-close]');
-    if (pdfViewerClose) {
-        closePdfViewer();
-        return;
-    }
-
-    const pdfViewerDialogElement = event.target.closest?.('#pdf-viewer');
-    if (pdfViewerDialogElement && event.target === pdfViewerDialogElement) {
-        closePdfViewer();
         return;
     }
 

@@ -186,20 +186,17 @@ templ UserMessage(chatID string, message llm.Message) {
 				for index, attachment := range message.Attachments {
 					if isPDFAttachment(attachment) {
 						if message.ID > 0 && chatID != "" {
-							<button
-								type="button"
+							<a
 								class="message-attachment-pdf"
 								title={ userAttachmentLabel(attachment) }
-								data-pdf-viewer
-								data-pdf-url={ MessageAttachmentURL(chatID, message.ID, index) }
-								data-pdf-name={ userAttachmentLabel(attachment) }
-								aria-haspopup="dialog"
-								aria-controls="pdf-viewer"
-								aria-label={ "Open " + userAttachmentLabel(attachment) }
+								href={ MessageAttachmentURL(chatID, message.ID, index) }
+								target="_blank"
+								rel="noopener"
+								aria-label={ "Open " + userAttachmentLabel(attachment) + " in a new tab" }
 							>
 								<span class="message-attachment-pdf-label">PDF</span>
 								<span class="message-attachment-pdf-name">{ userAttachmentLabel(attachment) }</span>
-							</button>
+							</a>
 						} else {
 							<div class="message-attachment-pdf" title={ userAttachmentLabel(attachment) }>
 								<span class="message-attachment-pdf-label">PDF</span>

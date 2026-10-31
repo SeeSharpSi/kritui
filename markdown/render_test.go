@@ -47,8 +47,8 @@ func TestRenderSanitizesHTML(t *testing.T) {
 	}
 }
 
-func TestRenderPreservesAttachmentCitationLinks(t *testing.T) {
-	content := "[page 3](/chats/1/messages/2/attachments/0#page=3)\n\n[relative](notes.pdf)"
+func TestRenderOpensAttachmentCitationLinksInNewTab(t *testing.T) {
+	content := "[page 3](/chats/1/messages/2/attachments/0#page=3)\n\n[page 4](http://localhost:8080/chats/1/messages/2/attachments/1#page=4)\n\n[relative](notes.pdf)"
 	var output bytes.Buffer
 
 	if err := Render(content).Render(context.Background(), &output); err != nil {
@@ -58,14 +58,22 @@ func TestRenderPreservesAttachmentCitationLinks(t *testing.T) {
 	rendered := output.String()
 	for _, want := range []string{
 		`href="/chats/1/messages/2/attachments/0#page=3"`,
+		`href="http://localhost:8080/chats/1/messages/2/attachments/1#page=4"`,
 		`href="notes.pdf"`,
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("rendered Markdown does not contain %q: %s", want, rendered)
 		}
 	}
-	if strings.Contains(rendered, `target="_blank"`) {
-		t.Errorf("rendered relative links were forced to open in a new tab: %s", rendered)
+	if got, want := strings.Count(rendered, `target="_blank"`), 2; got != want {
+		t.Errorf("rendered Markdown has %d new-tab links, want %d: %s", got, want, rendered)
+	}
+	if !strings.Contains(rendered, `rel="nofollow noopener"`) {
+		t.Errorf("rendered attachment links lack rel=noopener: %s", rendered)
+	}
+	notesIndex := strings.Index(rendered, `href="notes.pdf"`)
+	if notesIndex < 0 || strings.Contains(rendered[notesIndex:], `target="_blank"`) {
+		t.Errorf("rendered relative non-attachment link was forced to open in a new tab: %s", rendered)
 	}
 }
 
