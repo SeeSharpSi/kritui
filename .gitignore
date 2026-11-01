@@ -1,6 +1,6 @@
 .env*
 !.env.example
-templ/*.go
+templ/*_templ.go
 run.sh
 data.db*
 tmp/
