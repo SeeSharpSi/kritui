@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"seesharpsi/kritui/templ"
 )
 
 func newPWATestHandler(t *testing.T) http.Handler {
@@ -232,10 +234,10 @@ func TestPWAAuthPagesIncludeMobileInstallMetadata(t *testing.T) {
 				"viewport-fit=cover",
 				`name="theme-color"`,
 				`rel="manifest"`,
-				`href="/static/manifest.json?v=74"`,
+				`href="/static/manifest.json?v=`+templates.StaticAssetVersion+`"`,
 				`rel="apple-touch-icon"`,
-				`href="/static/icon-192.png?v=74"`,
-				`src="/static/app.js?v=74"`,
+				`href="/static/icon-192.png?v=`+templates.StaticAssetVersion+`"`,
+				`src="/static/app.js?v=`+templates.StaticAssetVersion+`"`,
 				"defer",
 				`name="username"`,
 				`name="password"`,
