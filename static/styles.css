@@ -2336,6 +2336,7 @@ main {
             &:focus-visible {
                 border-color: var(--color-border-strong);
                 color: var(--color-text);
+                z-index: 3;
             }
 
             &:focus-visible {
@@ -2369,18 +2370,6 @@ main {
                 border-color: var(--color-accent);
                 color: var(--color-accent);
             }
-        }
-
-        &::after {
-            content: "";
-            position: absolute;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            height: 1px;
-            background: var(--color-border);
-            pointer-events: none;
-            z-index: 6;
         }
     }
 
