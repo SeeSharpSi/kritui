@@ -1897,3 +1897,55 @@ document.addEventListener('click', (event) => {
         }
     });
 });
+
+const keyboardViewport = { baseline: 0, timer: 0, orientationTimer: 0 };
+
+function keyboardViewportHeight() {
+    return window.visualViewport?.height ?? window.innerHeight;
+}
+
+function syncKeyboardViewport() {
+    const height = keyboardViewportHeight();
+    if (height > keyboardViewport.baseline) {
+        keyboardViewport.baseline = height;
+    }
+    const composing = document.getElementById('message') === document.activeElement;
+    document.documentElement.toggleAttribute(
+        'data-keyboard-open',
+        composing && keyboardViewport.baseline - height > 120,
+    );
+}
+
+function resetKeyboardViewport() {
+    keyboardViewport.baseline = keyboardViewportHeight();
+    syncKeyboardViewport();
+}
+
+function handleKeyboardOrientation() {
+    window.clearTimeout(keyboardViewport.orientationTimer);
+    keyboardViewport.orientationTimer = window.setTimeout(resetKeyboardViewport, 300);
+}
+
+function focusKeyboardInput(event) {
+    if (event.target?.id !== 'message') {
+        return;
+    }
+    syncKeyboardViewport();
+    window.clearTimeout(keyboardViewport.timer);
+    keyboardViewport.timer = window.setTimeout(syncKeyboardViewport, 400);
+}
+
+function blurKeyboardInput(event) {
+    if (event.target?.id !== 'message') {
+        return;
+    }
+    window.clearTimeout(keyboardViewport.timer);
+    document.documentElement.removeAttribute('data-keyboard-open');
+}
+
+keyboardViewport.baseline = keyboardViewportHeight();
+document.addEventListener('focusin', focusKeyboardInput);
+document.addEventListener('focusout', blurKeyboardInput);
+window.addEventListener('resize', syncKeyboardViewport, { passive: true });
+window.addEventListener('orientationchange', handleKeyboardOrientation, { passive: true });
+window.visualViewport?.addEventListener('resize', syncKeyboardViewport, { passive: true });

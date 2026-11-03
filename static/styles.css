@@ -3025,6 +3025,12 @@ main {
     }
 }
 
+@media (hover: none) and (pointer: coarse) {
+    html[data-keyboard-open] main.app-main .chat-controls {
+        display: none;
+    }
+}
+
 @media (max-width: 30rem) {
     main {
         .app-header { padding: 0 16px; gap: 8px; }
