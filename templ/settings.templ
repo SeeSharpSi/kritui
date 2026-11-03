@@ -26,6 +26,9 @@ type SettingsPanelData struct {
 	ToolNames                   []string
 	DefaultTools                []string
 	MCPServers                  []kritui_db.MCPServer
+	GitHosts                    []kritui_db.GitHost
+	GitHostsOpen                bool
+	ClearGitTokenIDs            []string
 	MCPServersOpen              bool
 	ClearMCPAuthorizationIDs    []string
 	PromptAppends               []kritui_db.PromptAppend
@@ -83,6 +86,48 @@ templ MCPServerEditor(server kritui_db.MCPServer, enabledByDefault bool, clearAu
 	</fieldset>
 }
 
+templ GitHostEditor(host kritui_db.GitHost, clearToken bool) {
+	<fieldset class="settings-mcp-server">
+		<legend>
+			if host.Host == "" {
+				New host
+			} else {
+				{ host.Host }
+			}
+		</legend>
+		<input type="hidden" name="git_host_id" value={ host.ID }/>
+		<div class="settings-mcp-field">
+			<label for={ "git-host-" + host.ID }>Host</label>
+			<input id={ "git-host-" + host.ID } type="text" name={ "git_host_" + host.ID } value={ host.Host } maxlength="512" placeholder="github.com or git.example.com:8443" required/>
+		</div>
+		<div class="settings-mcp-field">
+			<label for={ "git-username-" + host.ID }>Username</label>
+			<input id={ "git-username-" + host.ID } type="text" name={ "git_username_" + host.ID } value={ host.Username } maxlength="255" placeholder="oauth2 or Forgejo account name"/>
+		</div>
+		<div class="settings-mcp-field">
+			<label for={ "git-token-" + host.ID }>Token</label>
+			<input
+				id={ "git-token-" + host.ID }
+				type="password"
+				name={ "git_token_" + host.ID }
+				autocomplete="new-password"
+				maxlength="16384"
+				hx-preserve="true"
+				if host.TokenConfigured {
+					placeholder="Stored token unchanged when blank"
+				}
+			/>
+			if host.TokenConfigured {
+				<label class="settings-mcp-clear">
+					<input type="checkbox" name="clear_git_token" value={ host.ID } if clearToken { checked }/>
+					<span>Clear stored token when settings save</span>
+				</label>
+			}
+		</div>
+		<button class="settings-remove" type="submit" name="remove_git_host" value={ host.ID } formnovalidate>Remove</button>
+	</fieldset>
+}
+
 templ SettingsPage(data SettingsPanelData) {
 	{{
 	mode := string(data.ToolResultElision.Mode)
@@ -124,6 +169,7 @@ templ SettingsPage(data SettingsPanelData) {
 			<input type="hidden" name="tool_selection" value="1"/>
 			<input type="hidden" name="append_form" value="1"/>
 			<input type="hidden" name="mcp_form" value="1"/>
+			<input type="hidden" name="git_form" value="1"/>
 			<input type="hidden" name="ntfy_form" value="1"/>
 			<input type="hidden" name="tool_result_elision_form" value="1"/>
 			<input type="hidden" name="system_prompt_form" value="1"/>
@@ -528,6 +574,32 @@ templ SettingsPage(data SettingsPanelData) {
 					</div>
 				</div>
 			</section>
+			<details id="git-settings" class="settings-section settings-expandable" if data.GitHostsOpen { open }>
+				<summary class="settings-section-heading">
+					<span class="settings-expandable-copy">
+						<span id="git-settings-heading" class="settings-section-title">Git access</span>
+						<span class="settings-section-description">HTTPS Git hosts the agent may clone. Each host can have its own username and token; tokens are never shown to the agent.</span>
+					</span>
+				</summary>
+				<div id="git-host-list" class="settings-mcp-list">
+					for _, host := range data.GitHosts {
+						@GitHostEditor(host, slices.Contains(data.ClearGitTokenIDs, host.ID))
+					}
+				</div>
+				<div class="settings-mcp-actions">
+					<button
+						class="settings-add"
+						type="button"
+						hx-post={ "/settings?chat=" + data.ChatID }
+						hx-target="#git-host-list"
+						hx-swap="beforeend"
+						hx-vals={ `{"git_action":"add"}` }
+						hx-include="#append-picker input[name='append']:checked, #tool-picker input[name='tool']:checked"
+						hx-status:4xx="target:#settings-page swap:outerHTML"
+						hx-status:5xx="target:#settings-page swap:outerHTML"
+					>Add host</button>
+				</div>
+			</details>
 			<details id="mcp-settings" class="settings-section settings-expandable" if data.MCPServersOpen { open }>
 				<summary class="settings-section-heading">
 					<span class="settings-expandable-copy">

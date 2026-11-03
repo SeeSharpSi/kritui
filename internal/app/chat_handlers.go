@@ -196,6 +196,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			EnabledTools:             enabledTools,
 			DefaultTools:             renderSettings.defaultTools,
 			MCPServers:               renderSettings.mcpServers,
+			GitHosts:                 renderSettings.gitHosts,
 			PromptAppends:            renderSettings.promptAppends,
 			NtfySettings:             renderSettings.ntfySettings,
 			LLMSettings:              renderSettings.llmSettings,
@@ -230,6 +231,7 @@ type homeRenderSettings struct {
 	toolResultElision llm.ToolResultElisionConfig
 	defaultTools      []string
 	mcpServers        []kritui_db.MCPServer
+	gitHosts          []kritui_db.GitHost
 	ntfySettings      kritui_db.NtfySettings
 	llmSettings       kritui_db.LLMSettings
 	llmEnvManaged     bool
@@ -285,6 +287,10 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 	if settings.mcpServers, err = kritui_db.GetMCPServers(ctx, database); err != nil {
 		log.Printf("get MCP servers: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load MCP servers: %w", err)
+	}
+	if settings.gitHosts, err = kritui_db.GetGitHosts(ctx, database); err != nil {
+		log.Printf("get git hosts: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load git hosts: %w", err)
 	}
 	if settings.ntfySettings, err = kritui_db.GetNtfySettings(ctx, database); err != nil {
 		log.Printf("get ntfy settings: %v", err)
@@ -496,6 +502,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.MCPServers = mcpServers
+		gitHosts, err := kritui_db.GetGitHosts(r.Context(), database)
+		if err != nil {
+			log.Printf("get git hosts: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.GitHosts = gitHosts
 		ntfySettings, err := kritui_db.GetNtfySettings(r.Context(), database)
 		if err != nil {
 			log.Printf("get ntfy settings: %v", err)
@@ -650,6 +663,22 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				}
 			}
 
+			gitSubmitted := r.FormValue("git_form") == "1"
+			submittedGitHosts := page.GitHosts
+			var submittedGitUpdates []kritui_db.GitHostUpdate
+			if gitSubmitted {
+				submittedGitUpdates, err = gitHostsFromForm(r, page.GitHosts)
+				submittedGitHosts = gitHostsFromUpdates(submittedGitUpdates)
+				page.GitHosts = submittedGitHosts
+				page.GitHostsOpen = true
+				page.ClearGitTokenIDs = gitTokenClearIDs(submittedGitUpdates)
+				if err != nil {
+					page.SelectedModel = submittedModel
+					render(http.StatusBadRequest, fmt.Sprintf("Git host form is invalid: %v.", err))
+					return
+				}
+			}
+
 			submittedTools, submittedToolsErr := selectedDefaultTools(registry, submittedMCPServers, r.Form["default_tool"])
 			actionModel, actionRounds, actionTools := page.SelectedModel, page.MaxToolRounds, page.DefaultTools
 			if submittedModel != "" {
@@ -669,7 +698,39 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				value.SelectedTheme = actionTheme
 				value.PromptAppends = submittedAppends
 				value.MCPServers = submittedMCPServers
+				value.GitHosts = submittedGitHosts
 				return value
+			}
+
+			if r.FormValue("git_action") == "add" {
+				id, err := newGitHostID()
+				if err != nil {
+					log.Printf("create Git host ID: %v", err)
+					value := actionPage()
+					value.ErrorMessage = "Failed to add Git host."
+					value.GitHostsOpen = true
+					renderSettingsPage(w, r, http.StatusInternalServerError, value, database)
+					return
+				}
+				renderGitHostEditor(w, r, http.StatusOK, kritui_db.GitHost{ID: id})
+				return
+			}
+			if removeID := strings.TrimSpace(r.FormValue("remove_git_host")); removeID != "" {
+				if err := kritui_db.ValidateGitHostID(removeID); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("Git host remove is invalid: %v.", err))
+					return
+				}
+				filtered := submittedGitHosts[:0]
+				for _, host := range submittedGitHosts {
+					if host.ID != removeID {
+						filtered = append(filtered, host)
+					}
+				}
+				value := actionPage()
+				value.GitHosts = filtered
+				value.GitHostsOpen = true
+				renderSettingsPage(w, r, http.StatusOK, value, database)
+				return
 			}
 
 			if r.FormValue("mcp_action") == "add" {
@@ -788,6 +849,12 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 					return
 				}
 			}
+			if gitSubmitted {
+				if err := kritui_db.ValidateGitHosts(submittedGitUpdates); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("Git host settings are invalid: %v.", err))
+					return
+				}
+			}
 
 			var ntfyUpdate *kritui_db.NtfySettingsUpdate
 			if ntfySubmitted {
@@ -870,6 +937,9 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			if mcpSubmitted {
 				update.MCPServers = submittedMCPUpdates
 			}
+			if gitSubmitted {
+				update.GitHosts = submittedGitUpdates
+			}
 			if err := kritui_db.SaveSettings(r.Context(), database, update); err != nil {
 				log.Printf("save settings: %v", err)
 				render(http.StatusInternalServerError, "Failed to save settings.")
@@ -878,6 +948,10 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			if mcpSubmitted {
 				page.MCPServers = mcpServersAfterSave(submittedMCPUpdates)
 				page.ClearMCPAuthorizationIDs = nil
+			}
+			if gitSubmitted {
+				page.GitHosts = gitHostsAfterSave(submittedGitUpdates)
+				page.ClearGitTokenIDs = nil
 			}
 			if llmSubmitted {
 				page.ClearLLMAPIKey = false
@@ -1395,6 +1469,116 @@ func newMCPServerID() (string, error) {
 		return "", err
 	}
 	return "mcp-" + hex.EncodeToString(value[:]), nil
+}
+
+func gitHostsFromForm(r *http.Request, stored []kritui_db.GitHost) ([]kritui_db.GitHostUpdate, error) {
+	storedByID := make(map[string]kritui_db.GitHost, len(stored))
+	for _, host := range stored {
+		storedByID[host.ID] = host
+	}
+	clearIDs := make(map[string]struct{}, len(r.Form["clear_git_token"]))
+	for _, id := range r.Form["clear_git_token"] {
+		id = strings.TrimSpace(id)
+		if err := kritui_db.ValidateGitHostID(id); err != nil {
+			return nil, err
+		}
+		clearIDs[id] = struct{}{}
+	}
+
+	ids := r.Form["git_host_id"]
+	updates := make([]kritui_db.GitHostUpdate, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if err := kritui_db.ValidateGitHostID(id); err != nil {
+			return updates, err
+		}
+		if _, ok := seen[id]; ok {
+			return updates, fmt.Errorf("Git host %q is duplicated", id)
+		}
+		seen[id] = struct{}{}
+		host := kritui_db.GitHost{
+			ID:       id,
+			Host:     r.FormValue("git_host_" + id),
+			Username: r.FormValue("git_username_" + id),
+		}
+		if previous, ok := storedByID[id]; ok {
+			host.TokenConfigured = previous.TokenConfigured
+		}
+		value := strings.TrimSpace(r.FormValue("git_token_" + id))
+		_, clear := clearIDs[id]
+		update := kritui_db.GitHostUpdate{Host: host}
+		switch {
+		case clear && value != "":
+			updates = append(updates, update)
+			return updates, fmt.Errorf("choose replacing or clearing token for %q, not both", host.Host)
+		case clear:
+			update.TokenChange = kritui_db.GitClearToken
+		case value != "":
+			update.TokenChange = kritui_db.GitReplaceToken
+			update.TokenValue = value
+			update.Host.TokenConfigured = true
+		}
+		updates = append(updates, update)
+	}
+	for id := range clearIDs {
+		if _, ok := seen[id]; !ok {
+			return updates, fmt.Errorf("unknown Git host token clear %q", id)
+		}
+	}
+	return updates, nil
+}
+
+func gitHostsFromUpdates(updates []kritui_db.GitHostUpdate) []kritui_db.GitHost {
+	hosts := make([]kritui_db.GitHost, 0, len(updates))
+	for _, update := range updates {
+		hosts = append(hosts, update.Host)
+	}
+	return hosts
+}
+
+func gitTokenClearIDs(updates []kritui_db.GitHostUpdate) []string {
+	ids := make([]string, 0, len(updates))
+	for _, update := range updates {
+		if update.TokenChange == kritui_db.GitClearToken {
+			ids = append(ids, update.Host.ID)
+		}
+	}
+	return ids
+}
+
+func gitHostsAfterSave(updates []kritui_db.GitHostUpdate) []kritui_db.GitHost {
+	hosts := make([]kritui_db.GitHost, 0, len(updates))
+	for _, update := range updates {
+		host := update.Host
+		switch update.TokenChange {
+		case kritui_db.GitClearToken:
+			host.TokenConfigured = false
+		case kritui_db.GitReplaceToken:
+			host.TokenConfigured = true
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts
+}
+
+func newGitHostID() (string, error) {
+	var value [8]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	return "git-" + hex.EncodeToString(value[:]), nil
+}
+
+func renderGitHostEditor(w http.ResponseWriter, r *http.Request, status int, host kritui_db.GitHost) {
+	var page bytes.Buffer
+	if err := templates.GitHostEditor(host, false).Render(r.Context(), &page); err != nil {
+		log.Printf("render Git host editor: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(page.Bytes())
 }
 
 func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data templates.SettingsPanelData, database *sql.DB) {

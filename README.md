@@ -31,6 +31,8 @@ The server reads environment variables directly and does not load `.env` itself.
 
 `LLM_ENDPOINT` must be a full `/responses`, `/chat/messages`, or `/chat/completions` URL. Kritui starts with that protocol for an unknown model. On HTTP 500, it tries the remaining protocols and stores the successful per-model preference for the account. `SEARXNG_URL` configures the server used by the optional `websearch` tool. The SearXNG instance must have the JSON response format enabled.
 
+The optional `git` capability clones HTTPS repositories into a persistent local mirror cache. In Settings, list the Git hosts the agent may clone and give each host its own token if it needs private access; add the account username when a host such as Forgejo or Gitea requires one. Tokens stay server-side, are encrypted in `data.db`, and are only passed to the Git child process when cloning or fetching that exact host. The agent can list branches and tags, inspect or search any branch, read history, and diff branches without seeing a token. The cache lives in `./git-cache` by default; set `KRITUI_GIT_CACHE_DIR` to move it. It is bounded per account and refreshed once per completion. Cached mirrors contain repository contents, so protect the cache directory and any backup that includes it.
+
 Kritui shows models.dev input-modality icons beside model names in the chat model picker and the Settings default-model and title-model pickers: text, image, PDF, audio, and video. Icons are right-aligned and gray, with accessible labels and tooltips. Provider `/models` metadata is always checked first; models.dev fills image/PDF fields the provider did not declare. If the provider model list fails or is empty, the pickers use models.dev provider models and show "Using models.dev fallback" beneath the list. Provider-reported usage cost and OpenCode list cost are authoritative; when a provider omits cost, Kritui estimates it from the catalog and shows the amount with a leading `~`. The public catalog is cached in `data.db` and refreshed in the background at most once per 6 hours. Set `MODELS_DEV=off` to disable catalog lookups, or `MODELS_DEV_URL` to use a mirror. Estimated costs are list prices, not negotiated prices or subscription charges.
 
 `KRITUI_SECURE_COOKIES=false` is only for direct local HTTP. Keep it set while launching or browsing at `http://localhost:8080`; use the default `true` whenever the app is served through HTTPS, including a TLS-terminating reverse proxy.
@@ -46,7 +48,7 @@ Open <http://localhost:8080> and sign in or create an account.
 
 ## Accounts
 
-Username and password login and open signup are available at `/login` and `/signup`. Each account has its own chats, history, attachments, undo state, settings, stored secrets, MCP servers and tokens, prompt appends, default tools, theme, and model protocol preferences. New accounts start from built-in defaults and never inherit another account's data or secrets. Completions, SSE streams, and private tool results are isolated per account.
+Username and password login and open signup are available at `/login` and `/signup`. Each account has its own chats, history, attachments, undo state, settings, stored secrets, MCP servers and tokens, Git hosts and tokens, prompt appends, default tools, theme, and model protocol preferences. New accounts start from built-in defaults and never inherit another account's data or secrets. Completions, SSE streams, and private tool results are isolated per account.
 
 On an existing database, legacy data stays attached to the Skrittle account (ID 1). Use the normal signup form once with the username Skrittle to set its password and claim the existing data. Usernames are case-insensitive. If Skrittle already has a password, sign in with it instead. Signing up with any other username creates a separate new account with built-in defaults; it does not receive the legacy data. There are no email flows, password reset, or account recovery yet. Multiple sessions may be active; logout revokes only the current session.
 
@@ -54,7 +56,7 @@ PWA assets remain public before login, and the manifest keeps its identity, star
 
 ## Data encryption
 
-Kritui requires `KRITUI_ENCRYPTION_KEY` at startup and encrypts stored content with AES-256-GCM from the Go standard library. Encrypted fields include chat titles, message text for every role, tool arguments and results, provider output, prompt append definitions and snapshots, attachment bytes and filenames, pending and receipted inbox text and attachments, stored LLM keys and endpoints, ntfy credentials, endpoints, and topics, and MCP bearer tokens and URLs. IDs, ownership, usernames, password and session hashes, timestamps, model and tool names, and attachment types and dimensions remain plaintext metadata.
+Kritui requires `KRITUI_ENCRYPTION_KEY` at startup and encrypts stored content with AES-256-GCM from the Go standard library. Encrypted fields include chat titles, message text for every role, tool arguments and results, provider output, prompt append definitions and snapshots, attachment bytes and filenames, pending and receipted inbox text and attachments, stored LLM keys and endpoints, ntfy credentials, endpoints, and topics, MCP bearer tokens and URLs, and Git hostnames and tokens. IDs, ownership, usernames, password and session hashes, timestamps, model and tool names, and attachment types and dimensions remain plaintext metadata.
 
 Existing plaintext fields are migrated atomically to encrypted envelopes when the app starts; text values use the `enc:v1:` prefix, while byte fields use a binary envelope. Each value uses a fresh 12-byte nonce, and authenticated data binds the field, owner, and stable row ID. A missing, wrong, or malformed key is rejected before the app mutates data, and the server does not fall back to plaintext. `secure_delete` and `VACUUM` remove logically freed plaintext pages from the database file.
 
@@ -85,7 +87,7 @@ docker run --rm \
 
 Keep `--env KRITUI_SECURE_COOKIES=false` for direct `http://localhost:8080`; omit it, or set `KRITUI_SECURE_COOKIES=true` in `.env`, when the app is served through HTTPS or a TLS-terminating reverse proxy. Open the app and create an account. On an existing database, sign up as Skrittle once to claim the legacy data as described above.
 
-The named volume persists the SQLite database. It does not contain `KRITUI_ENCRYPTION_KEY`; keep the key in `.env` or your secret manager and back it up separately. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`. It also includes isolated Git runtime files required by the optional Git tool capability.
+The named volume persists the SQLite database and the default `git-cache` directory. It does not contain `KRITUI_ENCRYPTION_KEY`; keep the key in `.env` or your secret manager and back it up separately. The image includes a private SearXNG service with JSON responses enabled and rate limiting disabled; the app is preconfigured to use it at `http://127.0.0.1:8081`. It also includes isolated Git runtime files required by the optional Git tool capability.
 
 ## Container Publishing
 
@@ -146,7 +148,7 @@ go vet ./...
 - `llm/`: non-streaming API client and tool-capable conversation loop
 - `commands/`: slash-command registry and built-ins
 - `tools/`: validated model-tool registry and web-tool implementations
-- `tools/git/`: read-only public Git repository inspection tools
+- `tools/git/`: persistent local Git mirror and branch-aware inspection tools
 - `db/`: SQLite schema and queries
 
 The server registers `webfetch` and `websearch`. Only tools selected in the chat options are exposed to the LLM for that request.

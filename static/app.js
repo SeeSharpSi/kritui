@@ -1622,7 +1622,7 @@ document.addEventListener('htmx:after:settle', (event) => {
     autoresizeAllMessageInputs(event.target);
     const settingsPage = document.querySelector('#settings-page');
     if (event.detail?.task?.target?.matches?.('#settings-page') && settingsPage?.querySelector('[data-settings-saved]')) {
-        const secretInputs = settingsPage.querySelectorAll('#ntfy-api-key, #llm-api-key, input[name^="mcp_authorization_"]');
+        const secretInputs = settingsPage.querySelectorAll('#ntfy-api-key, #llm-api-key, input[name^="mcp_authorization_"], input[name^="git_token_"]');
         secretInputs.forEach((input) => {
             input.value = '';
             input.disabled = false;

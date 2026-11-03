@@ -288,6 +288,29 @@ var storageMigrations = []storageMigration{
 		updateSQL: `UPDATE settings SET compaction_prompt = ? WHERE rowid = ?`,
 	},
 	{
+		name:  "git_hosts.host",
+		scope: "git_hosts.host",
+		kind:  storageFieldText,
+		selectSQL: `SELECT rowid, user_id, id, host
+			FROM git_hosts
+			WHERE rowid >= ?
+			ORDER BY rowid
+			LIMIT ?`,
+		updateSQL: `UPDATE git_hosts SET host = ? WHERE rowid = ?`,
+	},
+	{
+		name:               "git_hosts.token",
+		scope:              "git_hosts.token",
+		kind:               storageFieldText,
+		normalizeBlankNull: true,
+		selectSQL: `SELECT rowid, user_id, id, token
+			FROM git_hosts
+			WHERE rowid >= ? AND token IS NOT NULL
+			ORDER BY rowid
+			LIMIT ?`,
+		updateSQL: `UPDATE git_hosts SET token = ? WHERE rowid = ?`,
+	},
+	{
 		name:  "mcp_servers.name",
 		scope: "mcp_servers.name",
 		kind:  storageFieldText,

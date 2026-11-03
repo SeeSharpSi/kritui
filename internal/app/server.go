@@ -534,6 +534,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateSystemPromptSettings,
 	migrateCompactionPromptSettings,
 	migrateMessageUsageAndModelsDevCache,
+	migrateGitHosts,
 }
 
 // migrateStorageFormat31 reserves schema version 31 as the storage-format
@@ -601,6 +602,41 @@ func migrateCompactionPromptSettings(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	}
 	return addColumnIfMissing(ctx, tx, "settings", "compaction_prompt", `TEXT`)
+}
+
+// migrateGitHosts adds the per-account provider allowlist and its configured
+// flag. Existing accounts keep built-in public defaults until they save a
+// custom list. The table stores one optional username and token per allowed
+// host.
+func migrateGitHosts(ctx context.Context, tx *sql.Tx) error {
+	var tableCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'settings'
+	`).Scan(&tableCount); err != nil {
+		return fmt.Errorf("inspect settings table: %w", err)
+	}
+	if tableCount > 0 {
+		if err := addColumnIfMissing(ctx, tx, "settings", "git_hosts_configured",
+			`INTEGER NOT NULL DEFAULT 0 CHECK (git_hosts_configured IN (0, 1))`); err != nil {
+			return err
+		}
+	}
+	_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS git_hosts (
+		user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+		id TEXT NOT NULL CHECK (id <> ''),
+		position INTEGER NOT NULL CHECK (position >= 0),
+		host TEXT NOT NULL CHECK (host <> ''),
+		username TEXT,
+		token TEXT,
+		PRIMARY KEY (user_id, id),
+		UNIQUE (user_id, position)
+	) STRICT`)
+	if err != nil {
+		return err
+	}
+	return addColumnIfMissing(ctx, tx, "git_hosts", "username", `TEXT`)
 }
 
 // migrateMessageUsageAndModelsDevCache records detailed provider token usage,

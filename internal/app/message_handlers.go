@@ -667,7 +667,20 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 	completionContext := ctx
 	var gitSession *git.GitSession
 	if request.selected.HasCapability("git") {
-		gitSession = git.NewGitSession()
+		configs, err := kritui_db.GetGitHostConfigs(ctx, database)
+		if err != nil {
+			log.Printf("get git host configs: %v", err)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load Git settings.", request.model, selectedTools))
+			return
+		}
+		hosts := make([]git.HostConfig, 0, len(configs))
+		for _, config := range configs {
+			hosts = append(hosts, git.HostConfig{Host: config.Host, Username: config.Username, Token: config.Token})
+		}
+		gitSession = git.NewGitSession(git.SessionConfig{
+			UserID: kritui_db.UserID(ctx),
+			Hosts:  hosts,
+		})
 		defer func() {
 			if err := gitSession.Close(); err != nil {
 				log.Printf("clean git session: %v", err)

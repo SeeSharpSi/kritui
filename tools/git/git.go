@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"unicode"
 
 	"seesharpsi/kritui/tools"
 )
@@ -16,31 +15,30 @@ import (
 const (
 	gitCapability = "git"
 
-	gitTreeDescription = `Lists a public Git repository as a compact Unix-style tree.
-Use a path to inspect one directory and recursive only when descendants are needed. Repeated calls with the same URL and ref share one snapshot during the current response.`
+	gitTreeDescription = `Lists a Git repository as a compact Unicode tree.
+Use path to inspect one directory. depth controls how many directory levels are expanded (1-5). Inspect any branch or tag with ref, or a commit returned by git_log with revision. If a path is a file, use git_read instead.`
 	gitTreeParameters = `{
   "type": "object",
   "properties": {
-    "url": {"type": "string", "description": "Public GitHub, GitLab, or Bitbucket HTTPS repository URL"},
+    "url": {"type": "string", "description": "Allowed HTTPS repository URL"},
     "ref": {"type": "string", "description": "Optional branch or tag"},
-    "revision": {"type": "string", "description": "Optional commit hash from git_log; defaults to selected ref"},
+    "revision": {"type": "string", "description": "Optional 7-40 character commit hash from git_log"},
     "path": {"type": "string", "description": "Optional repository-relative directory"},
-    "recursive": {"type": "boolean", "default": false, "description": "Include descendants"},
-    "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Entries to skip"},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100, "description": "Maximum source entries"}
+    "depth": {"type": "integer", "minimum": 1, "maximum": 5, "default": 1, "description": "Directory levels to expand"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200, "description": "Maximum tree entries"}
   },
   "required": ["url"],
   "additionalProperties": false
 }`
 
-	gitReadDescription = `Reads lines from one tracked text file in a public Git repository.
-Output is numbered plain text. Use offset and limit to page; use revision to read an older version returned by git_log.`
+	gitReadDescription = `Reads numbered lines from one tracked text file in a Git repository.
+Use offset and limit to page. Use ref for a branch or tag, or revision for an older commit from git_log. Binary files are rejected.`
 	gitReadParameters = `{
   "type": "object",
   "properties": {
-    "url": {"type": "string", "description": "Public GitHub, GitLab, or Bitbucket HTTPS repository URL"},
+    "url": {"type": "string", "description": "Allowed HTTPS repository URL"},
     "ref": {"type": "string", "description": "Optional branch or tag"},
-    "revision": {"type": "string", "description": "Optional commit hash from git_log; defaults to selected ref"},
+    "revision": {"type": "string", "description": "Optional 7-40 character commit hash from git_log"},
     "path": {"type": "string", "description": "Repository-relative file path"},
     "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Lines to skip"},
     "limit": {"type": "integer", "minimum": 1, "maximum": 400, "default": 200, "description": "Maximum lines"}
@@ -49,14 +47,14 @@ Output is numbered plain text. Use offset and limit to page; use revision to rea
   "additionalProperties": false
 }`
 
-	gitSearchDescription = `Searches tracked text files in a public Git repository.
+	gitSearchDescription = `Searches tracked text files in a Git repository.
 Returns compact grep-style path:line:text matches. Matching is literal by default; enable regex only when needed. Use path to narrow scope before increasing limit.`
 	gitSearchParameters = `{
   "type": "object",
   "properties": {
-    "url": {"type": "string", "description": "Public GitHub, GitLab, or Bitbucket HTTPS repository URL"},
+    "url": {"type": "string", "description": "Allowed HTTPS repository URL"},
     "ref": {"type": "string", "description": "Optional branch or tag"},
-    "revision": {"type": "string", "description": "Optional commit hash from git_log; defaults to selected ref"},
+    "revision": {"type": "string", "description": "Optional 7-40 character commit hash from git_log"},
     "query": {"type": "string", "description": "Text or extended regular expression to find"},
     "path": {"type": "string", "description": "Optional repository-relative search scope"},
     "regex": {"type": "boolean", "default": false, "description": "Interpret query as an extended regular expression"},
@@ -68,14 +66,14 @@ Returns compact grep-style path:line:text matches. Matching is literal by defaul
   "additionalProperties": false
 }`
 
-	gitLogDescription = `Shows compact commit history for a public Git repository.
-Returns hash, timestamp, author, and subject per line. Use path to inspect history relevant to one file or directory.`
+	gitLogDescription = `Shows compact commit history for a Git repository.
+Returns hash, author date, author, and subject per line. Use path to inspect history relevant to one file or directory. Use ref to inspect another branch or tag.`
 	gitLogParameters = `{
   "type": "object",
   "properties": {
-    "url": {"type": "string", "description": "Public GitHub, GitLab, or Bitbucket HTTPS repository URL"},
+    "url": {"type": "string", "description": "Allowed HTTPS repository URL"},
     "ref": {"type": "string", "description": "Optional branch or tag"},
-    "revision": {"type": "string", "description": "Optional commit hash at which history starts"},
+    "revision": {"type": "string", "description": "Optional 7-40 character commit hash at which history starts"},
     "path": {"type": "string", "description": "Optional repository-relative file or directory"},
     "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Commits to skip"},
     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20, "description": "Maximum commits"}
@@ -84,20 +82,34 @@ Returns hash, timestamp, author, and subject per line. Use path to inspect histo
   "additionalProperties": false
 }`
 
-	gitDiffDescription = `Shows a compact unified diff between commits in a public Git repository.
-Use hashes returned by git_log. Target defaults to the selected ref. Use path to limit output before paging a large diff.`
+	gitDiffDescription = `Shows a unified diff between two commits, branches, or tags in a Git repository.
+base and target each accept a 7-40 character commit hash or a valid branch/tag name. target defaults to ref, then HEAD. Use path to limit output before paging a large diff.`
 	gitDiffParameters = `{
   "type": "object",
   "properties": {
-    "url": {"type": "string", "description": "Public GitHub, GitLab, or Bitbucket HTTPS repository URL"},
-    "ref": {"type": "string", "description": "Optional branch or tag"},
-    "base": {"type": "string", "description": "Base commit hash from git_log"},
-    "target": {"type": "string", "description": "Optional target commit hash from git_log; defaults to selected ref"},
+    "url": {"type": "string", "description": "Allowed HTTPS repository URL"},
+    "ref": {"type": "string", "description": "Optional branch or tag; also the default target"},
+    "base": {"type": "string", "description": "Base commit hash, branch, or tag"},
+    "target": {"type": "string", "description": "Optional target commit hash, branch, or tag; defaults to ref or HEAD"},
     "path": {"type": "string", "description": "Optional repository-relative file or directory"},
     "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Diff lines to skip"},
     "limit": {"type": "integer", "minimum": 1, "maximum": 400, "default": 200, "description": "Maximum diff lines"}
   },
   "required": ["url", "base"],
+  "additionalProperties": false
+}`
+
+	gitBranchesDescription = `Lists branches in a Git repository, most recent commit first.
+The clone default branch is marked with "* ". Set include_tags to append tags in tagged-commit date order. Use offset and limit to page.`
+	gitBranchesParameters = `{
+  "type": "object",
+  "properties": {
+    "url": {"type": "string", "description": "Allowed HTTPS repository URL"},
+    "include_tags": {"type": "boolean", "default": false, "description": "Append tags after branches"},
+    "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Entries to skip"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100, "description": "Maximum entries"}
+  },
+  "required": ["url"],
   "additionalProperties": false
 }`
 )
@@ -110,6 +122,7 @@ const (
 	gitSearchOperation
 	gitLogOperation
 	gitDiffOperation
+	gitBranchesOperation
 )
 
 type gitTool struct {
@@ -118,17 +131,14 @@ type gitTool struct {
 }
 
 type gitTreeArguments struct {
-	URL       string `json:"url"`
-	Ref       string `json:"ref"`
-	Revision  string `json:"revision"`
-	Path      string `json:"path"`
-	Recursive *bool  `json:"recursive"`
-	Offset    *int   `json:"offset"`
-	Limit     *int   `json:"limit"`
+	URL      string `json:"url"`
+	Ref      string `json:"ref"`
+	Revision string `json:"revision"`
+	Path     string `json:"path"`
+	Depth    *int   `json:"depth"`
+	Limit    *int   `json:"limit"`
 }
 
-// gitPathPageArguments is the shared wire shape of git_read and git_log:
-// an optional ref/revision, a repository-relative path, and paging bounds.
 type gitPathPageArguments struct {
 	URL      string `json:"url"`
 	Ref      string `json:"ref"`
@@ -160,17 +170,28 @@ type gitDiffArguments struct {
 	Limit  *int   `json:"limit"`
 }
 
-// NewGitTools creates focused, read-only public repository inspection tools.
-// They share clones through a GitSession and appear as one selectable git
-// capability.
+type gitBranchesArguments struct {
+	URL         string `json:"url"`
+	IncludeTags *bool  `json:"include_tags"`
+	Offset      *int   `json:"offset"`
+	Limit       *int   `json:"limit"`
+}
+
+// NewGitTools creates focused, read-only repository inspection tools. They
+// share one runtime and persistent per-account mirror cache and appear as one
+// selectable git capability.
 func NewGitTools() []tools.Tool {
-	runtime := newGitRuntime()
+	return newGitToolsWithRuntime(newGitRuntime())
+}
+
+func newGitToolsWithRuntime(runtime *gitRuntime) []tools.Tool {
 	return []tools.Tool{
 		&gitTool{runtime: runtime, operation: gitTreeOperation},
 		&gitTool{runtime: runtime, operation: gitReadOperation},
 		&gitTool{runtime: runtime, operation: gitSearchOperation},
 		&gitTool{runtime: runtime, operation: gitLogOperation},
 		&gitTool{runtime: runtime, operation: gitDiffOperation},
+		&gitTool{runtime: runtime, operation: gitBranchesOperation},
 	}
 }
 
@@ -190,26 +211,36 @@ func (t *gitTool) Definition() tools.Definition {
 		return tools.Definition{Name: "git_log", Description: gitLogDescription, Parameters: json.RawMessage(gitLogParameters)}
 	case gitDiffOperation:
 		return tools.Definition{Name: "git_diff", Description: gitDiffDescription, Parameters: json.RawMessage(gitDiffParameters)}
+	case gitBranchesOperation:
+		return tools.Definition{Name: "git_branches", Description: gitBranchesDescription, Parameters: json.RawMessage(gitBranchesParameters)}
 	default:
 		panic("unknown git operation")
 	}
 }
 
 func (t *gitTool) Execute(ctx context.Context, arguments json.RawMessage) (string, error) {
+	var result string
+	var err error
 	switch t.operation {
 	case gitTreeOperation:
-		return t.executeTree(ctx, arguments)
+		result, err = t.executeTree(ctx, arguments)
 	case gitReadOperation:
-		return t.executeRead(ctx, arguments)
+		result, err = t.executeRead(ctx, arguments)
 	case gitSearchOperation:
-		return t.executeSearch(ctx, arguments)
+		result, err = t.executeSearch(ctx, arguments)
 	case gitLogOperation:
-		return t.executeLog(ctx, arguments)
+		result, err = t.executeLog(ctx, arguments)
 	case gitDiffOperation:
-		return t.executeDiff(ctx, arguments)
+		result, err = t.executeDiff(ctx, arguments)
+	case gitBranchesOperation:
+		result, err = t.executeBranches(ctx, arguments)
 	default:
-		return "", errors.New("git: unsupported operation")
+		err = errors.New("git: unsupported operation")
 	}
+	if err != nil {
+		return "", prefixGitError(err)
+	}
+	return result, nil
 }
 
 func (t *gitTool) executeTree(ctx context.Context, arguments json.RawMessage) (string, error) {
@@ -225,18 +256,25 @@ func (t *gitTool) executeTree(ctx context.Context, arguments json.RawMessage) (s
 	if err != nil {
 		return "", err
 	}
+	ref, err := optionalGitRef(params.Ref)
+	if err != nil {
+		return "", err
+	}
 	revision, err := optionalGitRevision(params.Revision)
 	if err != nil {
 		return "", err
 	}
-	offset, limit, err := gitPage(params.Offset, params.Limit, 100, 500)
+	depth, err := gitTreeDepth(params.Depth)
 	if err != nil {
 		return "", err
 	}
-	recursive := params.Recursive != nil && *params.Recursive
+	_, limit, err := gitPage(nil, params.Limit, 200, 500)
+	if err != nil {
+		return "", err
+	}
 
-	return t.runtime.withRepository(ctx, url, params.Ref, func(repository *gitRepository) (string, error) {
-		return gitTree(ctx, repository, revision, repositoryPath, recursive, offset, limit, gitMaxResultBytes)
+	return t.runtime.withRepository(ctx, url, func(repository *gitRepository) (string, error) {
+		return gitTree(ctx, repository, ref, revision, repositoryPath, depth, limit, gitMaxResultBytes)
 	})
 }
 
@@ -253,6 +291,10 @@ func (t *gitTool) executeRead(ctx context.Context, arguments json.RawMessage) (s
 	if err != nil {
 		return "", err
 	}
+	ref, err := optionalGitRef(params.Ref)
+	if err != nil {
+		return "", err
+	}
 	revision, err := optionalGitRevision(params.Revision)
 	if err != nil {
 		return "", err
@@ -262,8 +304,8 @@ func (t *gitTool) executeRead(ctx context.Context, arguments json.RawMessage) (s
 		return "", err
 	}
 
-	return t.runtime.withRepository(ctx, url, params.Ref, func(repository *gitRepository) (string, error) {
-		return gitRead(ctx, repository, revision, repositoryPath, offset, limit, gitMaxResultBytes)
+	return t.runtime.withRepository(ctx, url, func(repository *gitRepository) (string, error) {
+		return gitRead(ctx, repository, ref, revision, repositoryPath, offset, limit, gitMaxResultBytes)
 	})
 }
 
@@ -289,6 +331,10 @@ func (t *gitTool) executeSearch(ctx context.Context, arguments json.RawMessage) 
 	if err != nil {
 		return "", err
 	}
+	ref, err := optionalGitRef(params.Ref)
+	if err != nil {
+		return "", err
+	}
 	revision, err := optionalGitRevision(params.Revision)
 	if err != nil {
 		return "", err
@@ -300,8 +346,8 @@ func (t *gitTool) executeSearch(ctx context.Context, arguments json.RawMessage) 
 	regex := params.Regex != nil && *params.Regex
 	caseSensitive := params.CaseSensitive != nil && *params.CaseSensitive
 
-	return t.runtime.withRepository(ctx, url, params.Ref, func(repository *gitRepository) (string, error) {
-		return gitSearch(ctx, repository, revision, params.Query, repositoryPath, regex, caseSensitive, offset, limit, gitMaxResultBytes)
+	return t.runtime.withRepository(ctx, url, func(repository *gitRepository) (string, error) {
+		return gitSearch(ctx, repository, ref, revision, params.Query, repositoryPath, regex, caseSensitive, offset, limit, gitMaxResultBytes)
 	})
 }
 
@@ -318,6 +364,10 @@ func (t *gitTool) executeLog(ctx context.Context, arguments json.RawMessage) (st
 	if err != nil {
 		return "", err
 	}
+	ref, err := optionalGitRef(params.Ref)
+	if err != nil {
+		return "", err
+	}
 	revision, err := optionalGitRevision(params.Revision)
 	if err != nil {
 		return "", err
@@ -327,8 +377,8 @@ func (t *gitTool) executeLog(ctx context.Context, arguments json.RawMessage) (st
 		return "", err
 	}
 
-	return t.runtime.withRepository(ctx, url, params.Ref, func(repository *gitRepository) (string, error) {
-		return gitLog(ctx, repository, revision, repositoryPath, offset, limit, gitMaxResultBytes)
+	return t.runtime.withRepository(ctx, url, func(repository *gitRepository) (string, error) {
+		return gitLog(ctx, repository, ref, revision, repositoryPath, offset, limit, gitMaxResultBytes)
 	})
 }
 
@@ -341,13 +391,17 @@ func (t *gitTool) executeDiff(ctx context.Context, arguments json.RawMessage) (s
 	if err != nil {
 		return "", err
 	}
-	base, err := requiredGitRevision(params.Base, "base")
+	ref, err := optionalGitRef(params.Ref)
 	if err != nil {
 		return "", err
 	}
-	target, err := optionalGitRevision(params.Target)
+	base, err := requiredGitCommitish(params.Base, "base")
 	if err != nil {
-		return "", fmt.Errorf("git: target: %w", err)
+		return "", err
+	}
+	target, err := optionalGitCommitish(params.Target, "target")
+	if err != nil {
+		return "", err
 	}
 	repositoryPath, err := optionalGitPath(params.Path)
 	if err != nil {
@@ -358,8 +412,28 @@ func (t *gitTool) executeDiff(ctx context.Context, arguments json.RawMessage) (s
 		return "", err
 	}
 
-	return t.runtime.withRepository(ctx, url, params.Ref, func(repository *gitRepository) (string, error) {
-		return gitDiff(ctx, repository, base, target, repositoryPath, offset, limit, gitMaxResultBytes)
+	return t.runtime.withRepository(ctx, url, func(repository *gitRepository) (string, error) {
+		return gitDiff(ctx, repository, ref, base, target, repositoryPath, offset, limit, gitMaxResultBytes)
+	})
+}
+
+func (t *gitTool) executeBranches(ctx context.Context, arguments json.RawMessage) (string, error) {
+	var params gitBranchesArguments
+	if err := decodeGitArguments(arguments, &params); err != nil {
+		return "", err
+	}
+	url, err := requiredGitURL(params.URL)
+	if err != nil {
+		return "", err
+	}
+	offset, limit, err := gitPage(params.Offset, params.Limit, 100, 500)
+	if err != nil {
+		return "", err
+	}
+	includeTags := params.IncludeTags != nil && *params.IncludeTags
+
+	return t.runtime.withRepository(ctx, url, func(repository *gitRepository) (string, error) {
+		return gitBranches(ctx, repository, includeTags, offset, limit, gitMaxResultBytes)
 	})
 }
 
@@ -389,7 +463,21 @@ func requiredGitURL(value string) (string, error) {
 	if strings.TrimSpace(value) == "" {
 		return "", errors.New("git: url is required")
 	}
-	return validateGitURL(value)
+	if err := validateGitURL(value); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func optionalGitRef(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if err := validateGitRef(value); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func optionalGitRevision(value string) (string, error) {
@@ -403,19 +491,40 @@ func optionalGitRevision(value string) (string, error) {
 	return strings.ToLower(value), nil
 }
 
-func requiredGitRevision(value, name string) (string, error) {
-	revision, err := optionalGitRevision(value)
-	if err != nil {
-		return "", fmt.Errorf("git: %s: %w", name, err)
-	}
-	if revision == "" {
+func requiredGitCommitish(value, name string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return "", fmt.Errorf("git: %s is required", name)
 	}
-	return revision, nil
+	if err := validateGitCommitish(value, name); err != nil {
+		return "", err
+	}
+	if isHexCommit(value, 7, 40) {
+		return strings.ToLower(value), nil
+	}
+	return value, nil
 }
 
-func hasUnsafeGitControl(value string) bool {
-	return strings.IndexFunc(value, func(character rune) bool {
-		return character == 0 || character == '\n' || character == '\r' || unicode.IsControl(character)
-	}) >= 0
+func optionalGitCommitish(value, name string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if err := validateGitCommitish(value, name); err != nil {
+		return "", err
+	}
+	if isHexCommit(value, 7, 40) {
+		return strings.ToLower(value), nil
+	}
+	return value, nil
+}
+
+func prefixGitError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.HasPrefix(err.Error(), "git:") {
+		return err
+	}
+	return fmt.Errorf("git: %w", err)
 }

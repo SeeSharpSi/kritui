@@ -4,4 +4,5 @@ templ/*_templ.go
 run.sh
 data.db*
 tmp/
+git-cache/
 opencode.json

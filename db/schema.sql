@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS settings (
     max_tool_rounds INTEGER CHECK (max_tool_rounds IS NULL OR max_tool_rounds BETWEEN 1 AND 100),
     default_tools_configured INTEGER NOT NULL DEFAULT 0 CHECK (default_tools_configured IN (0, 1)),
     prompt_appends_configured INTEGER NOT NULL DEFAULT 0 CHECK (prompt_appends_configured IN (0, 1)),
+    git_hosts_configured INTEGER NOT NULL DEFAULT 0 CHECK (git_hosts_configured IN (0, 1)),
     ntfy_endpoint TEXT,
     ntfy_topic TEXT,
     ntfy_api_key TEXT,
@@ -83,6 +84,17 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     name TEXT NOT NULL CHECK (name <> ''),
     url TEXT NOT NULL CHECK (url <> ''),
     authorization_token TEXT,
+    PRIMARY KEY (user_id, id),
+    UNIQUE (user_id, position)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS git_hosts (
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+    id TEXT NOT NULL CHECK (id <> ''),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    host TEXT NOT NULL CHECK (host <> ''),
+    username TEXT,
+    token TEXT,
     PRIMARY KEY (user_id, id),
     UNIQUE (user_id, position)
 ) STRICT;
@@ -330,4 +342,4 @@ CREATE TABLE IF NOT EXISTS models_dev_cache (
     payload BLOB NOT NULL
 ) STRICT;
 
-PRAGMA user_version = 35;
+PRAGMA user_version = 36;

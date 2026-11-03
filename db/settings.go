@@ -69,15 +69,16 @@ type settingWriter interface {
 }
 
 // SettingsUpdate describes the desired settings for one atomic save.
-// Nil PromptAppends, MCPServers, Ntfy, LLM, ToolResultElision, TitleGeneration,
-// SystemPrompt, or CompactionPrompt values, and an empty Theme, leave those
-// settings untouched.
+// Nil PromptAppends, MCPServers, GitHosts, Ntfy, LLM, ToolResultElision,
+// TitleGeneration, SystemPrompt, or CompactionPrompt values, and an empty
+// Theme, leave those settings untouched.
 type SettingsUpdate struct {
 	Model             string
 	MaxToolRounds     int
 	DefaultTools      []string
 	PromptAppends     []PromptAppend
 	MCPServers        []MCPServerUpdate
+	GitHosts          []GitHostUpdate
 	Ntfy              *NtfySettingsUpdate
 	LLM               *LLMSettingsUpdate
 	ToolResultElision *llm.ToolResultElisionConfig
@@ -199,6 +200,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 	}
 	if update.MCPServers != nil {
 		if err := setMCPServers(ctx, tx, update.MCPServers); err != nil {
+			return err
+		}
+	}
+	if update.GitHosts != nil {
+		if err := setGitHosts(ctx, tx, update.GitHosts); err != nil {
 			return err
 		}
 	}

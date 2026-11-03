@@ -7,10 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+)
+
+const (
+	gitTreeTruncation = "[truncated; use a narrower path, lower depth, or larger limit]"
+	gitTreeEmpty      = "(empty)"
 )
 
 type gitTreeEntry struct {
@@ -19,10 +25,10 @@ type gitTreeEntry struct {
 }
 
 type gitTreeNode struct {
-	name       string
-	objectType string
-	children   []*gitTreeNode
-	byName     map[string]*gitTreeNode
+	name     string
+	isDir    bool
+	expanded bool
+	children []*gitTreeNode
 }
 
 type gitSearchMatch struct {
@@ -31,40 +37,112 @@ type gitSearchMatch struct {
 	text string
 }
 
-func gitTree(ctx context.Context, repository *gitRepository, revision, repositoryPath string, recursive bool, offset, limit, maxOutput int) (string, error) {
-	commit, err := resolveGitCommit(ctx, repository, revision)
+type gitBranchEntry struct {
+	name          string
+	hash          string
+	date          string
+	subject       string
+	timestamp     int64
+	defaultBranch bool
+}
+
+func gitTree(ctx context.Context, repository *gitRepository, ref, revision, repositoryPath string, depth, limit, maxOutput int) (string, error) {
+	commit, err := resolveGitCommit(ctx, repository, ref, revision)
 	if err != nil {
 		return "", err
 	}
-	treeish := commit
 	if repositoryPath != "" {
-		treeish += ":" + repositoryPath
+		objectType, err := gitObjectType(ctx, repository, commit+":"+repositoryPath)
+		if err != nil {
+			return "", fmt.Errorf("git: path %q is not available at %s", printableGitPath(repositoryPath), shortGitCommit(commit))
+		}
+		if objectType != "tree" {
+			return "", fmt.Errorf("git: path %q is a file; use git_read", printableGitPath(repositoryPath))
+		}
 	}
-	args := []string{"ls-tree", "-z"}
-	if recursive {
-		args = append(args, "-r", "-t")
-	}
-	args = append(args, treeish)
 
-	entries := make([]gitTreeEntry, 0, min(limit+1, 501))
-	skipped := 0
+	remaining := limit
+	truncated := false
+	children, more, err := buildGitTree(ctx, repository, commit, repositoryPath, 1, depth, &remaining)
+	if err != nil {
+		return "", err
+	}
+	truncated = more
+	rootLabel := "."
+	if repositoryPath != "" {
+		rootLabel = printableGitPath(repositoryPath) + "/"
+	}
+	rootLabel += " @ " + shortGitCommit(commit)
+	result, formattedTruncated := formatGitTree(rootLabel, children, maxOutput)
+	if formattedTruncated {
+		truncated = true
+	}
+	if truncated {
+		result += "\n" + gitTreeTruncation
+	}
+	if len(result) > maxOutput {
+		return "", errors.New("git: result exceeded output limit")
+	}
+	return result, nil
+}
+
+func buildGitTree(ctx context.Context, repository *gitRepository, commit, treePath string, level, maxDepth int, remaining *int) ([]*gitTreeNode, bool, error) {
+	entries, listMore, err := listGitTreeEntries(ctx, repository, commit, treePath, *remaining+1)
+	if err != nil {
+		return nil, false, err
+	}
+	nodes := make([]*gitTreeNode, 0, min(len(entries), *remaining))
+	truncated := listMore
+	for _, entry := range entries {
+		if *remaining <= 0 {
+			truncated = true
+			break
+		}
+		*remaining--
+		node := &gitTreeNode{
+			name:  entry.name,
+			isDir: entry.objectType == "tree",
+		}
+		if node.isDir && level < maxDepth && *remaining > 0 {
+			childPath := joinGitTreePath(treePath, entry.name)
+			children, childMore, err := buildGitTree(ctx, repository, commit, childPath, level+1, maxDepth, remaining)
+			if err != nil {
+				return nil, false, err
+			}
+			node.expanded = true
+			node.children = children
+			if childMore {
+				truncated = true
+			}
+		} else if node.isDir && level < maxDepth {
+			truncated = true
+		}
+		nodes = append(nodes, node)
+	}
+	return nodes, truncated, nil
+}
+
+func listGitTreeEntries(ctx context.Context, repository *gitRepository, commit, treePath string, maximum int) ([]gitTreeEntry, bool, error) {
+	treeish := commit
+	if treePath != "" {
+		treeish += ":" + treePath
+	}
+	entries := make([]gitTreeEntry, 0, min(maximum, 64))
+	more := false
 	consume := func(reader io.Reader) (bool, error) {
 		scanner := bufio.NewScanner(reader)
 		scanner.Split(splitGitNUL)
 		scanner.Buffer(make([]byte, 4096), gitMaxPathLength+256)
 		for scanner.Scan() {
+			if len(entries) >= maximum {
+				more = true
+				return true, nil
+			}
 			entry, err := parseGitTreeEntry(scanner.Bytes())
 			if err != nil {
 				return false, err
 			}
-			if skipped < offset {
-				skipped++
-				continue
-			}
 			entries = append(entries, entry)
-			if len(entries) > limit {
-				return true, nil
-			}
 		}
 		if err := scanner.Err(); err != nil {
 			return false, fmt.Errorf("git: read tree: %w", err)
@@ -72,62 +150,93 @@ func gitTree(ctx context.Context, repository *gitRepository, revision, repositor
 		return false, nil
 	}
 	if err := runGitCommand(ctx, gitCommandOptions{
-		directory:    repository.directory,
-		resourceRoot: repository.root,
-		timeout:      gitOperationTimeout,
-	}, consume, args...); err != nil {
-		return "", fmt.Errorf("git: list tree: %w", err)
+		directory: repository.directory,
+		timeout:   gitOperationTimeout,
+		secrets:   repository.secrets,
+	}, consume, "ls-tree", "-z", treeish); err != nil {
+		return nil, false, fmt.Errorf("git: list tree: %w", err)
 	}
-
-	truncated := len(entries) > limit
-	if truncated {
-		entries = entries[:limit]
-	}
-	rootLabel := "."
-	if repositoryPath != "" {
-		rootLabel = printableGitPath(repositoryPath) + "/"
-	}
-	rootLabel += " @ " + shortGitCommit(commit)
-	if len(entries) == 0 && offset > 0 {
-		return fmt.Sprintf("%s\n(no entries at offset %d)", rootLabel, offset), nil
-	}
-
-	low, high := 0, len(entries)
-	best := rootLabel + "\n(empty)"
-	bestCount := 0
-	for low <= high {
-		count := low + (high-low)/2
-		formatted := formatGitTree(rootLabel, entries[:count])
-		reserve := 0
-		if count < len(entries) || truncated {
-			reserve = 64
-		}
-		if len(formatted)+reserve <= maxOutput {
-			best = formatted
-			bestCount = count
-			low = count + 1
-		} else {
-			high = count - 1
-		}
-	}
-	if bestCount < len(entries) {
-		truncated = true
-	}
-	if truncated {
-		var output strings.Builder
-		output.WriteString(best)
-		output.WriteByte('\n')
-		appendGitTruncation(&output, offset+bestCount)
-		return strings.TrimRight(output.String(), "\n"), nil
-	}
-	return best, nil
+	return entries, more, nil
 }
 
-func gitRead(ctx context.Context, repository *gitRepository, revision, repositoryPath string, offset, limit, maxOutput int) (string, error) {
-	commit, err := resolveGitCommit(ctx, repository, revision)
+func formatGitTree(rootLabel string, children []*gitTreeNode, maxOutput int) (string, bool) {
+	var output strings.Builder
+	output.WriteString(rootLabel)
+	output.WriteByte('\n')
+	budget := maxOutput - len(gitTreeTruncation) - 1
+	truncated := false
+	if len(children) == 0 {
+		output.WriteString(gitTreeEmpty)
+		return output.String(), false
+	}
+	writeGitTreeNodes(&output, children, "", budget, &truncated)
+	result := strings.TrimRight(output.String(), "\n")
+	return result, truncated
+}
+
+func writeGitTreeNodes(output *strings.Builder, nodes []*gitTreeNode, prefix string, budget int, truncated *bool) {
+	for index, node := range nodes {
+		if output.Len() >= budget {
+			*truncated = true
+			return
+		}
+		last := index == len(nodes)-1
+		connector := "├── "
+		childPrefix := prefix + "│   "
+		if last {
+			connector = "└── "
+			childPrefix = prefix + "    "
+		}
+		line := prefix + connector + printableGitTreeName(node.name)
+		if node.isDir {
+			line += "/"
+		}
+		if output.Len()+len(line)+1 > budget {
+			*truncated = true
+			return
+		}
+		output.WriteString(line)
+		output.WriteByte('\n')
+		if !node.isDir {
+			continue
+		}
+		if node.expanded && len(node.children) == 0 {
+			emptyLine := childPrefix + gitTreeEmpty
+			if output.Len()+len(emptyLine)+1 > budget {
+				*truncated = true
+				return
+			}
+			output.WriteString(emptyLine)
+			output.WriteByte('\n')
+			continue
+		}
+		writeGitTreeNodes(output, node.children, childPrefix, budget, truncated)
+	}
+}
+
+func joinGitTreePath(parent, name string) string {
+	if parent == "" {
+		return name
+	}
+	return parent + "/" + name
+}
+
+func gitRead(ctx context.Context, repository *gitRepository, ref, revision, repositoryPath string, offset, limit, maxOutput int) (string, error) {
+	commit, err := resolveGitCommit(ctx, repository, ref, revision)
 	if err != nil {
 		return "", err
 	}
+	objectType, err := gitObjectType(ctx, repository, commit+":"+repositoryPath)
+	if err != nil {
+		return "", fmt.Errorf("git: path %q is not available at %s", printableGitPath(repositoryPath), shortGitCommit(commit))
+	}
+	if objectType == "tree" {
+		return "", fmt.Errorf("git: path %q is a directory; use git_tree", printableGitPath(repositoryPath))
+	}
+	if objectType != "blob" {
+		return "", fmt.Errorf("git: path %q is not a file", printableGitPath(repositoryPath))
+	}
+
 	header := fmt.Sprintf("%s @ %s", printableGitPath(repositoryPath), shortGitCommit(commit))
 	var body strings.Builder
 	lineNumber := 0
@@ -135,7 +244,7 @@ func gitRead(ctx context.Context, repository *gitRepository, revision, repositor
 	truncated := false
 	consume := func(reader io.Reader) (bool, error) {
 		scanner := bufio.NewScanner(reader)
-		scanner.Buffer(make([]byte, 64*1024), gitMaxInputLineBytes)
+		scanner.Buffer(make([]byte, 64*1024), gitMaxInputLine)
 		for scanner.Scan() {
 			lineNumber++
 			lineBytes := scanner.Bytes()
@@ -159,16 +268,16 @@ func gitRead(ctx context.Context, repository *gitRepository, revision, repositor
 			displayed++
 		}
 		if err := scanner.Err(); err != nil {
-			return false, fmt.Errorf("git: source line exceeds %d bytes", gitMaxInputLineBytes)
+			return false, fmt.Errorf("git: source line exceeds %d bytes", gitMaxInputLine)
 		}
 		return false, nil
 	}
 	if err := runGitCommand(ctx, gitCommandOptions{
-		directory:    repository.directory,
-		resourceRoot: repository.root,
-		timeout:      gitOperationTimeout,
+		directory: repository.directory,
+		timeout:   gitOperationTimeout,
+		secrets:   repository.secrets,
 	}, consume, "cat-file", "blob", commit+":"+repositoryPath); err != nil {
-		return "", fmt.Errorf("git: read %q: %w", repositoryPath, err)
+		return "", fmt.Errorf("git: read %q: %w", printableGitPath(repositoryPath), err)
 	}
 
 	var output strings.Builder
@@ -189,8 +298,8 @@ func gitRead(ctx context.Context, repository *gitRepository, revision, repositor
 	return strings.TrimRight(output.String(), "\n"), nil
 }
 
-func gitSearch(ctx context.Context, repository *gitRepository, revision, query, repositoryPath string, regex, caseSensitive bool, offset, limit, maxOutput int) (string, error) {
-	commit, err := resolveGitCommit(ctx, repository, revision)
+func gitSearch(ctx context.Context, repository *gitRepository, ref, revision, query, repositoryPath string, regex, caseSensitive bool, offset, limit, maxOutput int) (string, error) {
+	commit, err := resolveGitCommit(ctx, repository, ref, revision)
 	if err != nil {
 		return "", err
 	}
@@ -248,9 +357,9 @@ func gitSearch(ctx context.Context, repository *gitRepository, revision, query, 
 	}
 	if err := runGitCommand(ctx, gitCommandOptions{
 		directory:        repository.directory,
-		resourceRoot:     repository.root,
 		timeout:          gitOperationTimeout,
 		allowExitCodeOne: true,
+		secrets:          repository.secrets,
 	}, consume, args...); err != nil {
 		return "", fmt.Errorf("git: search repository: %w", err)
 	}
@@ -267,8 +376,8 @@ func gitSearch(ctx context.Context, repository *gitRepository, revision, query, 
 	return strings.TrimRight(output.String(), "\n"), nil
 }
 
-func gitLog(ctx context.Context, repository *gitRepository, revision, repositoryPath string, offset, limit, maxOutput int) (string, error) {
-	commit, err := resolveGitCommit(ctx, repository, revision)
+func gitLog(ctx context.Context, repository *gitRepository, ref, revision, repositoryPath string, offset, limit, maxOutput int) (string, error) {
+	commit, err := resolveGitCommit(ctx, repository, ref, revision)
 	if err != nil {
 		return "", err
 	}
@@ -276,7 +385,7 @@ func gitLog(ctx context.Context, repository *gitRepository, revision, repository
 		"log",
 		"-z",
 		"--no-decorate",
-		"--format=%H%x00%aI%x00%an%x00%s",
+		"--format=%H%x00%as%x00%an%x00%s",
 		fmt.Sprintf("--skip=%d", offset),
 		fmt.Sprintf("--max-count=%d", limit+1),
 		commit,
@@ -293,7 +402,7 @@ func gitLog(ctx context.Context, repository *gitRepository, revision, repository
 		for {
 			fields := make([]string, 4)
 			for index := range fields {
-				field, terminated, err := readGitDelimited(reader, 0, gitMaxInputLineBytes)
+				field, terminated, err := readGitDelimited(reader, 0, gitMaxInputLine)
 				if err != nil {
 					return false, fmt.Errorf("git: read log: %w", err)
 				}
@@ -311,9 +420,9 @@ func gitLog(ctx context.Context, repository *gitRepository, revision, repository
 			}
 			line := fmt.Sprintf("%s  %s  %s  %s\n",
 				shortGitCommit(fields[0]),
-				truncateGitText(fields[1], 40),
-				truncateGitText(fields[2], 80),
-				truncateGitText(fields[3], 300),
+				truncateGitField(fields[1], 40),
+				truncateGitField(fields[2], 80),
+				truncateGitField(fields[3], 300),
 			)
 			if output.Len()+len(line)+64 > maxOutput {
 				truncated = true
@@ -324,9 +433,9 @@ func gitLog(ctx context.Context, repository *gitRepository, revision, repository
 		}
 	}
 	if err := runGitCommand(ctx, gitCommandOptions{
-		directory:    repository.directory,
-		resourceRoot: repository.root,
-		timeout:      gitOperationTimeout,
+		directory: repository.directory,
+		timeout:   gitOperationTimeout,
+		secrets:   repository.secrets,
 	}, consume, args...); err != nil {
 		return "", fmt.Errorf("git: read log: %w", err)
 	}
@@ -343,12 +452,18 @@ func gitLog(ctx context.Context, repository *gitRepository, revision, repository
 	return strings.TrimRight(output.String(), "\n"), nil
 }
 
-func gitDiff(ctx context.Context, repository *gitRepository, base, target, repositoryPath string, offset, limit, maxOutput int) (string, error) {
-	baseCommit, err := resolveGitCommit(ctx, repository, base)
+func gitDiff(ctx context.Context, repository *gitRepository, ref, base, target, repositoryPath string, offset, limit, maxOutput int) (string, error) {
+	baseCommit, err := resolveGitCommitValue(ctx, repository, base)
 	if err != nil {
 		return "", fmt.Errorf("git: resolve base: %w", err)
 	}
-	targetCommit, err := resolveGitCommit(ctx, repository, target)
+	if target == "" {
+		target = ref
+	}
+	if target == "" {
+		target = "HEAD"
+	}
+	targetCommit, err := resolveGitCommitValue(ctx, repository, target)
 	if err != nil {
 		return "", fmt.Errorf("git: resolve target: %w", err)
 	}
@@ -371,29 +486,288 @@ func gitDiff(ctx context.Context, repository *gitRepository, base, target, repos
 	return pageGitLines(ctx, repository, args, offset, limit, maxOutput, empty)
 }
 
-func resolveGitCommit(ctx context.Context, repository *gitRepository, revision string) (string, error) {
-	if revision == "" {
-		if repository.commit != "" {
-			return repository.commit, nil
-		}
-		revision = "HEAD"
-	}
-	output, truncated, err := captureGitCommand(ctx, gitCommandOptions{
-		directory:    repository.directory,
-		resourceRoot: repository.root,
-		timeout:      gitOperationTimeout,
-	}, 128, "rev-parse", "--verify", revision+"^{commit}")
+func gitBranches(ctx context.Context, repository *gitRepository, includeTags bool, offset, limit, maxOutput int) (string, error) {
+	branches, err := listGitBranches(ctx, repository)
 	if err != nil {
-		return "", errors.New("commit is unavailable in the selected branch")
+		return "", err
+	}
+	defaultBranch := gitDefaultBranch(ctx, repository)
+	for index := range branches {
+		if defaultBranch != "" && branches[index].name == defaultBranch {
+			branches[index].defaultBranch = true
+		}
+		branches[index].name = printableGitPath(branches[index].name)
+	}
+	var tags []gitBranchEntry
+	if includeTags {
+		tags, err = listGitTags(ctx, repository)
+		if err != nil {
+			return "", err
+		}
+		for index := range tags {
+			tags[index].name = printableGitPath(tags[index].name)
+		}
+	}
+
+	total := len(branches)
+	if includeTags {
+		total += len(tags)
+	}
+	if total == 0 {
+		var output strings.Builder
+		output.WriteString("(no branches)")
+		if includeTags {
+			output.WriteString("\ntags:\n" + gitTreeEmpty)
+		}
+		return output.String(), nil
+	}
+	if offset >= total {
+		return fmt.Sprintf("(no entries at offset %d)", offset), nil
+	}
+
+	var output strings.Builder
+	budget := maxOutput - len("[truncated; next_offset=9999999999]") - 1
+	truncated := false
+	nextOffset := offset
+	shown := 0
+	if offset < len(branches) {
+		for index := offset; index < len(branches) && shown < limit; index++ {
+			line := formatGitBranchLine(branches[index])
+			if output.Len()+len(line)+1 > budget {
+				truncated = true
+				nextOffset = index
+				break
+			}
+			output.WriteString(line)
+			output.WriteByte('\n')
+			shown++
+			nextOffset = index + 1
+		}
+	}
+	if !truncated && includeTags && shown < limit {
+		tagStart := 0
+		if offset > len(branches) {
+			tagStart = offset - len(branches)
+		}
+		if shown > 0 || offset >= len(branches) {
+			if len(tags) == 0 && offset <= len(branches) {
+				line := "tags:\n"
+				if output.Len()+len(line)+len(gitTreeEmpty)+1 <= budget {
+					output.WriteString(line)
+					output.WriteString(gitTreeEmpty)
+					output.WriteByte('\n')
+				}
+			} else if tagStart < len(tags) {
+				if output.Len()+len("tags:\n")+1 > budget {
+					truncated = true
+					nextOffset = len(branches) + tagStart
+				} else {
+					output.WriteString("tags:\n")
+					for index := tagStart; index < len(tags) && shown < limit; index++ {
+						line := formatGitBranchLine(tags[index])
+						if output.Len()+len(line)+1 > budget {
+							truncated = true
+							nextOffset = len(branches) + index
+							break
+						}
+						output.WriteString(line)
+						output.WriteByte('\n')
+						shown++
+						nextOffset = len(branches) + index + 1
+					}
+				}
+			}
+		}
+	}
+	if !truncated && offset+shown < total {
+		truncated = true
+		nextOffset = offset + shown
+	}
+	result := strings.TrimRight(output.String(), "\n")
+	if truncated {
+		result += fmt.Sprintf("\n[truncated; next_offset=%d]", nextOffset)
+	}
+	if len(result) > maxOutput {
+		return "", errors.New("git: result exceeded output limit")
+	}
+	return result, nil
+}
+
+func listGitBranches(ctx context.Context, repository *gitRepository) ([]gitBranchEntry, error) {
+	records, err := listForEachRef(ctx, repository, "refs/heads",
+		"%(refname:strip=2)%00%(objectname)%00%(committerdate:unix)%00%(committerdate:short)%00%(subject)")
+	if err != nil {
+		return nil, err
+	}
+	branches := make([]gitBranchEntry, 0, len(records))
+	for _, fields := range records {
+		if len(fields) != 5 {
+			return nil, errors.New("git: malformed branch output")
+		}
+		timestamp, _ := strconv.ParseInt(fields[2], 10, 64)
+		branches = append(branches, gitBranchEntry{
+			name:      fields[0],
+			hash:      fields[1],
+			date:      fields[3],
+			subject:   fields[4],
+			timestamp: timestamp,
+		})
+	}
+	sort.Slice(branches, func(left, right int) bool {
+		if branches[left].timestamp == branches[right].timestamp {
+			return branches[left].name < branches[right].name
+		}
+		return branches[left].timestamp > branches[right].timestamp
+	})
+	return branches, nil
+}
+
+func listGitTags(ctx context.Context, repository *gitRepository) ([]gitBranchEntry, error) {
+	records, err := listForEachRef(ctx, repository, "refs/tags",
+		"%(refname:strip=2)%00%(objecttype)%00%(objectname)%00%(*objectname)%00%(committerdate:unix)%00%(*committerdate:unix)%00%(committerdate:short)%00%(*committerdate:short)%00%(subject)%00%(*subject)")
+	if err != nil {
+		return nil, err
+	}
+	tags := make([]gitBranchEntry, 0, len(records))
+	for _, fields := range records {
+		if len(fields) != 10 {
+			return nil, errors.New("git: malformed tag output")
+		}
+		hash := fields[2]
+		if fields[3] != "" {
+			hash = fields[3]
+		}
+		timestampValue := fields[4]
+		date := fields[6]
+		subject := fields[8]
+		if fields[5] != "" {
+			timestampValue = fields[5]
+		}
+		if fields[7] != "" {
+			date = fields[7]
+		}
+		if fields[9] != "" {
+			subject = fields[9]
+		}
+		timestamp, _ := strconv.ParseInt(timestampValue, 10, 64)
+		tags = append(tags, gitBranchEntry{
+			name:      fields[0],
+			hash:      hash,
+			date:      date,
+			subject:   subject,
+			timestamp: timestamp,
+		})
+	}
+	sort.Slice(tags, func(left, right int) bool {
+		if tags[left].timestamp == tags[right].timestamp {
+			return tags[left].name < tags[right].name
+		}
+		return tags[left].timestamp > tags[right].timestamp
+	})
+	return tags, nil
+}
+
+func listForEachRef(ctx context.Context, repository *gitRepository, prefix, format string) ([][]string, error) {
+	output, truncated, err := captureGitCommand(ctx, gitCommandOptions{
+		directory: repository.directory,
+		timeout:   gitOperationTimeout,
+		secrets:   repository.secrets,
+	}, 4*gitMaxResultBytes, "for-each-ref", "--format="+format, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("git: list refs: %w", err)
 	}
 	if truncated {
-		return "", errors.New("git: resolve commit: unexpected output")
+		return nil, errors.New("git: too many refs to list")
+	}
+	records := make([][]string, 0)
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner.Buffer(make([]byte, 4096), gitMaxInputLine)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		records = append(records, strings.Split(line, "\x00"))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("git: read refs: %w", err)
+	}
+	return records, nil
+}
+
+func gitDefaultBranch(ctx context.Context, repository *gitRepository) string {
+	output, truncated, err := captureGitCommand(ctx, gitCommandOptions{
+		directory: repository.directory,
+		timeout:   gitOperationTimeout,
+		secrets:   repository.secrets,
+	}, 256, "symbolic-ref", "--short", "HEAD")
+	if err != nil || truncated {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func formatGitBranchLine(entry gitBranchEntry) string {
+	marker := "  "
+	if entry.defaultBranch {
+		marker = "* "
+	}
+	if entry.date == "" {
+		entry.date = "0000-00-00"
+	}
+	return fmt.Sprintf("%s%s  %s  %s  %s",
+		marker,
+		truncateGitField(entry.name, gitMaxRefLength),
+		shortGitCommit(truncateGitField(entry.hash, 40)),
+		truncateGitField(entry.date, 10),
+		truncateGitField(entry.subject, 200),
+	)
+}
+
+func resolveGitCommit(ctx context.Context, repository *gitRepository, ref, revision string) (string, error) {
+	value := revision
+	if value == "" {
+		value = ref
+	}
+	if value == "" {
+		value = "HEAD"
+	}
+	return resolveGitCommitValue(ctx, repository, value)
+}
+
+func resolveGitCommitValue(ctx context.Context, repository *gitRepository, value string) (string, error) {
+	if value == "" || hasUnsafeGitControl(value) || strings.HasPrefix(value, "-") {
+		return "", errors.New("commit is not available")
+	}
+	output, truncated, err := captureGitCommand(ctx, gitCommandOptions{
+		directory: repository.directory,
+		timeout:   gitOperationTimeout,
+		secrets:   repository.secrets,
+	}, 128, "rev-parse", "--verify", "--end-of-options", value+"^{commit}")
+	if err != nil || truncated {
+		return "", fmt.Errorf("commit %q is not available", truncateGitField(value, gitMaxRefLength))
 	}
 	commit := strings.TrimSpace(string(output))
 	if !isHexCommit(commit, 40, 40) {
-		return "", errors.New("git: resolve commit: invalid hash")
+		return "", fmt.Errorf("commit %q is not available", truncateGitField(value, gitMaxRefLength))
 	}
 	return strings.ToLower(commit), nil
+}
+
+func gitObjectType(ctx context.Context, repository *gitRepository, object string) (string, error) {
+	output, truncated, err := captureGitCommand(ctx, gitCommandOptions{
+		directory: repository.directory,
+		timeout:   gitOperationTimeout,
+		secrets:   repository.secrets,
+	}, 64, "cat-file", "-t", object)
+	if err != nil || truncated {
+		return "", errors.New("object is not available")
+	}
+	value := strings.TrimSpace(string(output))
+	if value == "" {
+		return "", errors.New("object is not available")
+	}
+	return value, nil
 }
 
 func pageGitLines(ctx context.Context, repository *gitRepository, args []string, offset, limit, maxOutput int, empty string) (string, error) {
@@ -403,7 +777,7 @@ func pageGitLines(ctx context.Context, repository *gitRepository, args []string,
 	truncated := false
 	consume := func(reader io.Reader) (bool, error) {
 		scanner := bufio.NewScanner(reader)
-		scanner.Buffer(make([]byte, 64*1024), gitMaxInputLineBytes)
+		scanner.Buffer(make([]byte, 64*1024), gitMaxInputLine)
 		for scanner.Scan() {
 			if skipped < offset {
 				skipped++
@@ -422,14 +796,14 @@ func pageGitLines(ctx context.Context, repository *gitRepository, args []string,
 			displayed++
 		}
 		if err := scanner.Err(); err != nil {
-			return false, fmt.Errorf("git: command output line exceeds %d bytes", gitMaxInputLineBytes)
+			return false, fmt.Errorf("git: command output line exceeds %d bytes", gitMaxInputLine)
 		}
 		return false, nil
 	}
 	if err := runGitCommand(ctx, gitCommandOptions{
-		directory:    repository.directory,
-		resourceRoot: repository.root,
-		timeout:      gitOperationTimeout,
+		directory: repository.directory,
+		timeout:   gitOperationTimeout,
+		secrets:   repository.secrets,
 	}, consume, args...); err != nil {
 		return "", fmt.Errorf("git: read diff: %w", err)
 	}
@@ -441,58 +815,6 @@ func pageGitLines(ctx context.Context, repository *gitRepository, args []string,
 		appendGitTruncation(&output, offset+displayed)
 	}
 	return strings.TrimRight(output.String(), "\n"), nil
-}
-
-func formatGitTree(rootLabel string, entries []gitTreeEntry) string {
-	root := &gitTreeNode{byName: make(map[string]*gitTreeNode)}
-	for _, entry := range entries {
-		current := root
-		components := strings.Split(entry.name, "/")
-		for index, component := range components {
-			child := current.byName[component]
-			if child == nil {
-				child = &gitTreeNode{name: component, byName: make(map[string]*gitTreeNode)}
-				current.byName[component] = child
-				current.children = append(current.children, child)
-			}
-			if index == len(components)-1 {
-				child.objectType = entry.objectType
-			}
-			current = child
-		}
-	}
-
-	var output strings.Builder
-	output.WriteString(rootLabel)
-	output.WriteByte('\n')
-	if len(entries) == 0 {
-		output.WriteString("(empty)")
-		return output.String()
-	}
-	writeGitTreeNodes(&output, root.children, "")
-	return strings.TrimRight(output.String(), "\n")
-}
-
-func writeGitTreeNodes(output *strings.Builder, nodes []*gitTreeNode, prefix string) {
-	for index, node := range nodes {
-		last := index == len(nodes)-1
-		connector := "|-- "
-		childPrefix := prefix + "|   "
-		if last {
-			connector = "`-- "
-			childPrefix = prefix + "    "
-		}
-		output.WriteString(prefix)
-		output.WriteString(connector)
-		output.WriteString(printableGitTreeName(node.name))
-		if node.objectType == "tree" || len(node.children) > 0 {
-			output.WriteByte('/')
-		} else if node.objectType == "commit" {
-			output.WriteString(" [submodule]")
-		}
-		output.WriteByte('\n')
-		writeGitTreeNodes(output, node.children, childPrefix)
-	}
 }
 
 func splitGitNUL(data []byte, atEOF bool) (advance int, token []byte, err error) {
@@ -535,7 +857,7 @@ func readGitSearchMatch(reader *bufio.Reader) (gitSearchMatch, bool, error) {
 	if err != nil || !terminated {
 		return gitSearchMatch{}, false, errors.New("git: malformed search line number")
 	}
-	text, _, err := readGitDelimited(reader, '\n', gitMaxInputLineBytes)
+	text, _, err := readGitDelimited(reader, '\n', gitMaxInputLine)
 	if err != nil {
 		return gitSearchMatch{}, false, fmt.Errorf("git: read search result: %w", err)
 	}
@@ -607,6 +929,21 @@ func truncateGitText(value string, maximumRunes int) string {
 		}
 		return '\uFFFD'
 	}, value)
+	return truncateRunes(value, maximumRunes)
+}
+
+func truncateGitField(value string, maximumRunes int) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	value = strings.Map(func(character rune) rune {
+		if unicode.IsControl(character) || !unicode.IsPrint(character) {
+			return ' '
+		}
+		return character
+	}, value)
+	return truncateRunes(value, maximumRunes)
+}
+
+func truncateRunes(value string, maximumRunes int) string {
 	if utf8.RuneCountInString(value) <= maximumRunes {
 		return value
 	}

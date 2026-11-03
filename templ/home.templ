@@ -33,6 +33,7 @@ type HomeData struct {
 	EnabledTools             []string
 	DefaultTools             []string
 	MCPServers               []kritui_db.MCPServer
+	GitHosts                 []kritui_db.GitHost
 	PromptAppends            []kritui_db.PromptAppend
 	NtfySettings             kritui_db.NtfySettings
 	LLMSettings              kritui_db.LLMSettings
@@ -76,6 +77,7 @@ templ Home(data HomeData) {
 									ToolNames:                data.Tools,
 									DefaultTools:             data.DefaultTools,
 									MCPServers:               data.MCPServers,
+									GitHosts:                 data.GitHosts,
 									PromptAppends:            data.PromptAppends,
 									NtfySettings:             data.NtfySettings,
 									LLMSettings:              data.LLMSettings,

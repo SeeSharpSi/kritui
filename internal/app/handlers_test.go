@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -568,6 +569,7 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, string(script), `submitMessageForm(input.form)`)
 	requireContains(t, string(script), `if (!event.detail?.preserveInput)`)
 	requireContains(t, string(script), `input[name^="mcp_authorization_"]`)
+	requireContains(t, string(script), `input[name^="git_token_"]`)
 	requireNotContains(t, string(script), `querySelector('.history-loader')`, "htmx.trigger", "htmx:oobBeforeSwap", "htmx:oobAfterSwap", "htmx:configRequest")
 	requireContains(t, string(script), `settingsPage.scrollTop = settingsPageScrollTop`)
 }
@@ -2274,7 +2276,7 @@ func TestMigrateDatabaseAddsChatPinsFromVersion26(t *testing.T) {
 	previous = strings.Replace(previous, `CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
     ON chats (user_id, pinned DESC, updated_at DESC, id DESC);`, `CREATE INDEX IF NOT EXISTS chats_user_updated_idx
     ON chats (user_id, updated_at DESC, id DESC);`, 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 35;", "PRAGMA user_version = 26;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 36;", "PRAGMA user_version = 26;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "pinned") {
@@ -2337,7 +2339,7 @@ func TestMigrateDatabaseAddsTitleGenerationSettingsFromVersion27(t *testing.T) {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	previous := prefix + schema[start+relativeEnd:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 35;", "PRAGMA user_version = 27;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 36;", "PRAGMA user_version = 27;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "title_generation") {
@@ -2393,7 +2395,7 @@ func TestMigrateDatabaseRetiresPlaintextSharesFromVersion29(t *testing.T) {
 		t.Fatalf("read legacy share schema: %v", err)
 	}
 	previous := schema[:start] + string(legacyDDL) + "\n\n" + schema[start+end:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 35;", "PRAGMA user_version = 29;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 36;", "PRAGMA user_version = 29;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if !strings.Contains(previous, "PRAGMA user_version = 29;") {
@@ -7279,6 +7281,128 @@ func TestSettingsHandlerRendersLLMConnectionWithoutSecret(t *testing.T) {
 		`type="text"`,
 	)
 	requireNotContains(t, response.Body.String(), `name="llm_api_key" value=`)
+}
+
+func TestSettingsHandlerRendersGitHostsWithoutSecrets(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
+	t.Setenv("LLM_MODEL", "")
+	t.Setenv("LLM_ENDPOINT", "")
+	t.Setenv("LLM_KEY", "")
+
+	response := httptest.NewRecorder()
+	settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireContains(t, response.Body.String(),
+		`id="git-settings"`,
+		`id="git-host-list"`,
+		`name="git_form" value="1"`,
+		`value="github.com"`,
+		`type="password"`,
+		`Add host`,
+	)
+	requireNotContains(t, response.Body.String(), `value="ghp-`)
+}
+
+func TestSettingsHandlerStoresPerHostGitTokens(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
+	handler := settingsHandler(database, newTestToolRegistry(t))
+	const (
+		githubID = "git-0000000000000001"
+		customID = "git-0123456789abcdef"
+		secret   = "ghp-secret-value"
+	)
+
+	response := postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":                    {"saved-model"},
+		"max_tool_rounds":          {"32"},
+		"git_form":                 {"1"},
+		"git_host_id":              {githubID, customID},
+		"git_host_" + githubID:     {"github.com"},
+		"git_username_" + githubID: {"octocat"},
+		"git_host_" + customID:     {"git.example.com:8443"},
+		"git_token_" + githubID:    {secret},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("save status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requireNotContains(t, response.Body.String(), secret, `name="git_token_`+githubID+`" value=`)
+	configs, err := kritui_db.GetGitHostConfigs(context.Background(), database)
+	if err != nil {
+		t.Fatalf("GetGitHostConfigs() error: %v", err)
+	}
+	if len(configs) != 2 || configs[0].Host != "github.com" || configs[0].Username != "octocat" || configs[0].Token != secret || configs[1].Host != "git.example.com:8443" || configs[1].Token != "" {
+		t.Fatalf("configs = %#v, want per-host token", configs)
+	}
+
+	response = postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":                    {"saved-model"},
+		"max_tool_rounds":          {"32"},
+		"git_form":                 {"1"},
+		"git_host_id":              {githubID, customID},
+		"git_host_" + githubID:     {"github.com"},
+		"git_username_" + githubID: {"octocat"},
+		"git_host_" + customID:     {"git.example.com:8443"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("preserve status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	configs, err = kritui_db.GetGitHostConfigs(context.Background(), database)
+	if err != nil {
+		t.Fatalf("GetGitHostConfigs() after preserve error: %v", err)
+	}
+	if len(configs) != 2 || configs[0].Username != "octocat" || configs[0].Token != secret || configs[1].Token != "" {
+		t.Fatalf("preserved configs = %#v, want token retained on first host only", configs)
+	}
+
+	response = postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":                    {"saved-model"},
+		"max_tool_rounds":          {"32"},
+		"git_form":                 {"1"},
+		"git_host_id":              {githubID, customID},
+		"git_host_" + githubID:     {"github.com"},
+		"git_username_" + githubID: {"octocat"},
+		"git_host_" + customID:     {"git.example.com:8443"},
+		"clear_git_token":          {githubID},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	configs, err = kritui_db.GetGitHostConfigs(context.Background(), database)
+	if err != nil {
+		t.Fatalf("GetGitHostConfigs() after clear error: %v", err)
+	}
+	if len(configs) != 2 || configs[0].Token != "" {
+		t.Fatalf("cleared configs = %#v, want first token cleared", configs)
+	}
+}
+
+func TestSettingsHandlerRejectsInvalidGitHostsWithoutSaving(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
+	handler := settingsHandler(database, newTestToolRegistry(t))
+	const githubID = "git-0000000000000001"
+
+	response := postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":                {"saved-model"},
+		"max_tool_rounds":      {"32"},
+		"git_form":             {"1"},
+		"git_host_id":          {githubID},
+		"git_host_" + githubID: {"https://github.com"},
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	hosts, err := kritui_db.GetGitHosts(context.Background(), database)
+	if err != nil {
+		t.Fatalf("GetGitHosts() error: %v", err)
+	}
+	if !reflect.DeepEqual(hosts, kritui_db.DefaultGitHosts()) {
+		t.Fatalf("hosts after rejected save = %#v, want defaults", hosts)
+	}
 }
 
 func TestSettingsHandlerRendersStoredLLMEndpointWithoutSecret(t *testing.T) {

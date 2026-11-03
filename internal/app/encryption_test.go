@@ -172,11 +172,11 @@ func TestStorageEncryptionFreshDatabase(t *testing.T) {
 	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatalf("read user version: %v", err)
 	}
-	if len(databaseMigrations) != 35 {
-		t.Fatalf("databaseMigrations length = %d, want 35 message usage and models.dev cache version", len(databaseMigrations))
+	if len(databaseMigrations) != 36 {
+		t.Fatalf("databaseMigrations length = %d, want 36 Git host allowlist version", len(databaseMigrations))
 	}
-	if version != 35 {
-		t.Errorf("user_version = %d, want 35", version)
+	if version != 36 {
+		t.Errorf("user_version = %d, want 36", version)
 	}
 	var secureDelete int
 	if err := database.QueryRow(`PRAGMA secure_delete`).Scan(&secureDelete); err != nil {
@@ -427,6 +427,11 @@ func seedStorageMigrationFixture(t *testing.T, database *sql.DB) storageMigratio
 			VALUES
 			(20, 0, 'pending secret file.txt', 'text/plain', 0, 0, ?),
 			(21, 0, 'delivered secret file.txt', 'text/plain', 0, 0, ?)`,
+		`INSERT INTO git_hosts (user_id, id, position, host, token)
+			VALUES
+			(1, 'git-1', 0, 'git.example.com', 'legacy-git-token'),
+			(1, 'git-2', 1, 'github.com', NULL),
+			(1, 'git-3', 2, 'gitlab.com', '   ')`,
 	}
 	for index, statement := range statements {
 		var args []any
@@ -699,6 +704,36 @@ func TestStorageEncryptionMigratesLegacyPlaintext(t *testing.T) {
 		t.Errorf("mcp-3 authorization_token = %q, want NULL for blank legacy token", blankToken.String)
 	}
 
+	for _, testCase := range []struct {
+		scope string
+		rowID string
+		value string
+	}{
+		{"git_hosts.host", "git-1", "git.example.com"},
+		{"git_hosts.token", "git-1", "legacy-git-token"},
+		{"git_hosts.host", "git-2", "github.com"},
+		{"git_hosts.host", "git-3", "gitlab.com"},
+	} {
+		var stored string
+		query := `SELECT ` + strings.TrimPrefix(testCase.scope, "git_hosts.") + ` FROM git_hosts WHERE id = ?`
+		if err := database.QueryRow(query, testCase.rowID).Scan(&stored); err != nil {
+			t.Fatalf("read %s: %v", testCase.scope, err)
+		}
+		requireEncryptedText(t, stored, testCase.value)
+		if got := decryptStorageTextForTest(t, storage, 1, testCase.scope, testCase.rowID, stored); got != testCase.value {
+			t.Errorf("%s = %q, want %q", testCase.scope, got, testCase.value)
+		}
+	}
+	for _, id := range []string{"git-2", "git-3"} {
+		var token sql.NullString
+		if err := database.QueryRow(`SELECT token FROM git_hosts WHERE id = ?`, id).Scan(&token); err != nil {
+			t.Fatalf("read %s token: %v", id, err)
+		}
+		if token.Valid {
+			t.Errorf("%s token = %q, want NULL", id, token.String)
+		}
+	}
+
 	var appendName, appendDefinition string
 	if err := database.QueryRow(`SELECT name, text FROM prompt_appends WHERE id = 'append-1'`).Scan(&appendName, &appendDefinition); err != nil {
 		t.Fatalf("read prompt append: %v", err)
@@ -779,6 +814,7 @@ func TestStorageEncryptionMigratesLegacyPlaintext(t *testing.T) {
 		"Legacy compaction prompt",
 		"Legacy MCP name",
 		"legacy-mcp-token",
+		"legacy-git-token",
 		"Legacy append name",
 	} {
 		if bytes.Contains(raw, []byte(sentinel)) {
