@@ -210,6 +210,10 @@ main {
         }
     }
 
+    &:has(#page-panel > .panel-page:not([hidden])) #message-form {
+        display: none;
+    }
+
     .brand-mark {
         display: flex;
         flex: 0 0 28px;
@@ -278,7 +282,7 @@ main {
         display: flex;
         flex-direction: column;
         overflow: visible;
-        padding: 0 0 40px;
+        padding: 0;
         border: 1px solid var(--color-border);
         background: var(--color-surface);
 
@@ -293,15 +297,8 @@ main {
             border-top-right-radius: inherit;
         }
 
-        &:has(.chat-options:not([open])) .message-panel,
         &:has(.panel-page:not([hidden])) .message-panel {
             border-radius: inherit;
-        }
-
-        &:has(.panel-page:not([hidden]))>.chat-options {
-            .chat-options-list {
-                display: none;
-            }
         }
 
         &:has(.panel-page:not([hidden])) .message-list {
@@ -1391,36 +1388,6 @@ main {
             color: var(--color-text-muted);
         }
 
-        > .settings-button,
-        > .history-button,
-        .chat-options > summary {
-            position: absolute;
-            z-index: 2;
-            bottom: -1px;
-            width: calc((100% + 2px) / 3 + 1px);
-            height: 41px;
-            display: grid;
-            box-sizing: border-box;
-            padding: 0;
-            border: 1px solid var(--color-border);
-            place-items: center;
-            background: var(--color-background);
-            color: var(--color-text);
-            font: 500 13px/16px var(--font-sans);
-            cursor: pointer;
-
-            &:hover,
-            &:focus-visible {
-                border-color: var(--color-border-strong);
-                color: var(--color-text);
-            }
-
-            &:focus-visible {
-                outline: 2px solid var(--color-accent);
-                outline-offset: 2px;
-            }
-        }
-
         > .image-previews {
             position: relative;
             z-index: 2;
@@ -1514,33 +1481,6 @@ main {
                         height: 2rem;
                     }
                 }
-            }
-        }
-
-        .chat-options > summary {
-            bottom: -1px;
-            width: calc(100% / 3);
-        }
-
-        > .settings-button {
-            left: -1px;
-        }
-
-        > .history-button {
-            right: -1px;
-        }
-
-        > .settings-button.active,
-        > .history-button.active {
-            background: var(--color-surface-muted);
-            border-color: var(--color-accent);
-            color: var(--color-accent);
-            z-index: 4;
-
-            &:hover {
-                background: color-mix(in srgb, var(--color-surface-muted) 85%, white);
-                border-color: var(--color-accent);
-                color: var(--color-accent);
             }
         }
 
@@ -2364,17 +2304,90 @@ main {
         }
     }
 
+    .chat-controls {
+        position: relative;
+        z-index: 3;
+        flex: 0 0 auto;
+        box-sizing: border-box;
+        margin-top: -1px;
+        padding-bottom: 40px;
+        border: 1px solid var(--color-border);
+        border-top: 0;
+
+        > .settings-button,
+        > .history-button,
+        .chat-options > summary {
+            position: absolute;
+            z-index: 2;
+            bottom: -1px;
+            width: calc((100% + 2px) / 3 + 1px);
+            height: 41px;
+            display: grid;
+            box-sizing: border-box;
+            padding: 0;
+            border: 1px solid var(--color-border);
+            place-items: center;
+            background: var(--color-background);
+            color: var(--color-text);
+            font: 500 13px/16px var(--font-sans);
+            cursor: pointer;
+
+            &:hover,
+            &:focus-visible {
+                border-color: var(--color-border-strong);
+                color: var(--color-text);
+            }
+
+            &:focus-visible {
+                outline: 2px solid var(--color-accent);
+                outline-offset: 2px;
+            }
+        }
+
+        > .settings-button {
+            left: -1px;
+        }
+
+        > .history-button {
+            right: -1px;
+        }
+
+        .chat-options > summary {
+            left: calc(100% / 3);
+            width: calc(100% / 3);
+        }
+
+        > .settings-button.active,
+        > .history-button.active {
+            background: var(--color-surface-muted);
+            border-color: var(--color-accent);
+            color: var(--color-accent);
+            z-index: 4;
+
+            &:hover {
+                background: color-mix(in srgb, var(--color-surface-muted) 85%, white);
+                border-color: var(--color-accent);
+                color: var(--color-accent);
+            }
+        }
+
+        &::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 1px;
+            background: var(--color-border);
+            pointer-events: none;
+            z-index: 6;
+        }
+    }
+
     .chat-options {
-        position: absolute;
-        left: -1px;
-        right: -1px;
-        bottom: 0;
-        height: 40px;
+        position: static;
 
         >summary {
-            left: calc(100% / 3);
-            bottom: -1px;
-            width: calc(100% / 3);
             list-style: none;
 
             &::-webkit-details-marker {
@@ -2404,16 +2417,12 @@ main {
         }
 
         .chat-options-list {
-            position: absolute;
-            bottom: calc(100% - 1px);
-            left: 0;
-            right: 0;
-            z-index: 4;
+            position: static;
             display: flex;
             flex-wrap: wrap;
             gap: .5rem;
             padding: 1rem;
-            border: 1px solid var(--color-border);
+            border: 0;
             background: var(--color-surface);
 
             button,

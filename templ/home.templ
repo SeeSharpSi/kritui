@@ -89,49 +89,6 @@ templ Home(data HomeData) {
 							</div>
 						</div>
 						@PromptInbox(data.ChatID, data.Inbox)
-						@SettingsButton()
-						<details class="chat-options">
-							<summary aria-label="Toggle chat model">Model</summary>
-							<div class="chat-options-list">
-								<details class="model-picker">
-									<summary>
-										<strong>
-											{ data.SelectedModel }
-										</strong>
-									</summary>
-									<div class="model-options">
-										for _, model := range data.Models {
-											<label>
-												<input
-													type="radio"
-													name="model"
-													value={ model }
-													form="message-form"
-													if model == data.SelectedModel {
-														checked
-													}
-													onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
-												/>
-												<span class="model-name">{ model }</span>
-												if detail, ok := data.ModelDetails[model]; ok && len(detail.Modalities) > 0 {
-													<span class="model-modalities">
-														for _, modality := range detail.Modalities {
-															@ModelModalityIcon(modality)
-														}
-													</span>
-												}
-											</label>
-										}
-										if data.ModelListFallback {
-											<p class="model-fallback-note">Using models.dev fallback</p>
-										}
-									</div>
-								</details>
-								@ToolPicker(data.Tools, data.MCPServers, data.EnabledTools, false)
-								@AppendsPicker(data.PromptAppends, data.EnabledAppendIDs, false)
-							</div>
-						</details>
-						@HistoryButton()
 						<div id="image-previews" class="image-previews" aria-label="Attached files" hidden></div>
 					</section>
 					<form
@@ -179,6 +136,51 @@ templ Home(data HomeData) {
 						@QueueButton(data.CompletionRequestID != "")
 						@SendButton()
 					</form>
+					<div class="chat-controls">
+						@SettingsButton()
+						<details class="chat-options">
+							<summary aria-label="Toggle chat model">Model</summary>
+							<div class="chat-options-list">
+								<details class="model-picker">
+									<summary>
+										<strong>
+											{ data.SelectedModel }
+										</strong>
+									</summary>
+									<div class="model-options">
+										for _, model := range data.Models {
+											<label>
+												<input
+													type="radio"
+													name="model"
+													value={ model }
+													form="message-form"
+													if model == data.SelectedModel {
+														checked
+													}
+													onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
+												/>
+												<span class="model-name">{ model }</span>
+												if detail, ok := data.ModelDetails[model]; ok && len(detail.Modalities) > 0 {
+													<span class="model-modalities">
+														for _, modality := range detail.Modalities {
+															@ModelModalityIcon(modality)
+														}
+													</span>
+												}
+											</label>
+										}
+										if data.ModelListFallback {
+											<p class="model-fallback-note">Using models.dev fallback</p>
+										}
+									</div>
+								</details>
+								@ToolPicker(data.Tools, data.MCPServers, data.EnabledTools, false)
+								@AppendsPicker(data.PromptAppends, data.EnabledAppendIDs, false)
+							</div>
+						</details>
+						@HistoryButton()
+					</div>
 				</div>
 				<div class="shell-tail" aria-hidden="true"></div>
 			</div>
