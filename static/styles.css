@@ -1359,11 +1359,6 @@ main {
                 line-height: 20px;
             }
 
-            .empty-description {
-                font-size: 13px;
-                line-height: 16px;
-            }
-
             .empty-commands {
                 display: flex;
                 gap: 8px;
@@ -2997,7 +2992,6 @@ main {
 
         .eyebrow,
         h1,
-        .empty-description,
         .empty-commands {
             display: none;
         }
@@ -3041,7 +3035,6 @@ main {
         .chat .message-list { padding: 16px; }
         .chat .message.user .message-bubble { max-width: 90%; }
         .chat .message:not(.user) > .message-content { max-width: 100%; }
-        .chat .chat-empty .empty-desktop-help,
         .chat .chat-empty .empty-commands { display: none; }
         form#message-form > textarea#message { font-size: 16px; }
         .prompt-inbox {

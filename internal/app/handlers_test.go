@@ -449,7 +449,7 @@ func TestHomeHandlerRendersEmptyChatPrompt(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	requireContains(t, response.Body.String(), "No messages yet", "KRITUI")
+	requireContains(t, response.Body.String(), "New chat", "KRITUI")
 	requireNotContains(t, response.Body.String(), `class="app-header"`, `id="chat-summary"`, `hx-get="/chats/8/summary"`)
 	requireNotContains(t, response.Body.String(), "What would you like to discuss?")
 }
@@ -4180,7 +4180,7 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 		"Browse · 0 chats",
 		`id="message-list"`,
 		`hx-swap-oob="outerHTML"`,
-		"No messages yet",
+		"New chat",
 	)
 	requireNotContains(t, body, `class="history-entry"`, "Keep me")
 	if err := database.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&chats); err != nil {

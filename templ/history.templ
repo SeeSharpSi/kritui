@@ -28,10 +28,9 @@ templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
 		if len(messages) == 0 {
 			<div class="chat-empty">
 				<p class="eyebrow">KRITUI</p>
-				<h1>No messages yet</h1>
-				<p class="empty-description">Type below to begin.<span class="empty-desktop-help">{ " History, settings stay on the bottom bar." }</span></p>
+				<h1>New chat</h1>
 				<div class="empty-commands">
-					<a href="/">/new</a>
+					<button type="button" data-panel-target="settings-page" aria-controls="settings-page" aria-expanded="false">/settings</button>
 					<button type="button" data-panel-target="history-page" aria-controls="history-page" aria-expanded="false">/history</button>
 				</div>
 				<span class="chat-empty-completion" aria-hidden="true"><span class="braille-spinner" aria-hidden="true"></span></span>
