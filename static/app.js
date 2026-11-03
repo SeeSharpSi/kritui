@@ -1905,15 +1905,14 @@ function keyboardViewportHeight() {
 }
 
 function syncKeyboardViewport() {
+    const viewport = window.visualViewport;
     const height = keyboardViewportHeight();
     if (height > keyboardViewport.baseline) {
         keyboardViewport.baseline = height;
     }
-    const composing = document.getElementById('message') === document.activeElement;
-    document.documentElement.toggleAttribute(
-        'data-keyboard-open',
-        composing && keyboardViewport.baseline - height > 120,
-    );
+    document.documentElement.style.setProperty('--keyboard-height', `${height}px`);
+    document.documentElement.style.setProperty('--keyboard-offset-top', `${viewport?.offsetTop ?? 0}px`);
+    document.documentElement.toggleAttribute('data-keyboard-open', keyboardViewport.baseline - height > 120);
 }
 
 function resetKeyboardViewport() {
@@ -1940,7 +1939,7 @@ function blurKeyboardInput(event) {
         return;
     }
     window.clearTimeout(keyboardViewport.timer);
-    document.documentElement.removeAttribute('data-keyboard-open');
+    syncKeyboardViewport();
 }
 
 keyboardViewport.baseline = keyboardViewportHeight();
@@ -1949,3 +1948,4 @@ document.addEventListener('focusout', blurKeyboardInput);
 window.addEventListener('resize', syncKeyboardViewport, { passive: true });
 window.addEventListener('orientationchange', handleKeyboardOrientation, { passive: true });
 window.visualViewport?.addEventListener('resize', syncKeyboardViewport, { passive: true });
+window.visualViewport?.addEventListener('scroll', syncKeyboardViewport, { passive: true });

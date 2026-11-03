@@ -3026,6 +3026,11 @@ main {
 }
 
 @media (hover: none) and (pointer: coarse) {
+    html[data-keyboard-open] main.app-main {
+        height: var(--keyboard-height, 100%);
+        transform: translateY(var(--keyboard-offset-top, 0px));
+    }
+
     html[data-keyboard-open] main.app-main .chat-controls {
         display: none;
     }
