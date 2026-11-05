@@ -1115,6 +1115,9 @@ main {
                 background: var(--color-surface);
                 color: var(--color-text);
                 overflow: hidden;
+                -webkit-tap-highlight-color: transparent;
+                -webkit-user-select: none;
+                user-select: none;
 
                 &:hover,
                 &:focus-within {
@@ -1198,6 +1201,8 @@ main {
                         font-weight: 700;
                         line-height: inherit;
                         outline: none;
+                        -webkit-user-select: text;
+                        user-select: text;
                     }
                 }
 
