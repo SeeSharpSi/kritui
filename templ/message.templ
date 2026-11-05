@@ -573,6 +573,6 @@ templ MessageInput(value string, outOfBand bool) {
 	if outOfBand {
 		<textarea id="message" name="message" rows="1" placeholder="Write a message..." enterkeyhint="enter" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" hx-swap-oob="outerHTML">{ value }</textarea>
 	} else {
-		<textarea id="message" name="message" rows="1" placeholder="Write a message..." enterkeyhint="enter" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false" autofocus>{ value }</textarea>
+		<textarea id="message" name="message" rows="1" placeholder="Write a message..." enterkeyhint="enter" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false">{ value }</textarea>
 	}
 }
