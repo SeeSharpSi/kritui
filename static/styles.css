@@ -3019,6 +3019,25 @@ main {
 
 @media (max-width: 42rem) {
     main .chat-options .chat-options-list {
+        flex-wrap: nowrap;
+        gap: .35rem;
+        padding: .65rem;
+        overflow-x: auto;
+
+        button,
+        .model-picker,
+        .tool-picker,
+        .append-picker {
+            flex: 0 0 auto;
+        }
+
+        button,
+        .model-picker>summary,
+        .tool-picker>summary,
+        .append-picker>summary {
+            padding: .4rem .55rem;
+        }
+
         .model-picker, .tool-picker, .append-picker {
             position: static;
         }
@@ -3031,6 +3050,11 @@ main {
             width: auto;
             max-width: none;
             min-width: 0;
+            position: fixed;
+            top: 20dvh;
+            bottom: auto;
+            z-index: 20;
+            max-height: 50dvh;
         }
     }
 }
@@ -3083,9 +3107,6 @@ main {
         .chat .panel-page .settings-main-form {
             .settings-field, .settings-section-heading { padding: 16px; }
             input:not([type="checkbox"]), select, textarea { font-size: 16px; }
-        }
-        .chat-options .chat-options-list {
-            .model-picker { flex: 1 0 100%; }
         }
     }
 
