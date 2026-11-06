@@ -415,6 +415,8 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='reasoning_effort']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
 		`/static/htmx.min.js?v=`+templates.StaticAssetVersion,
 		`/static/hx-sse.js?v=`+templates.StaticAssetVersion,
+		`/static/rolling-number.min.js?v=`+templates.StaticAssetVersion,
+		`/static/rolling-number.min.css?v=`+templates.StaticAssetVersion,
 		`/static/app.js?v=`+templates.StaticAssetVersion,
 		`/static/styles.css?v=`+templates.StaticAssetVersion,
 		`<body hx-indicator:inherited="global #request-overlay">`,
@@ -428,6 +430,16 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`class="tool-call-toggle"`,
 		`aria-expanded="false"`,
 	)
+	rollingCSS := strings.Index(response.Body.String(), `/static/rolling-number.min.css?v=`)
+	appCSS := strings.Index(response.Body.String(), `/static/styles.css?v=`)
+	rollingJS := strings.Index(response.Body.String(), `/static/rolling-number.min.js?v=`)
+	appJS := strings.Index(response.Body.String(), `/static/app.js?v=`)
+	if rollingCSS < 0 || appCSS < 0 || rollingCSS > appCSS {
+		t.Errorf("rolling-number stylesheet must load before app stylesheet")
+	}
+	if rollingJS < 0 || appJS < 0 || rollingJS > appJS {
+		t.Errorf("rolling-number script must load before app script")
+	}
 	if count := strings.Count(response.Body.String(), `class="message-edit-toggle"`); count != 1 {
 		t.Errorf("message edit button count = %d, want 1", count)
 	}
@@ -4128,7 +4140,8 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 	body := response.Body.String()
 	requireContains(t, body,
 		`id="history-count"`,
-		"Browse · 1 chat",
+		`data-rolling-number="1"`,
+		`data-rolling-key="history-chat-count">1</span> chat</p>`,
 		`id="history-summary-count"`,
 		`hx-swap-oob="outerHTML"`,
 	)
@@ -4177,7 +4190,8 @@ func TestDeleteChatHandlerPermanentlyDeletesChat(t *testing.T) {
 	requireContains(t, body,
 		"No saved chats yet.",
 		`hx-swap-oob="innerHTML:#history-entries"`,
-		"Browse · 0 chats",
+		`data-rolling-number="0"`,
+		`data-rolling-key="history-chat-count">0</span> chats`,
 		`id="message-list"`,
 		`hx-swap-oob="outerHTML"`,
 		"New chat",

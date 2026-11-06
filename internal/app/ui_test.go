@@ -264,14 +264,14 @@ func TestHistoryCountExcludesEmptyAllocations(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("history status = %d", response.Code)
 	}
-	requireContains(t, response.Body.String(), `id="history-count"`, `hx-swap-oob="outerHTML"`, "Browse · 1 chat", `id="history-summary-count"`)
+	requireContains(t, response.Body.String(), `id="history-count"`, `hx-swap-oob="outerHTML"`, `data-rolling-number="1"`, `data-rolling-digits="0"`, `data-rolling-key="history-chat-count">1</span> chat</p>`, `id="history-summary-count"`, ` · 1 chat`)
 	requireNotContains(t, response.Body.String(), "Unsaved")
 	if _, err := database.Exec(`DELETE FROM chats WHERE id = ?`, saved); err != nil {
 		t.Fatal(err)
 	}
 	response = httptest.NewRecorder()
 	historyHandler(database)(response, httptest.NewRequest(http.MethodGet, "/history?chat="+strconv.FormatInt(empty, 10), nil))
-	requireContains(t, response.Body.String(), "No saved chats yet.", "Browse · 0 chats")
+	requireContains(t, response.Body.String(), "No saved chats yet.", `data-rolling-number="0"`, `data-rolling-key="history-chat-count">0</span> chats`)
 }
 
 func TestLLMSettingsMigrationPreservesExistingSettings(t *testing.T) {

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"reflect"
-	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 
 	"seesharpsi/kritui/llm"
 )
@@ -90,14 +92,65 @@ func TestToolCallElisionPresentation(t *testing.T) {
 }
 
 func TestFormatMessageCost(t *testing.T) {
-	if got := formatMessageCost(0.25, false); got != "$0.2500" {
-		t.Errorf("provider cost = %q", got)
+	tests := []struct {
+		name      string
+		cost      float64
+		estimated bool
+		want      string
+	}{
+		{name: "provider", cost: 0.25, want: "$0.2500"},
+		{name: "estimated", cost: 0.0025, estimated: true, want: "~$0.0025"},
+		{name: "tiny positive", cost: 0.000001, estimated: true, want: "~<$0.0001"},
+		{name: "zero", cost: 0, want: "$0.0000"},
+		{name: "negative", cost: -0.25, want: "$-0.2500"},
+		{name: "large", cost: 123456789.98765, want: "$123456789.9877"},
+		{name: "rounding boundary", cost: 0.00005, want: "$0.0001"},
 	}
-	if got := formatMessageCost(0.0025, true); got != "~$0.0025" {
-		t.Errorf("estimated cost = %q", got)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := formatMessageCost(test.cost, test.estimated); got != test.want {
+				t.Errorf("formatMessageCost(%v, %v) = %q, want %q", test.cost, test.estimated, got, test.want)
+			}
+		})
 	}
-	if got := formatMessageCost(0.000001, true); got != "~<$0.0001" {
-		t.Errorf("tiny estimated cost = %q", got)
+}
+
+func TestRollingNumberValueMarkupAndKeys(t *testing.T) {
+	tokens := int(^uint(0) >> 1)
+	cost := 123456789.98765
+	message := llm.Message{ID: 23, Role: "assistant", Model: "model", TotalTokens: &tokens, Cost: &cost}
+	var output bytes.Buffer
+	if err := Messages("42", message).Render(context.Background(), &output); err != nil {
+		t.Fatal(err)
+	}
+	markup := output.String()
+	for _, want := range []string{
+		`data-rolling-number="` + strconv.Itoa(tokens) + `" data-rolling-digits="0" data-rolling-key="message-42-23-tokens">` + strconv.Itoa(tokens),
+		`data-rolling-number="123456789.9877" data-rolling-digits="4" data-rolling-key="message-42-23-cost">123456789.9877`,
+	} {
+		if !strings.Contains(markup, want) {
+			t.Errorf("markup missing %q: %s", want, markup)
+		}
+	}
+
+	output.Reset()
+	if err := Messages("", llm.Message{Role: "assistant", Model: "model", TotalTokens: &tokens, Cost: &cost}).Render(context.Background(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "data-rolling-key=") {
+		t.Errorf("anonymous message has stable rolling keys: %s", output.String())
+	}
+
+	tinyCost := 0.000001
+	output.Reset()
+	if err := Messages("42", llm.Message{ID: 24, Role: "assistant", Model: "model", Cost: &tinyCost, CostEstimated: true}).Render(context.Background(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `~&lt;$<span class="rolling-number" data-rolling-number="0.0001" data-rolling-digits="4" data-rolling-key="message-42-24-cost">0.0001</span>`) {
+		t.Errorf("estimated tiny cost prefix or numeric fallback changed: %s", output.String())
+	}
+	if got := messageMetaText(t, output.String()); !reflect.DeepEqual(got, []string{"~<$0.0001"}) {
+		t.Errorf("estimated tiny visible cost = %v, want [~<$0.0001]", got)
 	}
 }
 
@@ -199,7 +252,6 @@ func TestMessagesResponseUsage(t *testing.T) {
 			wantMeta: []string{"23 tokens · $0.3000"},
 		},
 	}
-	metaPattern := regexp.MustCompile(`<span class="message-meta">· ([^<]+)</span>`)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			original := append([]llm.Message(nil), tt.messages...)
@@ -218,10 +270,7 @@ func TestMessagesResponseUsage(t *testing.T) {
 				if err := Messages("", tt.messages...).Render(context.Background(), &output); err != nil {
 					t.Fatal(err)
 				}
-				var gotMeta []string
-				for _, match := range metaPattern.FindAllStringSubmatch(output.String(), -1) {
-					gotMeta = append(gotMeta, match[1])
-				}
+				gotMeta := messageMetaText(t, output.String())
 				if !reflect.DeepEqual(gotMeta, tt.wantMeta) {
 					t.Fatalf("render %d metadata = %v, want %v; HTML: %s", render, gotMeta, tt.wantMeta, output.String())
 				}
@@ -239,4 +288,41 @@ func TestMessagesResponseUsage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func messageMetaText(t *testing.T, markup string) []string {
+	t.Helper()
+	document, err := html.Parse(strings.NewReader(markup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result []string
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == "span" {
+			for _, attribute := range node.Attr {
+				if attribute.Key == "class" && strings.Contains(" "+attribute.Val+" ", " message-meta ") {
+					text := strings.Join(strings.Fields(htmlNodeText(node)), " ")
+					result = append(result, strings.TrimPrefix(text, "· "))
+					return
+				}
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(document)
+	return result
+}
+
+func htmlNodeText(node *html.Node) string {
+	if node.Type == html.TextNode {
+		return node.Data
+	}
+	var text strings.Builder
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		text.WriteString(htmlNodeText(child))
+	}
+	return text.String()
 }

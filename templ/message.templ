@@ -74,6 +74,37 @@ func formatMessageCost(cost float64, estimated bool) string {
 	return formatted
 }
 
+func messageCostParts(cost float64, estimated bool) (prefix, amount, formatted string, found bool) {
+	formatted = formatMessageCost(cost, estimated)
+	prefix, amount, found = strings.Cut(formatted, "$")
+	return
+}
+
+func messageUsageKey(chatID string, messageID int64, field string) string {
+	if chatID == "" || messageID <= 0 {
+		return ""
+	}
+	return "message-" + chatID + "-" + strconv.FormatInt(messageID, 10) + "-" + field
+}
+
+templ MessageModelMeta(chatID string, message llm.Message) {
+	if message.TotalTokens != nil {
+		@RollingNumberValue(strconv.Itoa(*message.TotalTokens), 0, messageUsageKey(chatID, message.ID, "tokens"))
+		{ " tokens" }
+	}
+	if message.TotalTokens != nil && message.Cost != nil {
+		{ " · " }
+	}
+	if message.Cost != nil {
+		if prefix, amount, formatted, found := messageCostParts(*message.Cost, message.CostEstimated); found {
+			{ prefix + "$" }
+			@RollingNumberValue(amount, 4, messageUsageKey(chatID, message.ID, "cost"))
+		} else {
+			{ formatted }
+		}
+	}
+}
+
 // toolCallArgsBody is args without trailing `}` so CSS can ellipsis then keep `}`.
 func toolCallArgsBody(args string) string {
 	return strings.TrimSuffix(args, "}")
@@ -179,7 +210,10 @@ templ Messages(chatID string, messages ...llm.Message) {
 					if view.Message.Role == "assistant" {
 						<strong>{ view.Message.Model }</strong>
 						if meta := messageModelMeta(*view.Message); meta != "" {
-							<span class="message-meta"> · { meta }</span>
+							<span class="message-meta">
+								{ " · " }
+								@MessageModelMeta(chatID, *view.Message)
+							</span>
 						}
 						<div class="message-content markdown">
 							@markdown.Render(view.Message.Content)

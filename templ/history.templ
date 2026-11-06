@@ -277,8 +277,19 @@ templ ChatSummary(title string, count int) {
 }
 
 templ HistoryCount(count int) {
-	<p id="history-count" class="eyebrow" hx-swap-oob="outerHTML">Browse · { countLabel(count, "chat") }</p>
+	<p id="history-count" class="eyebrow" hx-swap-oob="outerHTML">
+		{ "Browse · " }
+		@RollingNumberValue(strconv.Itoa(count), 0, "history-chat-count")
+		{ " " + pluralLabel(count, "chat") }
+	</p>
 	<span id="history-summary-count" hx-swap-oob="outerHTML">{ " · " + countLabel(count, "chat") }</span>
+}
+
+func pluralLabel(count int, noun string) string {
+	if count == 1 {
+		return noun
+	}
+	return noun + "s"
 }
 
 func countLabel(count int, noun string) string {

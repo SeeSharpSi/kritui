@@ -1155,7 +1155,231 @@ function togglePanel(panelID, panelButton) {
         panelButton?.focus();
     }
     syncPanelSendButton();
+    scheduleRollingNumbers();
 }
+
+const rollingNumberStates = new Map();
+const rollingNumberTargets = new Map();
+let rollingNumberObserver = null;
+let rollingNumberSyncFrame = 0;
+const rollingNumberObserved = new Set();
+const rollingNumberIntersecting = new WeakSet();
+
+function parseRollingTarget(host) {
+    const text = host.getAttribute('data-rolling-number');
+    const digitsText = host.getAttribute('data-rolling-digits') ?? '0';
+    if (!/^(0|4)$/.test(digitsText) || text === null) return null;
+    const digits = Number(digitsText);
+    if (digits === 0) {
+        if (!/^-?\d+$/.test(text)) return null;
+        try {
+            const value = BigInt(text);
+            if (rollingFormat(digits).format(value) !== text) return null;
+            return { text, digits, value };
+        } catch { return null; }
+    }
+    if (!/^-?(?:\d+\.\d{4})$/.test(text)) return null;
+    const value = Number(text);
+    return Number.isFinite(value) && rollingFormat(digits).format(value) === text
+        ? { text, digits, value }
+        : null;
+}
+
+function rollingNumberVisible(host) {
+    for (let element = host; element instanceof HTMLElement; element = element.parentElement) {
+        if (element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+        const style = getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    }
+    return host.getClientRects().length > 0;
+}
+
+function rollingFormat(digits) {
+    return new Intl.NumberFormat('en-US', {
+        useGrouping: false,
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+    });
+}
+
+function sameRollingValue(left, right) {
+    return typeof left === 'number' && typeof right === 'number'
+        ? Object.is(left, right)
+        : left === right;
+}
+
+function destroyRollingNumber(host, preserveTarget = true) {
+    const state = rollingNumberStates.get(host);
+    if (!state) return;
+    cancelAnimationFrame(state.frame);
+    if (rollingNumberObserved.delete(host)) rollingNumberObserver?.unobserve(host);
+    state.controller?.destroy();
+    host.textContent = state.target.text;
+    host.removeAttribute('data-rolling-enhanced');
+    rollingNumberStates.delete(host);
+    if (!preserveTarget && state.key) rollingNumberTargets.delete(state.key);
+}
+
+function initializeRollingNumber(host, target) {
+    const key = host.getAttribute('data-rolling-key');
+    const prior = key ? rollingNumberTargets.get(key) : null;
+    const samePrecision = prior?.digits === target.digits;
+    const seed = samePrecision ? prior.value : (target.digits === 0 ? 0n : 0);
+    const label = document.createElement('span');
+    label.className = 'visually-hidden rolling-number-label';
+    label.style.userSelect = 'none';
+    label.textContent = target.text;
+    const mount = document.createElement('span');
+    mount.setAttribute('aria-hidden', 'true');
+    host.replaceChildren(label, mount);
+    host.setAttribute('data-rolling-enhanced', 'true');
+    let controller;
+    try {
+        const api = window.RollingNumber;
+        if (typeof api?.createRollingNumber !== 'function') throw new Error('RollingNumber unavailable');
+        controller = api.createRollingNumber(mount, {
+            value: seed,
+            locales: 'en-US',
+            format: {
+                useGrouping: false,
+                minimumFractionDigits: target.digits,
+                maximumFractionDigits: target.digits,
+            },
+            duration: 500,
+        });
+    } catch {
+        host.textContent = target.text;
+        host.removeAttribute('data-rolling-enhanced');
+        return false;
+    }
+    const state = { key, target, digits: target.digits, controller, label, mount, frame: 0 };
+    rollingNumberStates.set(host, state);
+    if (sameRollingValue(seed, target.value) || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        if (!sameRollingValue(seed, target.value)) controller.update({ value: target.value });
+        state.target = target;
+        return true;
+    }
+    state.frame = requestAnimationFrame(() => {
+        state.frame = requestAnimationFrame(() => {
+            state.frame = 0;
+            if (!host.isConnected || rollingNumberStates.get(host) !== state) return;
+            controller.update({ value: state.target.value });
+            if (matchMedia('(prefers-reduced-motion: reduce)').matches) controller.finish?.();
+        });
+    });
+    return true;
+}
+
+function updateRollingNumber(host, state, target) {
+    const changed = state.target.text !== target.text || state.digits !== target.digits;
+    state.target = target;
+    if (!changed) return;
+    state.label.textContent = target.text;
+    if (state.digits !== target.digits) {
+        destroyRollingNumber(host);
+        initializeRollingNumber(host, target);
+    } else if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        cancelAnimationFrame(state.frame);
+        state.frame = 0;
+        state.controller.finish?.();
+        state.controller.update({ value: target.value });
+    } else if (!state.frame) {
+        state.controller.update({ value: target.value });
+    }
+}
+
+function scheduleRollingNumbers() {
+    if (rollingNumberSyncFrame) return;
+    rollingNumberSyncFrame = requestAnimationFrame(() => {
+        rollingNumberSyncFrame = 0;
+        syncRollingNumbers();
+    });
+}
+
+function syncRollingNumbers() {
+    const hosts = new Set(document.querySelectorAll('[data-rolling-number]'));
+    const liveKeys = new Set();
+    for (const host of rollingNumberObserved) {
+        if (!hosts.has(host)) {
+            rollingNumberObserver?.unobserve(host);
+            rollingNumberObserved.delete(host);
+        }
+    }
+    for (const [host, state] of rollingNumberStates) {
+        if (!hosts.has(host)) destroyRollingNumber(host);
+    }
+    hosts.forEach((host) => {
+        const target = parseRollingTarget(host);
+        if (!target) {
+            if (rollingNumberStates.has(host)) destroyRollingNumber(host, false);
+            host.textContent = host.getAttribute('data-rolling-number') ?? '';
+            host.removeAttribute('data-rolling-enhanced');
+            return;
+        }
+        const key = host.getAttribute('data-rolling-key');
+        const previous = key ? rollingNumberTargets.get(key) : null;
+        if (key) {
+            liveKeys.add(key);
+        }
+        const state = rollingNumberStates.get(host);
+        if (state) {
+            updateRollingNumber(host, state, target);
+            if (key) rollingNumberTargets.set(key, { value: target.value, digits: target.digits });
+            return;
+        }
+        if (!rollingNumberVisible(host)) {
+            if (rollingNumberObserver && !rollingNumberObserved.has(host)) {
+                rollingNumberObserved.add(host);
+                rollingNumberObserver.observe(host);
+            }
+            return;
+        }
+        if (rollingNumberObserver && !rollingNumberIntersecting.has(host)) {
+            if (!rollingNumberObserved.has(host)) {
+                rollingNumberObserved.add(host);
+                rollingNumberObserver.observe(host);
+            }
+            return;
+        }
+        if (rollingNumberObserved.delete(host)) rollingNumberObserver?.unobserve(host);
+        if (key && previous) rollingNumberTargets.set(key, previous);
+        if (initializeRollingNumber(host, target) && key) {
+            rollingNumberTargets.set(key, { value: target.value, digits: target.digits });
+        }
+    });
+    for (const key of rollingNumberTargets.keys()) {
+        if (!liveKeys.has(key)) rollingNumberTargets.delete(key);
+    }
+}
+
+function flushRollingNumbersForMotion() {
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    for (const [host, state] of rollingNumberStates) {
+        cancelAnimationFrame(state.frame);
+        state.frame = 0;
+        state.controller.finish?.();
+        state.controller.update({ value: state.target.value });
+    }
+}
+
+if ('IntersectionObserver' in window) {
+    rollingNumberObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (entry.isIntersecting) {
+                rollingNumberIntersecting.add(entry.target);
+                if (rollingNumberVisible(entry.target)) {
+                    rollingNumberObserved.delete(entry.target);
+                    rollingNumberObserver.unobserve(entry.target);
+                    scheduleRollingNumbers();
+                }
+            } else {
+                rollingNumberIntersecting.delete(entry.target);
+            }
+        }
+    });
+}
+const rollingMotionQuery = matchMedia('(prefers-reduced-motion: reduce)');
+rollingMotionQuery.addEventListener?.('change', flushRollingNumbersForMotion);
 
 function showCompletionNetworkError(event, message) {
     const source = event.detail?.ctx?.sourceElement ?? event.target;
@@ -1183,6 +1407,7 @@ function showCompletionNetworkError(event, message) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    scheduleRollingNumbers();
     scrollMessages(document);
     initializeShell(document);
     syncPanelSendButton();
@@ -1512,6 +1737,7 @@ async function copyMessage(button) {
 }
 
 document.addEventListener('htmx:after:process', (event) => {
+    scheduleRollingNumbers();
     scrollMessages(event.target);
     initializeShell(event.target);
     syncToolResultElisionControls(event.target);
@@ -1569,6 +1795,7 @@ document.addEventListener('htmx:before:swap', (event) => {
     }
 });
 document.addEventListener('htmx:after:swap', (event) => {
+    scheduleRollingNumbers();
     const swapCtxTarget = event.detail?.ctx?.target;
     if (swapCtxTarget) {
         const swapRootAfter = swapCtxTarget.closest?.('.completion-progress') || swapCtxTarget;
@@ -1621,6 +1848,7 @@ function applySettingsTheme(root) {
 }
 
 document.addEventListener('htmx:after:settle', (event) => {
+    scheduleRollingNumbers();
     restoreMessageScroll(event.detail?.task?.target);
     autoCopyShareLinks(event.detail?.task?.target ?? event.target);
     initializeShell(event.detail?.task?.target ?? event.target);
@@ -1688,6 +1916,15 @@ document.addEventListener('kritui:message-edited', () => {
 });
 document.addEventListener('htmx:before:cleanup', (event) => {
     const root = event.target;
+    for (const host of rollingNumberObserved) {
+        if (host === root || root.contains?.(host)) {
+            rollingNumberObserver?.unobserve(host);
+            rollingNumberObserved.delete(host);
+        }
+    }
+    for (const host of rollingNumberStates.keys()) {
+        if (host === root || root.contains?.(host)) destroyRollingNumber(host);
+    }
     closeImageViewerWithin(root, false);
     clearComposerAttachments(root);
     destroyMessageListStates(root);
@@ -1700,6 +1937,7 @@ document.addEventListener('htmx:sse:before:message', (event) => {
     }
 });
 document.addEventListener('htmx:sse:after:message', (event) => {
+    scheduleRollingNumbers();
     restoreExpandedToolCalls(event.target, pendingExpandedToolCalls.get(event.target));
     pendingExpandedToolCalls.delete(event.target);
     restoreMessageScroll(event.target);

@@ -3669,6 +3669,19 @@ body:has(#chat-title-request.htmx-request) #history-entries .history-entry.curre
     border: 0;
 }
 
+.rolling-number {
+    display: inline-block;
+    overflow: visible;
+    font: inherit;
+    line-height: inherit;
+    vertical-align: baseline;
+    font-variant-numeric: tabular-nums;
+}
+
+.rolling-number-label {
+    user-select: none;
+}
+
 #settings-page .settings-save-bar button.settings-save,
 #settings-page .settings-logout button.settings-logout-button {
     box-sizing: border-box;
