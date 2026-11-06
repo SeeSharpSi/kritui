@@ -1276,6 +1276,13 @@ document.addEventListener('focusin', (event) => {
 
 document.addEventListener('keydown', (event) => {
     const input = event.target;
+    const thinkingPicker = input.closest('.thinking-picker[open]');
+    if (event.key === 'Escape' && !event.isComposing && thinkingPicker) {
+        event.preventDefault();
+        thinkingPicker.open = false;
+        thinkingPicker.querySelector('summary')?.focus();
+        return;
+    }
 
     if (!event.isComposing && (event.key === 'Enter' || event.key === ' ')) {
         const viewerTrigger = imageViewerTriggerFor(input);

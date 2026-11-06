@@ -47,14 +47,15 @@ var (
 // selections snapshotted at submission time; Message is the user turn before
 // prompt appends are expanded for a provider.
 type InboxItem struct {
-	ID           int64
-	SubmissionID string
-	Delivery     string
-	Model        string
-	Tools        []string
-	AppendIDs    []string
-	Message      llm.Message
-	Status       string
+	ID              int64
+	SubmissionID    string
+	Delivery        string
+	Model           string
+	ReasoningEffort string
+	Tools           []string
+	AppendIDs       []string
+	Message         llm.Message
+	Status          string
 }
 
 // CheckpointResult describes the durable state committed after one model
@@ -69,9 +70,10 @@ type CheckpointResult struct {
 // It lets a restarted process offer a retry when the last durable message is a
 // tool result.
 type CompletionState struct {
-	Pending bool
-	Model   string
-	Tools   []string
+	Pending         bool
+	Model           string
+	ReasoningEffort string
+	Tools           []string
 }
 
 // MigrateInbox creates the version 26 inbox and completion-state tables. It is
@@ -132,9 +134,9 @@ func EnqueuePrompt(ctx context.Context, db databaseExecutor, chatID int64, item 
 		}
 
 		inserted, err := executor.ExecContext(ctx, `
-			INSERT INTO inbox_items (chat_id, submission_id, delivery, model, status, content)
-			VALUES (?, ?, ?, ?, 'pending', '')
-		`, chatID, prepared.SubmissionID, prepared.Delivery, prepared.Model)
+			INSERT INTO inbox_items (chat_id, submission_id, delivery, model, reasoning_effort, status, content)
+			VALUES (?, ?, ?, ?, ?, 'pending', '')
+		`, chatID, prepared.SubmissionID, prepared.Delivery, prepared.Model, prepared.ReasoningEffort)
 		if err != nil {
 			return fmt.Errorf("insert inbox item: %w", err)
 		}
@@ -337,6 +339,9 @@ func checkpointCompletion(ctx context.Context, db *sql.DB, chatID int64, expecte
 		var err error
 		if item.Delivery == "queue" {
 			err = replaceChatOptions(ctx, tx, chatID, item.Tools, item.AppendIDs)
+			if err == nil {
+				err = SetChatReasoningEffort(ctx, tx, chatID, item.ReasoningEffort)
+			}
 		} else {
 			// A steering turn may update append selections for the next user
 			// turn, but never the tools available to the active completion.
@@ -385,7 +390,7 @@ func checkpointCompletion(ctx context.Context, db *sql.DB, chatID int64, expecte
 			// The queued prompt owns the next busy period. Persist its captured
 			// selection atomically so a restart cannot resume it with the
 			// previous turn's model or tools.
-			queuedState := CompletionState{Pending: true, Model: queueDelivery.Model, Tools: queueDelivery.Tools}
+			queuedState := CompletionState{Pending: true, Model: queueDelivery.Model, Tools: queueDelivery.Tools, ReasoningEffort: queueDelivery.ReasoningEffort}
 			if err := writeCompletionState(ctx, tx, chatID, queuedState); err != nil {
 				return CheckpointResult{}, err
 			}
@@ -480,6 +485,9 @@ func SetCompletionState(ctx context.Context, db databaseExecutor, chatID int64, 
 }
 
 func normalizeCompletionState(state CompletionState) (CompletionState, error) {
+	if err := llm.ValidateReasoningEffort(state.ReasoningEffort); err != nil {
+		return CompletionState{}, err
+	}
 	state.Model = strings.TrimSpace(state.Model)
 	if len([]byte(state.Model)) > maxInboxModelBytes {
 		return CompletionState{}, fmt.Errorf("model exceeds %d bytes", maxInboxModelBytes)
@@ -499,13 +507,14 @@ func writeCompletionState(ctx context.Context, db databaseExecutor, chatID int64
 		pending = 1
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO completion_state (chat_id, pending, model)
-		VALUES (?, ?, ?)
+		INSERT INTO completion_state (chat_id, pending, model, reasoning_effort)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT (chat_id) DO UPDATE SET
 			pending = excluded.pending,
 			model = excluded.model,
+			reasoning_effort = excluded.reasoning_effort,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-	`, chatID, pending, state.Model); err != nil {
+	`, chatID, pending, state.Model, state.ReasoningEffort); err != nil {
 		return fmt.Errorf("store completion state: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM completion_state_tools WHERE chat_id = ?`, chatID); err != nil {
@@ -538,11 +547,11 @@ func GetCompletionState(ctx context.Context, db databaseExecutor, chatID int64) 
 		state   CompletionState
 	)
 	err = queryer.QueryRowContext(ctx, `
-		SELECT pending, model
+		SELECT pending, model, completion_state.reasoning_effort
 		FROM completion_state
 		JOIN chats ON chats.id = completion_state.chat_id
 		WHERE completion_state.chat_id = ? AND chats.user_id = ?
-	`, chatID, UserID(ctx)).Scan(&pending, &state.Model)
+	`, chatID, UserID(ctx)).Scan(&pending, &state.Model, &state.ReasoningEffort)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CompletionState{}, nil
 	}
@@ -578,6 +587,9 @@ func GetCompletionState(ctx context.Context, db databaseExecutor, chatID int64) 
 }
 
 func prepareInboxItem(item InboxItem) (InboxItem, error) {
+	if err := llm.ValidateReasoningEffort(item.ReasoningEffort); err != nil {
+		return InboxItem{}, err
+	}
 	item.SubmissionID = strings.TrimSpace(item.SubmissionID)
 	if item.SubmissionID == "" {
 		return InboxItem{}, errors.New("submission ID is required")
@@ -711,12 +723,12 @@ func inboxItemBySubmission(ctx context.Context, db messageQueryer, chatID int64,
 		sealedContent string
 	)
 	err = db.QueryRowContext(ctx, `
-		SELECT items.id, items.submission_id, items.delivery, items.model, items.status, items.content, items.message_id
+		SELECT items.id, items.submission_id, items.delivery, items.model, items.reasoning_effort, items.status, items.content, items.message_id
 		FROM inbox_items AS items
 		JOIN chats ON chats.id = items.chat_id
 		WHERE chats.user_id = ? AND items.chat_id = ? AND items.submission_id = ?
 	`, userID, chatID, submissionID).Scan(
-		&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.Status, &sealedContent, &messageID,
+		&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.ReasoningEffort, &item.Status, &sealedContent, &messageID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return InboxItem{}, false, nil
@@ -748,7 +760,7 @@ func queryInboxItems(ctx context.Context, db messageQueryer, chatID int64, statu
 		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT items.id, items.submission_id, items.delivery, items.model, items.status, items.content, items.message_id
+		SELECT items.id, items.submission_id, items.delivery, items.model, items.reasoning_effort, items.status, items.content, items.message_id
 		FROM inbox_items AS items
 		JOIN chats ON chats.id = items.chat_id
 		WHERE chats.user_id = ?
@@ -768,7 +780,7 @@ func queryInboxItems(ctx context.Context, db messageQueryer, chatID int64, statu
 			messageID     sql.NullInt64
 			sealedContent string
 		)
-		if err := rows.Scan(&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.Status, &sealedContent, &messageID); err != nil {
+		if err := rows.Scan(&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.ReasoningEffort, &item.Status, &sealedContent, &messageID); err != nil {
 			return nil, fmt.Errorf("scan inbox item: %w", err)
 		}
 		content, err := DecryptStorageText(ctx, inboxContentScope, inboxStorageRowID(item.ID), sealedContent)

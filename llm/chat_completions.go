@@ -67,13 +67,15 @@ func (c *Client) completeChat(ctx context.Context, endpoint endpointCandidate, m
 	}
 
 	payload := struct {
-		Model    string           `json:"model"`
-		Messages []any            `json:"messages"`
-		Tools    []completionTool `json:"tools,omitempty"`
+		ReasoningEffort string           `json:"reasoning_effort,omitempty"`
+		Model           string           `json:"model"`
+		Messages        []any            `json:"messages"`
+		Tools           []completionTool `json:"tools,omitempty"`
 	}{
-		Model:    c.model,
-		Messages: requestMessages,
-		Tools:    requestTools,
+		Model:           c.model,
+		ReasoningEffort: c.reasoningEffort,
+		Messages:        requestMessages,
+		Tools:           requestTools,
 	}
 	var response struct {
 		Model   string `json:"model"`

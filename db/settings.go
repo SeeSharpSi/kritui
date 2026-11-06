@@ -70,28 +70,31 @@ type settingWriter interface {
 
 // SettingsUpdate describes the desired settings for one atomic save.
 // Nil PromptAppends, MCPServers, GitHosts, Ntfy, LLM, ToolResultElision,
-// TitleGeneration, SystemPrompt, or CompactionPrompt values, and an empty
-// Theme, leave those settings untouched.
+// TitleGeneration, ReasoningEffort, TitleReasoningEffort, SystemPrompt, or
+// CompactionPrompt values, and an empty Theme, leave those settings untouched.
 type SettingsUpdate struct {
-	Model             string
-	MaxToolRounds     int
-	DefaultTools      []string
-	PromptAppends     []PromptAppend
-	MCPServers        []MCPServerUpdate
-	GitHosts          []GitHostUpdate
-	Ntfy              *NtfySettingsUpdate
-	LLM               *LLMSettingsUpdate
-	ToolResultElision *llm.ToolResultElisionConfig
-	TitleGeneration   *TitleGenerationSettingsUpdate
-	SystemPrompt      *string
-	CompactionPrompt  *string
-	Theme             string
+	Model                string
+	ReasoningEffort      *string
+	TitleReasoningEffort *string
+	MaxToolRounds        int
+	DefaultTools         []string
+	PromptAppends        []PromptAppend
+	MCPServers           []MCPServerUpdate
+	GitHosts             []GitHostUpdate
+	Ntfy                 *NtfySettingsUpdate
+	LLM                  *LLMSettingsUpdate
+	ToolResultElision    *llm.ToolResultElisionConfig
+	TitleGeneration      *TitleGenerationSettingsUpdate
+	SystemPrompt         *string
+	CompactionPrompt     *string
+	Theme                string
 }
 
 // TitleGenerationSettings contains the persisted chat-title generation choice.
 type TitleGenerationSettings struct {
-	Enabled bool
-	Model   string
+	Enabled         bool
+	Model           string
+	ReasoningEffort string
 }
 
 // TitleGenerationSettingsUpdate changes chat-title generation. A disabled
@@ -186,6 +189,20 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 
 	if err := setDefaultModel(ctx, tx, update.Model); err != nil {
 		return err
+	}
+	for column, value := range map[string]*string{
+		"default_reasoning_effort": update.ReasoningEffort,
+		"title_reasoning_effort":   update.TitleReasoningEffort,
+	} {
+		if value == nil {
+			continue
+		}
+		if err := llm.ValidateReasoningEffort(*value); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET `+column+` = ? WHERE id = ?`, *value, UserID(ctx)); err != nil {
+			return fmt.Errorf("save thinking level: %w", err)
+		}
 	}
 	if err := setMaxToolRounds(ctx, tx, update.MaxToolRounds); err != nil {
 		return err
@@ -331,16 +348,18 @@ func GetTitleGenerationSettings(ctx context.Context, db *sql.DB) (TitleGeneratio
 	}
 	var enabled bool
 	var model sql.NullString
+	var effort string
 	if err := db.QueryRowContext(ctx, `
-		SELECT title_generation_enabled, title_generation_model
+		SELECT title_generation_enabled, title_generation_model, title_reasoning_effort
 		FROM settings
 		WHERE id = ?
-	`, userID).Scan(&enabled, &model); err != nil {
+	`, userID).Scan(&enabled, &model, &effort); err != nil {
 		return TitleGenerationSettings{}, fmt.Errorf("get title generation settings: %w", err)
 	}
 	return TitleGenerationSettings{
-		Enabled: enabled,
-		Model:   nullSettingString(model),
+		Enabled:         enabled,
+		Model:           nullSettingString(model),
+		ReasoningEffort: effort,
 	}, nil
 }
 

@@ -29,6 +29,8 @@ CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id);
 CREATE TABLE IF NOT EXISTS settings (
     id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     default_model TEXT,
+    default_reasoning_effort TEXT NOT NULL DEFAULT '',
+    title_reasoning_effort TEXT NOT NULL DEFAULT '',
     max_tool_rounds INTEGER CHECK (max_tool_rounds IS NULL OR max_tool_rounds BETWEEN 1 AND 100),
     default_tools_configured INTEGER NOT NULL DEFAULT 0 CHECK (default_tools_configured IN (0, 1)),
     prompt_appends_configured INTEGER NOT NULL DEFAULT 0 CHECK (prompt_appends_configured IN (0, 1)),
@@ -107,6 +109,7 @@ CREATE TABLE IF NOT EXISTS model_endpoint_preferences (
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS chats (
+    reasoning_effort TEXT,
     id INTEGER PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT '',
@@ -265,6 +268,7 @@ CREATE TABLE IF NOT EXISTS shared_responses (
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS inbox_items (
+    reasoning_effort TEXT NOT NULL DEFAULT '',
     id INTEGER PRIMARY KEY,
     chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
     submission_id TEXT NOT NULL CHECK (
@@ -320,6 +324,7 @@ CREATE TABLE IF NOT EXISTS inbox_attachments (
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS completion_state (
+    reasoning_effort TEXT NOT NULL DEFAULT '',
     chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
     pending INTEGER NOT NULL DEFAULT 0 CHECK (pending IN (0, 1)),
     model TEXT NOT NULL DEFAULT '' CHECK (
@@ -342,4 +347,4 @@ CREATE TABLE IF NOT EXISTS models_dev_cache (
     payload BLOB NOT NULL
 ) STRICT;
 
-PRAGMA user_version = 36;
+PRAGMA user_version = 37;

@@ -124,6 +124,7 @@ func generateChatTitle(ctx context.Context, database *sql.DB, chatID int64) (boo
 	}
 	client, err := llm.New(config.APIKey, model, config.Endpoint, llm.ClientOptions{
 		SessionID:         sessionID,
+		ReasoningEffort:   settings.ReasoningEffort,
 		PreferredEndpoint: preferredEndpoint,
 		EndpointSelected: func(endpointType llm.EndpointType) {
 			if err := kritui_db.SetModelEndpointType(ctx, database, model, endpointType); err != nil {

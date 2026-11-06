@@ -533,6 +533,11 @@ main {
                             border-color: var(--color-text);
                         }
 
+                        &[aria-disabled="true"] {
+                            color: var(--color-text-muted);
+                            cursor: not-allowed;
+                        }
+
                         &:focus-visible {
                             border-color: var(--color-accent);
                             outline: none;
@@ -2429,6 +2434,11 @@ main {
                 color: var(--color-text);
                 cursor: pointer;
                 user-select: none;
+
+                &[aria-disabled="true"] {
+                    color: var(--color-text-muted);
+                    cursor: not-allowed;
+                }
 
                 &:hover,
                 &:focus-visible {

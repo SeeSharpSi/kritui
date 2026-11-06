@@ -52,7 +52,7 @@ func admitPrompt(ctx context.Context, database *sql.DB, request messageRequest, 
 		return promptAdmission{}, errPromptAppendTooLarge
 	}
 	item, err := kritui_db.EnqueuePrompt(ctx, tx, request.chatID, kritui_db.InboxItem{
-		SubmissionID: submissionID, Delivery: delivery, Model: request.model,
+		SubmissionID: submissionID, Delivery: delivery, Model: request.model, ReasoningEffort: request.reasoningEffort,
 		Tools: request.toolNames, AppendIDs: kritui_db.PromptAppendIDs(appends),
 		Message: llm.Message{Role: "user", Content: content, Attachments: attachments, PromptAppendTexts: appendTexts},
 	})
@@ -90,6 +90,7 @@ func admitPrompt(ctx context.Context, database *sql.DB, request messageRequest, 
 	}
 	if state.Pending {
 		request.model, request.toolNames = state.Model, state.Tools
+		request.reasoningEffort = state.ReasoningEffort
 	} else if len(snapshot.Messages) == 0 || snapshot.Messages[len(snapshot.Messages)-1].Role != "user" {
 		state = nextInboxState(items)
 		checkpoint, err := kritui_db.CheckpointCompletionWithState(ctx, database, request.chatID, snapshot, nil, "input", state)
@@ -100,12 +101,16 @@ func admitPrompt(ctx context.Context, database *sql.DB, request messageRequest, 
 		if len(checkpoint.Delivered) > 0 {
 			first := checkpoint.Delivered[0]
 			request.model, request.toolNames = first.Model, first.Tools
+			request.reasoningEffort = first.ReasoningEffort
 			if err := kritui_db.UpsertChat(ctx, database, request.chatID, normalizeChatTitle(first.Message.Content), first.Tools, first.AppendIDs); err != nil {
 				return promptAdmission{}, err
 			}
 		}
 	}
-	if err := kritui_db.SetCompletionState(ctx, database, request.chatID, kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames}); err != nil {
+	if err := kritui_db.SetChatReasoningEffort(ctx, database, request.chatID, request.reasoningEffort); err != nil {
+		return promptAdmission{}, err
+	}
+	if err := kritui_db.SetCompletionState(ctx, database, request.chatID, kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort}); err != nil {
 		return promptAdmission{}, err
 	}
 	id, err := store.createForUser(kritui_db.UserID(ctx), request.chatID, request.model, request.toolNames)
@@ -118,7 +123,7 @@ func admitPrompt(ctx context.Context, database *sql.DB, request messageRequest, 
 	return admission, err
 }
 
-func requestForInbox(registry *tools.Registry, chatID int64, model string, names []string) (messageRequest, error) {
+func requestForInbox(registry *tools.Registry, chatID int64, model string, names []string, effort string) (messageRequest, error) {
 	var builtins, remote []string
 	for _, name := range names {
 		if _, ok := kritui_db.ParseMCPServerCapability(name); ok {
@@ -131,7 +136,7 @@ func requestForInbox(registry *tools.Registry, chatID int64, model string, names
 	if err != nil {
 		return messageRequest{}, err
 	}
-	return messageRequest{chat: strconv.FormatInt(chatID, 10), chatID: chatID, model: model, toolNames: names, selected: selected, mcpTools: remote}, nil
+	return messageRequest{chat: strconv.FormatInt(chatID, 10), chatID: chatID, model: model, reasoningEffort: effort, toolNames: names, selected: selected, mcpTools: remote}, nil
 }
 
 // runMessageCompletion owns an entire busy period. Follow-up turns start here,
@@ -152,7 +157,7 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, registry *tools
 			store.finish(requestID, renderCompletionFragment(ctx, templates.CompletionResult(request.chat, messages, inbox))+terminal)
 		}
 	}()
-	if err := kritui_db.SetCompletionState(ctx, database, request.chatID, kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames}); err != nil {
+	if err := kritui_db.SetCompletionState(ctx, database, request.chatID, kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort}); err != nil {
 		terminal = renderCompletionFragment(ctx, templates.MessageError("Failed to prepare completion."))
 		return
 	}
@@ -166,7 +171,7 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, registry *tools
 		snapshot, err := kritui_db.GetMessageSnapshot(ctx, database, request.chatID)
 		var next kritui_db.CheckpointResult
 		if err == nil {
-			next, err = kritui_db.CheckpointCompletionWithState(ctx, database, request.chatID, snapshot, nil, "input", kritui_db.CompletionState{Model: request.model, Tools: request.toolNames})
+			next, err = kritui_db.CheckpointCompletionWithState(ctx, database, request.chatID, snapshot, nil, "input", kritui_db.CompletionState{Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort})
 		}
 		if err != nil {
 			store.workMu.Unlock()
@@ -174,7 +179,7 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, registry *tools
 			return
 		}
 		if len(next.Delivered) == 0 {
-			err = kritui_db.SetCompletionState(ctx, database, request.chatID, kritui_db.CompletionState{Pending: false, Model: request.model, Tools: request.toolNames})
+			err = kritui_db.SetCompletionState(ctx, database, request.chatID, kritui_db.CompletionState{Pending: false, Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort})
 			if err == nil {
 				store.finish(requestID, renderCompletionFragment(ctx, templates.CompletionResult(request.chat, next.Snapshot.Messages, nil)))
 				settled = true
@@ -188,13 +193,13 @@ func runMessageCompletion(ctx context.Context, database *sql.DB, registry *tools
 		item := next.Delivered[0]
 		if item.Delivery == "queue" {
 			var nextRequest messageRequest
-			nextRequest, err = requestForInbox(registry, request.chatID, item.Model, item.Tools)
+			nextRequest, err = requestForInbox(registry, request.chatID, item.Model, item.Tools, item.ReasoningEffort)
 			if err == nil {
 				request = nextRequest
 			}
 		}
 		if err == nil {
-			err = kritui_db.SetCompletionState(ctx, database, request.chatID, kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames})
+			err = kritui_db.SetCompletionState(ctx, database, request.chatID, kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort})
 		}
 		if err == nil {
 			store.setOptions(requestID, request.model, request.toolNames)
@@ -352,6 +357,9 @@ func startInboxLocked(ctx context.Context, database *sql.DB, registry *tools.Reg
 			if err == nil {
 				state.Tools, err = kritui_db.GetChatTools(ctx, database, chatID)
 			}
+			if err == nil {
+				state.ReasoningEffort, err = kritui_db.GetChatReasoningEffort(ctx, database, chatID)
+			}
 			if err != nil {
 				return resumedPrompt{}, err
 			}
@@ -370,9 +378,10 @@ func startInboxLocked(ctx context.Context, database *sql.DB, registry *tools.Reg
 			}
 			snapshot = checkpoint.Snapshot
 			state.Model, state.Tools = checkpoint.Delivered[0].Model, checkpoint.Delivered[0].Tools
+			state.ReasoningEffort = checkpoint.Delivered[0].ReasoningEffort
 		}
 	}
-	request, err := requestForInbox(registry, chatID, state.Model, state.Tools)
+	request, err := requestForInbox(registry, chatID, state.Model, state.Tools, state.ReasoningEffort)
 	if err != nil {
 		return resumedPrompt{}, err
 	}
@@ -405,7 +414,7 @@ func nextInboxState(items []kritui_db.InboxItem) kritui_db.CompletionState {
 			break
 		}
 	}
-	return kritui_db.CompletionState{Pending: true, Model: first.Model, Tools: first.Tools}
+	return kritui_db.CompletionState{Pending: true, Model: first.Model, Tools: first.Tools, ReasoningEffort: first.ReasoningEffort}
 }
 
 func (s *toolCallStore) setOptions(id, model string, tools []string) {

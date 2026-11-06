@@ -132,6 +132,7 @@ func newMux(database *sql.DB, toolRegistry *tools.Registry, commandRegistry *com
 	mux.HandleFunc("GET /{$}", homeHandler(database, toolRegistry, commandRegistry, toolCalls))
 	mux.HandleFunc("GET /history", historyHandler(database))
 	mux.HandleFunc("GET /settings", settingsHandler(database, toolRegistry))
+	mux.HandleFunc("GET /thinking", thinkingPickerHandler(database))
 	mux.HandleFunc("POST /settings", settingsHandler(database, toolRegistry))
 	mux.HandleFunc("DELETE /chats/{chat}", deleteChatHandler(database))
 	mux.HandleFunc("PUT /chats/{chat}", renameChatHandler(database))
@@ -535,6 +536,22 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateCompactionPromptSettings,
 	migrateMessageUsageAndModelsDevCache,
 	migrateGitHosts,
+	migrateReasoningEffort,
+}
+
+func migrateReasoningEffort(ctx context.Context, tx *sql.Tx) error {
+	for _, column := range []struct{ table, name, definition string }{
+		{"settings", "default_reasoning_effort", `TEXT NOT NULL DEFAULT ''`},
+		{"settings", "title_reasoning_effort", `TEXT NOT NULL DEFAULT ''`},
+		{"chats", "reasoning_effort", `TEXT`},
+		{"inbox_items", "reasoning_effort", `TEXT NOT NULL DEFAULT ''`},
+		{"completion_state", "reasoning_effort", `TEXT NOT NULL DEFAULT ''`},
+	} {
+		if err := addColumnIfMissing(ctx, tx, column.table, column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // migrateStorageFormat31 reserves schema version 31 as the storage-format

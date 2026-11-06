@@ -1,4 +1,5 @@
 CREATE TABLE IF NOT EXISTS inbox_items (
+    reasoning_effort TEXT NOT NULL DEFAULT '',
     id INTEGER PRIMARY KEY,
     chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
     submission_id TEXT NOT NULL CHECK (
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS inbox_attachments (
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS completion_state (
+    reasoning_effort TEXT NOT NULL DEFAULT '',
     chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
     pending INTEGER NOT NULL DEFAULT 0 CHECK (pending IN (0, 1)),
     model TEXT NOT NULL DEFAULT '' CHECK (

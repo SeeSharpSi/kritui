@@ -144,6 +144,14 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			return
 		}
 		selectedModel := renderSettings.defaultModel
+		selectedEffort, err := kritui_db.GetChatReasoningEffort(r.Context(), database, chatID)
+		if err != nil {
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load thinking level.")
+			return
+		}
+		if completionState.Pending {
+			selectedEffort = completionState.ReasoningEffort
+		}
 		for index := len(messages) - 1; index >= 0; index-- {
 			if messages[index].Role == "assistant" && strings.TrimSpace(messages[index].Model) != "" {
 				selectedModel = messages[index].Model
@@ -185,6 +193,9 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			ModelListFallback:        modelsFallback,
 			ModelDetails:             availableModelDetails(r.Context(), database, models),
 			SelectedModel:            selectedModel,
+			SelectedReasoningEffort:  selectedEffort,
+			DefaultReasoningEffort:   renderSettings.reasoningEffort,
+			TitleReasoningEffort:     renderSettings.titleGeneration.ReasoningEffort,
 			DefaultModel:             renderSettings.defaultModel,
 			MaxToolRounds:            renderSettings.maxToolRounds,
 			SystemPrompt:             renderSettings.systemPrompt,
@@ -222,6 +233,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 // homeRenderSettings gathers the configuration values the chat page renders.
 // Prompt appends and default tools may arrive preloaded from chat allocation.
 type homeRenderSettings struct {
+	reasoningEffort   string
 	promptAppends     []kritui_db.PromptAppend
 	defaultModel      string
 	maxToolRounds     int
@@ -248,6 +260,9 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 		defaultTools:  defaultTools,
 	}
 	var err error
+	if settings.reasoningEffort, err = kritui_db.GetDefaultReasoningEffort(ctx, database); err != nil {
+		return homeRenderSettings{}, err
+	}
 	if settings.promptAppends == nil {
 		if settings.promptAppends, err = kritui_db.GetPromptAppends(ctx, database); err != nil {
 			log.Printf("get prompt appends: %v", err)
@@ -459,6 +474,11 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.SelectedModel = selectedModel
+		page.ReasoningEffort, err = kritui_db.GetDefaultReasoningEffort(r.Context(), database)
+		if err != nil {
+			render(http.StatusInternalServerError, "Failed to load thinking level.")
+			return
+		}
 		maxToolRounds, err := kritui_db.GetMaxToolRounds(r.Context(), database, page.MaxToolRounds)
 		if err != nil {
 			log.Printf("get max tool rounds: %v", err)
@@ -481,6 +501,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		}
 		page.TitleGenerationEnabled = titleGeneration.Enabled
 		page.TitleGenerationModel = titleGeneration.Model
+		page.TitleReasoningEffort = titleGeneration.ReasoningEffort
 		defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 		if err != nil {
 			log.Printf("get default tools: %v", err)
@@ -600,6 +621,15 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			}
 			page.TitleGenerationEnabled = r.FormValue("title_generation_enabled") == "1"
 			page.TitleGenerationModel = strings.TrimSpace(r.FormValue("title_generation_model"))
+			var submittedEffort, submittedTitleEffort *string
+			if _, present := r.Form["default_reasoning_effort"]; present {
+				page.ReasoningEffort = strings.ToLower(strings.TrimSpace(r.FormValue("default_reasoning_effort")))
+				submittedEffort = &page.ReasoningEffort
+			}
+			if _, present := r.Form["title_reasoning_effort"]; present {
+				page.TitleReasoningEffort = strings.ToLower(strings.TrimSpace(r.FormValue("title_reasoning_effort")))
+				submittedTitleEffort = &page.TitleReasoningEffort
+			}
 
 			submittedModel := strings.TrimSpace(r.FormValue("model"))
 			submittedRounds, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("max_tool_rounds")))
@@ -919,17 +949,40 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				llmUpdate = &value
 			}
 
+			config, configErr := effectiveLLMConfig(r.Context(), database)
+			if configErr != nil {
+				render(http.StatusInternalServerError, "Failed to load model settings.")
+				return
+			}
+			if llmUpdate != nil && strings.TrimSpace(os.Getenv("LLM_ENDPOINT")) == "" {
+				config.Endpoint = llmUpdate.Endpoint
+			}
+			for _, choice := range []struct {
+				model  string
+				effort *string
+			}{
+				{page.SelectedModel, submittedEffort}, {page.TitleGenerationModel, submittedTitleEffort},
+			} {
+				if choice.effort != nil {
+					if err := validateModelReasoning(config.Endpoint, choice.model, *choice.effort); err != nil {
+						render(http.StatusBadRequest, fmt.Sprintf("Thinking selection is invalid: %v.", err))
+						return
+					}
+				}
+			}
 			update := kritui_db.SettingsUpdate{
-				Model:             page.SelectedModel,
-				MaxToolRounds:     page.MaxToolRounds,
-				DefaultTools:      page.DefaultTools,
-				Ntfy:              ntfyUpdate,
-				LLM:               llmUpdate,
-				ToolResultElision: toolResultElisionUpdate,
-				TitleGeneration:   &titleGenerationUpdate,
-				SystemPrompt:      submittedSystemPrompt,
-				CompactionPrompt:  submittedCompactionPrompt,
-				Theme:             submittedTheme,
+				ReasoningEffort:      submittedEffort,
+				TitleReasoningEffort: submittedTitleEffort,
+				Model:                page.SelectedModel,
+				MaxToolRounds:        page.MaxToolRounds,
+				DefaultTools:         page.DefaultTools,
+				Ntfy:                 ntfyUpdate,
+				LLM:                  llmUpdate,
+				ToolResultElision:    toolResultElisionUpdate,
+				TitleGeneration:      &titleGenerationUpdate,
+				SystemPrompt:         submittedSystemPrompt,
+				CompactionPrompt:     submittedCompactionPrompt,
+				Theme:                submittedTheme,
 			}
 			if r.FormValue("append_form") == "1" {
 				update.PromptAppends = submittedAppends

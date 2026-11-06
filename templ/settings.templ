@@ -17,6 +17,8 @@ type SettingsPanelData struct {
 	ModelListFallback           bool
 	ModelDetails                map[string]ModelDetail
 	SelectedModel               string
+	ReasoningEffort             string
+	TitleReasoningEffort        string
 	MaxToolRounds               int
 	TitleGenerationEnabled      bool
 	TitleGenerationModel        string
@@ -245,7 +247,7 @@ templ SettingsPage(data SettingsPanelData) {
 							</div>
 							<div class="settings-control settings-control-column">
 								if len(data.Models) == 0 {
-									<input id="default-model" type="text" name="model" value={ data.SelectedModel } placeholder="Provider model ID" required/>
+									<input id="default-model" type="text" name="model" value={ data.SelectedModel } placeholder="Provider model ID" required hx-get="/thinking?scope=default" hx-trigger="change" hx-include="this, #default-thinking" hx-target="#default-thinking" hx-swap="outerHTML" hx-sync="#default-model:replace"/>
 								} else {
 									<details id="default-model" class="settings-model-picker" aria-labelledby="default-model-label">
 										<summary>
@@ -255,6 +257,12 @@ templ SettingsPage(data SettingsPanelData) {
 											for _, model := range data.Models {
 												<label>
 													<input
+														hx-get="/thinking?scope=default"
+														hx-trigger="change"
+														hx-include="this, #default-thinking"
+														hx-target="#default-thinking"
+														hx-swap="outerHTML"
+														hx-sync="#default-model:replace"
 														type="radio"
 														name="model"
 														value={ model }
@@ -277,6 +285,7 @@ templ SettingsPage(data SettingsPanelData) {
 										</div>
 									</details>
 								}
+								@ThinkingPicker("default", data.ModelDetails[data.SelectedModel], data.ReasoningEffort)
 								if data.ModelListFallback {
 									<p class="settings-help settings-model-fallback">Using models.dev fallback</p>
 								}
@@ -299,9 +308,9 @@ templ SettingsPage(data SettingsPanelData) {
 							<span id="title-generation-model-label" class="settings-field-label">Title model</span>
 							<p class="settings-help">Required when title generation is enabled. Uses the stored model connection.</p>
 						</div>
-						<div class="settings-control">
+						<div class="settings-control settings-control-column">
 							if len(data.Models) == 0 {
-								<input id="title-generation-model" type="text" name="title_generation_model" value={ data.TitleGenerationModel } maxlength="512" placeholder="Provider model ID"/>
+								<input id="title-generation-model" type="text" name="title_generation_model" value={ data.TitleGenerationModel } maxlength="512" placeholder="Provider model ID" hx-get="/thinking?scope=title" hx-trigger="change" hx-include="this, #title-thinking" hx-target="#title-thinking" hx-swap="outerHTML" hx-sync="#title-generation-model:replace"/>
 							} else {
 								<details id="title-generation-model" class="settings-model-picker" aria-labelledby="title-generation-model-label">
 									<summary>
@@ -310,6 +319,12 @@ templ SettingsPage(data SettingsPanelData) {
 									<div class="settings-model-options">
 										<label>
 											<input
+												hx-get="/thinking?scope=title"
+												hx-trigger="change"
+												hx-include="this, #title-thinking"
+												hx-target="#title-thinking"
+												hx-swap="outerHTML"
+												hx-sync="#title-generation-model:replace"
 												type="radio"
 												name="title_generation_model"
 												value=""
@@ -323,6 +338,12 @@ templ SettingsPage(data SettingsPanelData) {
 										for _, model := range data.Models {
 											<label>
 												<input
+													hx-get="/thinking?scope=title"
+													hx-trigger="change"
+													hx-include="this, #title-thinking"
+													hx-target="#title-thinking"
+													hx-swap="outerHTML"
+													hx-sync="#title-generation-model:replace"
 													type="radio"
 													name="title_generation_model"
 													value={ model }
@@ -344,6 +365,15 @@ templ SettingsPage(data SettingsPanelData) {
 									</div>
 								</details>
 							}
+						</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<span class="settings-field-label">Title thinking</span>
+							<p class="settings-help">Independent from chat thinking. Default uses the provider's settings.</p>
+						</div>
+						<div class="settings-control">
+							@ThinkingPicker("title", data.ModelDetails[data.TitleGenerationModel], data.TitleReasoningEffort)
 						</div>
 					</div>
 					<div class="settings-field settings-system-prompt-field">

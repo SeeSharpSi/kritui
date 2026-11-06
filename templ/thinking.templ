@@ -1,0 +1,52 @@
+package templates
+
+// ThinkingPicker renders the same control in chat and account settings.
+// Scope is one of chat, default, or title, chosen by the server.
+templ ThinkingPicker(scope string, detail ModelDetail, effort string) {
+	{{ effort = SelectedReasoningEffort(detail, effort) }}
+	<details id={ scope + "-thinking" } class={ "thinking-picker", templ.KV("settings-model-picker", scope != "chat"), templ.KV("model-picker", scope == "chat") }>
+		<summary
+			aria-label={ "Thinking level: " + thinkingLabel(effort) }
+			if len(detail.ReasoningEfforts) == 0 {
+				aria-disabled="true"
+				title="No supported thinking levels available for this model."
+				onclick="event.preventDefault()"
+			}
+		>
+			<strong>{ "Thinking: " + thinkingLabel(effort) }</strong>
+		</summary>
+		<div class={ templ.KV("model-options", scope == "chat"), templ.KV("settings-model-options", scope != "chat") }>
+			for _, level := range append([]string{""}, detail.ReasoningEfforts...) {
+				<label>
+					<input
+						type="radio"
+						name={ thinkingField(scope) }
+						value={ level }
+						if scope == "chat" {
+							form="message-form"
+						}
+						if effort == level {
+							checked
+						}
+						onchange="const picker = this.closest('details'); const label = this.nextElementSibling.textContent; picker.querySelector('strong').textContent = 'Thinking: ' + label; picker.querySelector('summary').setAttribute('aria-label', 'Thinking level: ' + label); picker.open = false; picker.querySelector('summary').focus()"
+					/>
+					<span class="model-name">{ thinkingLabel(level) }</span>
+				</label>
+			}
+			if len(detail.ReasoningEfforts) == 0 {
+				<p class="model-fallback-note">No supported thinking levels available for this model.</p>
+			}
+		</div>
+	</details>
+}
+
+func thinkingField(scope string) string {
+	switch scope {
+	case "default":
+		return "default_reasoning_effort"
+	case "title":
+		return "title_reasoning_effort"
+	default:
+		return "reasoning_effort"
+	}
+}

@@ -22,6 +22,9 @@ type HomeData struct {
 	ModelListFallback        bool
 	ModelDetails             map[string]ModelDetail
 	SelectedModel            string
+	SelectedReasoningEffort  string
+	DefaultReasoningEffort   string
+	TitleReasoningEffort     string
 	DefaultModel             string
 	MaxToolRounds            int
 	TitleGenerationEnabled   bool
@@ -68,6 +71,8 @@ templ Home(data HomeData) {
 									ModelListFallback:        data.ModelListFallback,
 									ModelDetails:             data.ModelDetails,
 									SelectedModel:            data.DefaultModel,
+									ReasoningEffort:          data.DefaultReasoningEffort,
+									TitleReasoningEffort:     data.TitleReasoningEffort,
 									MaxToolRounds:            data.MaxToolRounds,
 									TitleGenerationEnabled:   data.TitleGenerationEnabled,
 									TitleGenerationModel:     data.TitleGenerationModel,
@@ -151,6 +156,13 @@ templ Home(data HomeData) {
 										for _, model := range data.Models {
 											<label>
 												<input
+													hx-get="/thinking?scope=chat"
+													hx-trigger="change"
+													hx-include="this, #chat-thinking"
+													hx-target="#chat-thinking"
+													hx-swap="outerHTML"
+													hx-disable="global #message-form button[type='submit']"
+													hx-sync=".chat-options:replace"
 													type="radio"
 													name="model"
 													value={ model }
@@ -175,6 +187,7 @@ templ Home(data HomeData) {
 										}
 									</div>
 								</details>
+								@ThinkingPicker("chat", data.ModelDetails[data.SelectedModel], data.SelectedReasoningEffort)
 								@ToolPicker(data.Tools, data.MCPServers, data.EnabledTools, false)
 								@AppendsPicker(data.PromptAppends, data.EnabledAppendIDs, false)
 							</div>

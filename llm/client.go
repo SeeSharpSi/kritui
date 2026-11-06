@@ -299,6 +299,7 @@ func (e *APIError) Error() string {
 type Client struct {
 	apiKey              string
 	model               string
+	reasoningEffort     string
 	sessionID           string
 	openCodeGo          bool
 	endpoints           []endpointCandidate
@@ -319,6 +320,9 @@ type Client struct {
 // ClientOptions configures provider request deadlines and response limits.
 // Zero values use secure defaults.
 type ClientOptions struct {
+	// ReasoningEffort requests a model-supported effort. Empty leaves the
+	// provider's default unchanged. Callers validate model capabilities.
+	ReasoningEffort     string
 	HTTPClient          *http.Client
 	ModelsTimeout       time.Duration
 	CompletionTimeout   time.Duration
@@ -376,6 +380,10 @@ func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, err
 	if configuration.ModelsTimeout < 0 {
 		return nil, errors.New("llm: models timeout must not be negative")
 	}
+	configuration.ReasoningEffort = strings.ToLower(strings.TrimSpace(configuration.ReasoningEffort))
+	if err := ValidateReasoningEffort(configuration.ReasoningEffort); err != nil {
+		return nil, err
+	}
 	if configuration.CompletionTimeout < 0 {
 		return nil, errors.New("llm: completion timeout must not be negative")
 	}
@@ -401,6 +409,7 @@ func New(apiKey, model, endpoint string, options ...ClientOptions) (*Client, err
 	return &Client{
 		apiKey:              apiKey,
 		model:               model,
+		reasoningEffort:     configuration.ReasoningEffort,
 		sessionID:           strings.TrimSpace(configuration.SessionID),
 		openCodeGo:          isOpenCodeGoEndpoint(parsedEndpoint),
 		endpoints:           endpoints,

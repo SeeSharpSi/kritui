@@ -250,7 +250,7 @@ templ UserMessage(chatID string, message llm.Message) {
 					hx-swap="outerHTML"
 					hx-sync="#messages:drop"
 					hx-disable="find input"
-					hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"
+						hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='reasoning_effort']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"
 				>
 					<label class="visually-hidden" for={ "message-edit-input-" + strconv.FormatInt(message.ID, 10) }>Edit message</label>
 					<input

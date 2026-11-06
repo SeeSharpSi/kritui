@@ -57,17 +57,19 @@ func (c *Client) completeMessages(ctx context.Context, endpoint endpointCandidat
 	}
 
 	payload := struct {
-		Model     string            `json:"model"`
-		MaxTokens int               `json:"max_tokens"`
-		System    string            `json:"system,omitempty"`
-		Messages  []messagesMessage `json:"messages"`
-		Tools     []messagesTool    `json:"tools,omitempty"`
+		OutputConfig *reasoningEffortConfig `json:"output_config,omitempty"`
+		Model        string                 `json:"model"`
+		MaxTokens    int                    `json:"max_tokens"`
+		System       string                 `json:"system,omitempty"`
+		Messages     []messagesMessage      `json:"messages"`
+		Tools        []messagesTool         `json:"tools,omitempty"`
 	}{
-		Model:     c.model,
-		MaxTokens: messagesMaxTokens,
-		System:    system,
-		Messages:  requestMessages,
-		Tools:     requestTools,
+		Model:        c.model,
+		OutputConfig: c.reasoningConfig(),
+		MaxTokens:    messagesMaxTokens,
+		System:       system,
+		Messages:     requestMessages,
+		Tools:        requestTools,
 	}
 	var response struct {
 		Role       string                 `json:"role"`

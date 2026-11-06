@@ -35,12 +35,13 @@ import (
 )
 
 type messageRequest struct {
-	chat      string
-	chatID    int64
-	model     string
-	selected  *tools.Registry
-	toolNames []string
-	mcpTools  []string
+	chat            string
+	chatID          int64
+	model           string
+	reasoningEffort string
+	selected        *tools.Registry
+	toolNames       []string
+	mcpTools        []string
 }
 
 type persistedUserMessage struct {
@@ -287,7 +288,7 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			return
 		}
 
-		err = editUserMessage(r.Context(), database, request.chatID, messageID, message, request.toolNames, r.Form["append"])
+		err = editUserMessage(r.Context(), database, request.chatID, messageID, message, request.toolNames, r.Form["append"], kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort})
 		if err != nil {
 			toolCalls.delete(requestID)
 			switch {
@@ -486,6 +487,7 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 	}
 	client, err := llm.New(effectiveConfig.APIKey, request.model, effectiveConfig.Endpoint, llm.ClientOptions{
 		SessionID:         strconv.FormatInt(request.chatID, 10),
+		ReasoningEffort:   request.reasoningEffort,
 		PreferredEndpoint: preferredEndpoint,
 		EstimateCost:      modelCostEstimator(effectiveConfig.Endpoint, request.model),
 		EndpointSelected: func(endpointType llm.EndpointType) {
@@ -897,11 +899,46 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 		return messageRequest{}, false
 	}
 	model := strings.TrimSpace(r.FormValue("model"))
+	effort := strings.ToLower(strings.TrimSpace(r.FormValue("reasoning_effort")))
+	_, effortSubmitted := r.Form["reasoning_effort"]
+	captured := false
+	if r.URL.Path == "/messages/complete" || r.URL.Path == "/messages/retry" {
+		state, stateErr := kritui_db.GetCompletionState(r.Context(), database, chatID)
+		if stateErr != nil {
+			renderError(http.StatusInternalServerError, "Failed to load completion state.")
+			return messageRequest{}, false
+		}
+		if state.Pending && state.Model != "" {
+			model, effort, captured = state.Model, state.ReasoningEffort, true
+			r.Form["tool"] = state.Tools
+		}
+	}
 	if model == "" {
 		model, err = kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
 		if err != nil {
 			log.Printf("get default model: %v", err)
 			renderError(http.StatusInternalServerError, "Failed to load settings.")
+			return messageRequest{}, false
+		}
+	}
+	if !captured {
+		config, configErr := effectiveLLMConfig(r.Context(), database)
+		if configErr != nil {
+			renderError(http.StatusInternalServerError, "Failed to load model settings.")
+			return messageRequest{}, false
+		}
+		if !effortSubmitted {
+			effort, err = kritui_db.GetChatReasoningEffort(r.Context(), database, chatID)
+			if err != nil {
+				renderError(http.StatusInternalServerError, "Failed to load thinking level.")
+				return messageRequest{}, false
+			}
+			// An inherited preference may not apply to the submitted model.
+			if validateModelReasoning(config.Endpoint, model, effort) != nil {
+				effort = ""
+			}
+		} else if err := validateModelReasoning(config.Endpoint, model, effort); err != nil {
+			renderError(http.StatusBadRequest, fmt.Sprintf("Thinking selection is invalid: %v.", err))
 			return messageRequest{}, false
 		}
 	}
@@ -919,11 +956,12 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 			return messageRequest{}, false
 		}
 		return messageRequest{
-			chat:      chat,
-			chatID:    chatID,
-			model:     model,
-			selected:  selected,
-			toolNames: selected.Names(),
+			chat:            chat,
+			chatID:          chatID,
+			model:           model,
+			reasoningEffort: effort,
+			selected:        selected,
+			toolNames:       selected.Names(),
 		}, true
 	}
 
@@ -953,12 +991,13 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 		return messageRequest{}, false
 	}
 	return messageRequest{
-		chat:      chat,
-		chatID:    chatID,
-		model:     model,
-		selected:  selected,
-		toolNames: selectedNames,
-		mcpTools:  mcpNames,
+		chat:            chat,
+		chatID:          chatID,
+		model:           model,
+		reasoningEffort: effort,
+		selected:        selected,
+		toolNames:       selectedNames,
+		mcpTools:        mcpNames,
 	}, true
 }
 
@@ -1014,7 +1053,7 @@ func persistUserMessage(ctx context.Context, database *sql.DB, chatID int64, mes
 	return persistedUserMessage{id: id, appends: selectedAppends}, nil
 }
 
-func editUserMessage(ctx context.Context, database *sql.DB, chatID, messageID int64, message string, tools []string, appendIDs []string) error {
+func editUserMessage(ctx context.Context, database *sql.DB, chatID, messageID int64, message string, tools []string, appendIDs []string, completion kritui_db.CompletionState) error {
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin message edit transaction: %w", err)
@@ -1044,6 +1083,12 @@ func editUserMessage(ctx context.Context, database *sql.DB, chatID, messageID in
 		return err
 	}
 	if err := kritui_db.UpsertChat(ctx, tx, chatID, normalizeChatTitle(message), tools, kritui_db.PromptAppendIDs(selectedAppends)); err != nil {
+		return err
+	}
+	if err := kritui_db.SetChatReasoningEffort(ctx, tx, chatID, completion.ReasoningEffort); err != nil {
+		return err
+	}
+	if err := kritui_db.SetCompletionState(ctx, tx, chatID, completion); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

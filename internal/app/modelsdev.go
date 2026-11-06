@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 
@@ -121,7 +123,7 @@ func modelDetailsForEndpoint(endpoint string, modelIDs []string) map[string]temp
 			continue
 		}
 		detail := modelDetail(providerModel)
-		if len(detail.Modalities) == 0 {
+		if len(detail.Modalities) == 0 && len(detail.ReasoningEfforts) == 0 {
 			continue
 		}
 		details[modelID] = detail
@@ -146,7 +148,48 @@ func modelDetail(providerModel modelsdev.ProviderModel) templates.ModelDetail {
 		seen[kind] = struct{}{}
 		modalities = append(modalities, kind)
 	}
-	return templates.ModelDetail{Modalities: modalities}
+	return templates.ModelDetail{Modalities: modalities, ReasoningEfforts: providerModel.Model.ReasoningEfforts()}
+}
+
+func validateModelReasoning(endpoint, model, effort string) error {
+	if err := llm.ValidateReasoningEffort(effort); err != nil {
+		return err
+	}
+	if effort == "" {
+		return nil
+	}
+	metadata, ok := catalogProviderModel(endpoint, model)
+	if !ok {
+		return fmt.Errorf("thinking levels are unavailable for this model; select Default")
+	}
+	return metadata.Model.ValidateReasoningEffort(effort)
+}
+
+// thinkingPickerHandler returns HTML only. Each picker synchronizes replacement
+// requests through hx-sync so an older model selection cannot overwrite a newer one.
+func thinkingPickerHandler(database *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		scope, field, modelField := r.URL.Query().Get("scope"), "reasoning_effort", "model"
+		switch scope {
+		case "chat":
+		case "default":
+			field = "default_reasoning_effort"
+		case "title":
+			field, modelField = "title_reasoning_effort", "title_generation_model"
+		default:
+			http.Error(w, "Invalid thinking picker.", http.StatusBadRequest)
+			return
+		}
+		config, err := effectiveLLMConfig(r.Context(), database)
+		if err != nil {
+			http.Error(w, "Failed to load model settings.", http.StatusInternalServerError)
+			return
+		}
+		model := r.URL.Query().Get(modelField)
+		detail := modelDetailsForEndpoint(config.Endpoint, []string{model})[model]
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = templates.ThinkingPicker(scope, detail, r.URL.Query().Get(field)).Render(r.Context(), w)
+	}
 }
 
 func modalityKind(modality string) string {

@@ -412,7 +412,7 @@ func TestHomeHandlerRendersStoredMessages(t *testing.T) {
 		`aria-label="Copy message"`,
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/8/messages/1"`,
-		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
+		`hx-include="[form='message-form'][name='model']:checked, [form='message-form'][name='reasoning_effort']:checked, [form='message-form'][name='tool']:checked, [form='message-form'][name='append']:checked"`,
 		`/static/htmx.min.js?v=`+templates.StaticAssetVersion,
 		`/static/hx-sse.js?v=`+templates.StaticAssetVersion,
 		`/static/app.js?v=`+templates.StaticAssetVersion,
@@ -2276,7 +2276,7 @@ func TestMigrateDatabaseAddsChatPinsFromVersion26(t *testing.T) {
 	previous = strings.Replace(previous, `CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
     ON chats (user_id, pinned DESC, updated_at DESC, id DESC);`, `CREATE INDEX IF NOT EXISTS chats_user_updated_idx
     ON chats (user_id, updated_at DESC, id DESC);`, 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 36;", "PRAGMA user_version = 26;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 37;", "PRAGMA user_version = 26;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "pinned") {
@@ -2339,7 +2339,7 @@ func TestMigrateDatabaseAddsTitleGenerationSettingsFromVersion27(t *testing.T) {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	previous := prefix + schema[start+relativeEnd:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 36;", "PRAGMA user_version = 27;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 37;", "PRAGMA user_version = 27;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "title_generation") {
@@ -2395,7 +2395,7 @@ func TestMigrateDatabaseRetiresPlaintextSharesFromVersion29(t *testing.T) {
 		t.Fatalf("read legacy share schema: %v", err)
 	}
 	previous := schema[:start] + string(legacyDDL) + "\n\n" + schema[start+end:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 36;", "PRAGMA user_version = 29;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 37;", "PRAGMA user_version = 29;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if !strings.Contains(previous, "PRAGMA user_version = 29;") {
@@ -3931,7 +3931,7 @@ func TestPersistAndEditUserMessageRejectRemovedMCPCapability(t *testing.T) {
 	if err := database.QueryRow(`SELECT id FROM messages WHERE chat_id = 1`).Scan(&messageID); err != nil {
 		t.Fatalf("query stored message: %v", err)
 	}
-	if err := editUserMessage(ctx, database, 1, messageID, "Edited", []string{capability}, nil); !errors.Is(err, errInvalidToolSelection) {
+	if err := editUserMessage(ctx, database, 1, messageID, "Edited", []string{capability}, nil, kritui_db.CompletionState{}); !errors.Is(err, errInvalidToolSelection) {
 		t.Fatalf("editUserMessage() error = %v, want errInvalidToolSelection", err)
 	}
 	var content string

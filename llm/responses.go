@@ -95,13 +95,15 @@ func (c *Client) completeResponse(ctx context.Context, endpoint endpointCandidat
 	}
 
 	payload := struct {
-		Model string         `json:"model"`
-		Input []any          `json:"input"`
-		Tools []responseTool `json:"tools,omitempty"`
+		Model     string                 `json:"model"`
+		Input     []any                  `json:"input"`
+		Tools     []responseTool         `json:"tools,omitempty"`
+		Reasoning *reasoningEffortConfig `json:"reasoning,omitempty"`
 	}{
-		Model: c.model,
-		Input: input,
-		Tools: requestTools,
+		Model:     c.model,
+		Input:     input,
+		Tools:     requestTools,
+		Reasoning: c.reasoningConfig(),
 	}
 	var response struct {
 		Model  string            `json:"model"`
