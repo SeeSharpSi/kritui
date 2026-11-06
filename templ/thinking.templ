@@ -13,7 +13,13 @@ templ ThinkingPicker(scope string, detail ModelDetail, effort string) {
 				onclick="event.preventDefault()"
 			}
 		>
-			<strong>{ "Thinking: " + thinkingLabel(effort) }</strong>
+			<strong>
+				if scope == "chat" {
+					Thinking
+				} else {
+					{ "Thinking: " + thinkingLabel(effort) }
+				}
+			</strong>
 		</summary>
 		<div class={ templ.KV("model-options", scope == "chat"), templ.KV("settings-model-options", scope != "chat") }>
 			for _, level := range append([]string{""}, detail.ReasoningEfforts...) {
@@ -28,7 +34,7 @@ templ ThinkingPicker(scope string, detail ModelDetail, effort string) {
 						if effort == level {
 							checked
 						}
-						onchange="const picker = this.closest('details'); const label = this.nextElementSibling.textContent; picker.querySelector('strong').textContent = 'Thinking: ' + label; picker.querySelector('summary').setAttribute('aria-label', 'Thinking level: ' + label); picker.open = false; picker.querySelector('summary').focus()"
+						onchange="const picker = this.closest('details'); const label = this.nextElementSibling.textContent; picker.querySelector('strong').textContent = picker.id === 'chat-thinking' ? 'Thinking' : 'Thinking: ' + label; picker.querySelector('summary').setAttribute('aria-label', 'Thinking level: ' + label); picker.open = false; picker.querySelector('summary').focus()"
 					/>
 					<span class="model-name">{ thinkingLabel(level) }</span>
 				</label>

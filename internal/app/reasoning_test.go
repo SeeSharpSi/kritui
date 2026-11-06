@@ -40,9 +40,16 @@ func TestThinkingPickerAndValidation(t *testing.T) {
 			}
 			requireContains(t, response.Body.String(), `id="`+test.scope+`-thinking"`, `name="`+test.effortField+`"`, `>Default</span>`)
 			if model == "test" {
-				requireContains(t, response.Body.String(), `value="high"`, `Thinking: High`)
+				requireContains(t, response.Body.String(), `value="high"`, `aria-label="Thinking level: High"`)
 			} else {
-				requireContains(t, response.Body.String(), `Thinking: Default`, `aria-disabled="true"`)
+				requireContains(t, response.Body.String(), `aria-label="Thinking level: Default"`, `aria-disabled="true"`)
+			}
+			if test.scope == "chat" {
+				requireContains(t, response.Body.String(), `<strong>Thinking</strong>`, `picker.id === 'chat-thinking' ? 'Thinking'`)
+			} else if model == "test" {
+				requireContains(t, response.Body.String(), `<strong>Thinking: High</strong>`)
+			} else {
+				requireContains(t, response.Body.String(), `<strong>Thinking: Default</strong>`)
 			}
 		}
 	}
