@@ -370,6 +370,7 @@ main {
                     overflow: hidden;
                     border: 2px solid var(--settings-section-border);
                     background: var(--color-surface);
+                    box-shadow: 3px 3px 0 0 var(--color-border-strong);
                 }
 
                 .settings-section-heading {
@@ -854,6 +855,7 @@ main {
                     padding: 1rem;
                     border: 1px solid var(--color-border);
                     background: var(--color-surface);
+                    box-shadow: 2px 2px 0 0 var(--color-border-strong);
 
                     legend {
                         max-width: calc(100% - 1rem);
