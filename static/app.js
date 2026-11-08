@@ -247,6 +247,79 @@ function syncShellOffset(shell, state) {
     shell.style.setProperty('--shell-scroll-offset', `${offset}px`);
 }
 
+function setShellLayoutProperty(shell, property, value) {
+    if (shell?.style && shell.style.getPropertyValue(property) !== value) {
+        shell.style.setProperty(property, value);
+    }
+}
+
+function scheduleChatOptionsLayout(shell, state) {
+    if (state.layoutFrame || !shell?.isConnected) return;
+    state.layoutFrame = requestAnimationFrame(() => {
+        state.layoutFrame = 0;
+        if (!shell.isConnected || shellStates.get(shell) !== state) return;
+        syncChatOptionsLayout(shell, state);
+    });
+}
+
+function syncChatOptionsLayout(shell, state) {
+    observeShellLayout(shell, state);
+    const viewport = shell.querySelector(':scope > .shell-viewport');
+    const chat = viewport?.querySelector(':scope > .chat');
+    const form = viewport?.querySelector(':scope > #message-form');
+    const controls = viewport?.querySelector(':scope > .chat-controls');
+    const row = controls?.querySelector('.chat-options-list');
+    if (!viewport || !chat || !form || !controls || !row) {
+        setShellLayoutProperty(viewport, '--chat-composer-height', '0px');
+        setShellLayoutProperty(viewport, '--chat-options-height', '0px');
+        setShellLayoutProperty(viewport, '--chat-picker-max-height', '0px');
+        return;
+    }
+
+    const controlsVisible = controls.getClientRects().length > 0;
+    const formVisible = form.getClientRects().length > 0;
+    const composer = formVisible ? form.getBoundingClientRect() : null;
+    const controlsRect = controlsVisible ? controls.getBoundingClientRect() : null;
+    const rowHeight = controlsVisible && composer && row.getClientRects().length > 0
+        ? row.getBoundingClientRect().height
+        : 0;
+    const composerHeight = composer && controlsRect
+        ? Math.max(0, controlsRect.top - composer.top)
+        : 0;
+    setShellLayoutProperty(viewport, '--chat-composer-height', `${composerHeight}px`);
+    setShellLayoutProperty(viewport, '--chat-options-height', `${rowHeight}px`);
+
+    const shellTop = shell.getBoundingClientRect().top;
+    const visualTop = window.visualViewport?.offsetTop ?? 0;
+    const rowTop = composer ? composer.top - rowHeight : shellTop;
+    const gap = 8;
+    const pickerHeight = Math.max(0, rowTop - Math.max(shellTop, visualTop) - gap);
+    setShellLayoutProperty(viewport, '--chat-picker-max-height', `${pickerHeight}px`);
+}
+
+function observeShellLayout(shell, state) {
+    const viewport = shell.querySelector(':scope > .shell-viewport');
+    const chat = viewport?.querySelector(':scope > .chat');
+    const form = viewport?.querySelector(':scope > #message-form');
+    const controls = viewport?.querySelector(':scope > .chat-controls');
+    const row = controls?.querySelector('.chat-options-list');
+    const header = shell.querySelector(':scope > .app-header');
+    const current = new Set([shell, header, viewport, chat, form, controls, row].filter(Boolean));
+    state.observedElements ??= new Set();
+    for (const element of state.observedElements) {
+        if (!current.has(element)) {
+            state.resizeObserver.unobserve(element);
+            state.observedElements.delete(element);
+        }
+    }
+    for (const element of current) {
+        if (!state.observedElements.has(element)) {
+            state.observedElements.add(element);
+            state.resizeObserver.observe(element);
+        }
+    }
+}
+
 function measureShell(shell, state) {
     state.headerSpace = Math.max(0, shellHeaderSpace(shell));
     shell.style.setProperty('--shell-header-space', `${state.headerSpace}px`);
@@ -266,7 +339,15 @@ function shellState(shell) {
         pendingInitial: false,
         initialAttempts: 0,
         touch: null,
-        onScroll: () => syncShellOffset(shell, state),
+        onScroll: () => {
+            syncShellOffset(shell, state);
+            scheduleChatOptionsLayout(shell, state);
+        },
+        onOptionsToggle: (event) => {
+            if (event.target.matches?.('.chat-options')) {
+                scheduleChatOptionsLayout(shell, state);
+            }
+        },
         onWheel: (event) => handleShellWheel(shell, state, event),
         onTouchStart: (event) => handleShellTouchStart(shell, state, event),
         onTouchMove: (event) => handleShellTouchMove(shell, state, event),
@@ -275,20 +356,24 @@ function shellState(shell) {
             state.touch = null;
         },
         resizeObserver: null,
+        layoutFrame: 0,
+        observedElements: new Set(),
     };
     shell.addEventListener('scroll', state.onScroll, { passive: true });
+    shell.addEventListener('toggle', state.onOptionsToggle, true);
     shell.addEventListener('wheel', state.onWheel, { passive: false });
     shell.addEventListener('touchstart', state.onTouchStart, { passive: true });
     shell.addEventListener('touchmove', state.onTouchMove, { passive: false });
     shell.addEventListener('touchend', state.onTouchEnd, { passive: true });
     shell.addEventListener('touchcancel', state.onTouchCancel, { passive: true });
-    state.resizeObserver = new ResizeObserver(() => measureShell(shell, state));
-    state.resizeObserver.observe(shell);
-    const header = shell.querySelector(':scope > .app-header');
-    if (header) {
-        state.resizeObserver.observe(header);
-    }
+    state.resizeObserver = new ResizeObserver(() => {
+        if (!shell.isConnected) return;
+        measureShell(shell, state);
+        scheduleChatOptionsLayout(shell, state);
+    });
     shellStates.set(shell, state);
+    observeShellLayout(shell, state);
+    scheduleChatOptionsLayout(shell, state);
     return state;
 }
 
@@ -301,13 +386,17 @@ function destroyShell(root) {
         return;
     }
     shell.removeEventListener('scroll', state.onScroll);
+    shell.removeEventListener('toggle', state.onOptionsToggle, true);
     shell.removeEventListener('wheel', state.onWheel);
     shell.removeEventListener('touchstart', state.onTouchStart);
     shell.removeEventListener('touchmove', state.onTouchMove);
     shell.removeEventListener('touchend', state.onTouchEnd);
     shell.removeEventListener('touchcancel', state.onTouchCancel);
     state.touch = null;
+    cancelAnimationFrame(state.layoutFrame);
+    state.layoutFrame = 0;
     state.resizeObserver.disconnect();
+    state.observedElements.clear();
     shellStates.delete(shell);
 }
 
@@ -318,6 +407,8 @@ function initializeShell(root) {
     }
     const state = shellState(shell);
     const headerSpace = measureShell(shell, state);
+    observeShellLayout(shell, state);
+    scheduleChatOptionsLayout(shell, state);
     if (state.initialized) {
         return;
     }
@@ -350,9 +441,19 @@ window.addEventListener('resize', () => {
         const state = shellStates.get(shell);
         if (state) {
             measureShell(shell, state);
+            scheduleChatOptionsLayout(shell, state);
         }
     });
 }, { passive: true });
+
+for (const eventName of ['resize', 'scroll']) {
+    window.visualViewport?.addEventListener(eventName, () => {
+        document.querySelectorAll('.shell-scroll').forEach((shell) => {
+            const state = shellStates.get(shell);
+            if (state) scheduleChatOptionsLayout(shell, state);
+        });
+    }, { passive: true });
+}
 
 const messageListStates = new WeakMap();
 const messageBlockSelector = '.message, .completed-tool-calls, .chat-empty';

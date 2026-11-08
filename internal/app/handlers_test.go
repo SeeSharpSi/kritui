@@ -586,6 +586,58 @@ func TestHomeHandlerPreloadsSettingsAndEmptyHistoryShell(t *testing.T) {
 	requireContains(t, string(script), `settingsPage.scrollTop = settingsPageScrollTop`)
 }
 
+func TestChatPickerSizingContractIsSharedByStylesAndScript(t *testing.T) {
+	styles, err := fs.ReadFile(staticFiles, "static/styles.css")
+	if err != nil {
+		t.Fatalf("read styles: %v", err)
+	}
+	script, err := fs.ReadFile(staticFiles, "static/app.js")
+	if err != nil {
+		t.Fatalf("read app script: %v", err)
+	}
+	for _, variable := range []string{
+		"--chat-composer-height",
+		"--chat-options-height",
+		"--chat-picker-max-height",
+	} {
+		requireContains(t, string(styles), variable)
+		requireContains(t, string(script), variable)
+	}
+
+	css := string(styles)
+	const mobilePickerMedia = "\n@media (max-width: 42rem) {"
+	mediaStart := strings.Index(css, mobilePickerMedia)
+	if mediaStart < 0 {
+		t.Fatal("mobile chat picker media block not found")
+	}
+	media := css[mediaStart+len(mobilePickerMedia):]
+	if nextMedia := strings.Index(media, "\n@media"); nextMedia >= 0 {
+		media = media[:nextMedia]
+	}
+	requireContains(t, media, ".chat-options .chat-options-list")
+	menuRules := regexp.MustCompile(`(?s)(?:\.model-picker\s+\.model-options|\.tool-picker\s+\.tool-options|\.append-picker\s+\.append-options)[^{]*\{([^{}]*)\}`).FindAllStringSubmatch(media, -1)
+	if len(menuRules) == 0 {
+		t.Fatal("mobile chat picker menu rules not found")
+	}
+	anchored := false
+	for _, rule := range menuRules {
+		declarations := rule[1]
+		if regexp.MustCompile(`\bposition\s*:\s*fixed\b`).MatchString(declarations) {
+			t.Errorf("mobile chat picker menu uses fixed positioning: %s", strings.TrimSpace(declarations))
+		}
+		if regexp.MustCompile(`\btop\s*:[^;}]*(?:\d+(?:\.\d+)?\s*(?:dvh|svh|lvh|vh|vw)\b)`).MatchString(declarations) {
+			t.Errorf("mobile chat picker menu uses viewport-relative top: %s", strings.TrimSpace(declarations))
+		}
+		if regexp.MustCompile(`\bposition\s*:\s*absolute\b`).MatchString(declarations) &&
+			regexp.MustCompile(`\bbottom\s*:\s*(?:calc\(\s*)?100%`).MatchString(declarations) {
+			anchored = true
+		}
+	}
+	if !anchored {
+		t.Error("mobile chat picker menus must use absolute positioning anchored above their row")
+	}
+}
+
 func TestHomeHandlerRendersEndpointModels(t *testing.T) {
 	database := openTestDatabase(t)
 	seedCurrentChat(t, database, 1)

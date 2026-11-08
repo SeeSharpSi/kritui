@@ -196,6 +196,9 @@ main {
         }
 
         .shell-viewport {
+            --chat-composer-height: 0px;
+            --chat-options-height: 0px;
+            --chat-picker-max-height: 50dvh;
             flex: 0 0 auto;
             height: max(0px, calc(100% - var(--shell-header-space) + var(--shell-scroll-offset)));
             min-height: 0;
@@ -282,6 +285,7 @@ main {
         display: flex;
         flex-direction: column;
         overflow: visible;
+        margin-bottom: var(--chat-options-height, 0px);
         padding: 0;
         border: 1px solid var(--color-border);
         background: var(--color-surface);
@@ -2473,13 +2477,18 @@ main {
         }
 
         .chat-options-list {
-            position: static;
+            position: absolute;
+            z-index: 4;
+            left: -1px;
+            right: -1px;
+            bottom: calc(100% + var(--chat-composer-height, 0px));
             display: flex;
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             gap: .5rem;
             padding: .5rem;
-            border: 0;
+            border: 1px solid var(--color-border);
             background: var(--color-surface);
+            overflow: visible;
 
             button,
             .model-picker>summary,
@@ -2508,9 +2517,11 @@ main {
             }
 
             .model-picker,
+            .thinking-picker,
             .tool-picker,
             .append-picker {
-                position: relative;
+                position: static;
+                flex: 0 0 auto;
                 min-width: 0;
                 max-width: 100%;
 
@@ -2537,6 +2548,21 @@ main {
                 }
             }
 
+            > .model-picker:first-child {
+                flex: 1 1 0;
+                min-width: 0;
+
+                > summary {
+                    width: 100%;
+                    min-width: 0;
+                    box-sizing: border-box;
+                }
+            }
+
+            > button {
+                flex: 0 0 auto;
+            }
+
             .model-picker:not([open]) .model-options,
             .tool-picker:not([open]) .tool-options,
             .append-picker:not([open]) .append-options {
@@ -2550,10 +2576,11 @@ main {
                 z-index: 1;
                 bottom: calc(100% + .5rem);
                 left: 0;
-                min-width: max(100%, 14rem);
-                max-width: min(28rem, calc(100vw - 4rem));
-                max-height: min(24rem, 50dvh);
+                min-width: min(100%, 14rem);
+                max-width: min(28rem, calc(100vw - 1rem), 100%);
+                max-height: min(24rem, 50dvh, var(--chat-picker-max-height, 50dvh));
                 overflow-y: auto;
+                overscroll-behavior: contain;
                 padding: .35rem;
                 box-sizing: border-box;
                 border: 1px solid var(--color-border);
@@ -2584,6 +2611,13 @@ main {
                         clip: rect(0, 0, 0, 0);
                     }
                 }
+            }
+
+            .thinking-picker .model-options,
+            .tool-picker .tool-options,
+            .append-picker .append-options {
+                right: 0;
+                left: auto;
             }
 
             .append-picker .append-options {
@@ -2824,10 +2858,10 @@ main {
 
             >.command-autocomplete {
                 position: absolute;
-                bottom: calc(100% + .5rem);
+                bottom: calc(100% + .5rem + var(--chat-options-height, 0px));
                 left: 0;
                 width: 100%;
-                max-height: min(20rem, 40dvh);
+                max-height: min(20rem, 40dvh, var(--chat-picker-max-height, 40dvh));
                 overflow-y: auto;
                 overscroll-behavior: contain;
                 padding: .35rem;
@@ -3077,14 +3111,17 @@ main {
         flex-wrap: nowrap;
         gap: .35rem;
         padding: .35rem;
-        overflow-x: auto;
+        overflow: visible;
 
         button,
         .model-picker,
+        .thinking-picker,
         .tool-picker,
         .append-picker {
-            flex: 0 0 auto;
+            min-width: 0;
         }
+
+        > .model-picker:first-child { flex: 1 1 0; }
 
         button,
         .model-picker>summary,
@@ -3094,23 +3131,23 @@ main {
             font-size: .75rem;
         }
 
-        .model-picker, .tool-picker, .append-picker {
+        .model-picker, .thinking-picker, .tool-picker, .append-picker {
             position: static;
         }
 
         .model-picker .model-options,
         .tool-picker .tool-options,
         .append-picker .append-options {
-            left: 16px;
-            right: 16px;
+            left: .35rem;
+            right: .35rem;
             width: auto;
             max-width: none;
             min-width: 0;
-            position: fixed;
-            top: 20dvh;
-            bottom: auto;
+            position: absolute;
+            top: auto;
+            bottom: calc(100% + .35rem);
             z-index: 20;
-            max-height: 50dvh;
+            max-height: min(24rem, 50dvh, var(--chat-picker-max-height, 50dvh));
         }
     }
 }
