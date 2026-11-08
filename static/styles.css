@@ -2549,7 +2549,7 @@ main {
             }
 
             > .model-picker:first-child {
-                flex: 1 1 0;
+                flex: 0 1 auto;
                 min-width: 0;
 
                 > summary {
@@ -3120,8 +3120,6 @@ main {
         .append-picker {
             min-width: 0;
         }
-
-        > .model-picker:first-child { flex: 1 1 0; }
 
         button,
         .model-picker>summary,
