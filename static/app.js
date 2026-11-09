@@ -1303,6 +1303,26 @@ function rollingFormat(digits) {
     });
 }
 
+// Pad the seed to the target's integer width so every digit place already
+// exists and rolls from zero instead of entering as a fresh glyph.
+function rollingIntegerDigits(target) {
+    const integer = target.text.split('.')[0].replace(/^-/, '');
+    return Math.min(21, Math.max(1, integer.length));
+}
+
+function rollingNumberFormat(target) {
+    return {
+        useGrouping: false,
+        minimumIntegerDigits: rollingIntegerDigits(target),
+        minimumFractionDigits: target.digits,
+        maximumFractionDigits: target.digits,
+    };
+}
+
+function applyRollingTarget(controller, target) {
+    controller.update({ value: target.value, format: rollingNumberFormat(target) });
+}
+
 function sameRollingValue(left, right) {
     return typeof left === 'number' && typeof right === 'number'
         ? Object.is(left, right)
@@ -1341,12 +1361,8 @@ function initializeRollingNumber(host, target) {
         controller = api.createRollingNumber(mount, {
             value: seed,
             locales: 'en-US',
-            format: {
-                useGrouping: false,
-                minimumFractionDigits: target.digits,
-                maximumFractionDigits: target.digits,
-            },
-            duration: 500,
+            format: rollingNumberFormat(target),
+            duration: 700,
         });
     } catch {
         host.textContent = target.text;
@@ -1356,7 +1372,7 @@ function initializeRollingNumber(host, target) {
     const state = { key, target, digits: target.digits, controller, label, mount, frame: 0 };
     rollingNumberStates.set(host, state);
     if (sameRollingValue(seed, target.value) || matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        if (!sameRollingValue(seed, target.value)) controller.update({ value: target.value });
+        if (!sameRollingValue(seed, target.value)) applyRollingTarget(controller, target);
         state.target = target;
         return true;
     }
@@ -1364,7 +1380,7 @@ function initializeRollingNumber(host, target) {
         state.frame = requestAnimationFrame(() => {
             state.frame = 0;
             if (!host.isConnected || rollingNumberStates.get(host) !== state) return;
-            controller.update({ value: state.target.value });
+            applyRollingTarget(controller, state.target);
             if (matchMedia('(prefers-reduced-motion: reduce)').matches) controller.finish?.();
         });
     });
@@ -1383,9 +1399,9 @@ function updateRollingNumber(host, state, target) {
         cancelAnimationFrame(state.frame);
         state.frame = 0;
         state.controller.finish?.();
-        state.controller.update({ value: target.value });
+        applyRollingTarget(state.controller, target);
     } else if (!state.frame) {
-        state.controller.update({ value: target.value });
+        applyRollingTarget(state.controller, target);
     }
 }
 
@@ -1459,7 +1475,7 @@ function flushRollingNumbersForMotion() {
         cancelAnimationFrame(state.frame);
         state.frame = 0;
         state.controller.finish?.();
-        state.controller.update({ value: state.target.value });
+        applyRollingTarget(state.controller, state.target);
     }
 }
 
