@@ -21,11 +21,13 @@ type promptAdmission struct {
 	requestID string
 	model     string
 	tools     []string
+	request   messageRequest
+	tracker   *toolCallTracker
 	messages  []llm.Message
 	inbox     []kritui_db.InboxItem
 }
 
-func admitPrompt(ctx context.Context, database *sql.DB, request messageRequest, store *toolCallStore, content string, attachments []llm.UserAttachment, appendIDs []string, autoAppendText, submissionID, delivery string) (promptAdmission, error) {
+func admitPrompt(ctx context.Context, database *sql.DB, registry *tools.Registry, request messageRequest, store *toolCallStore, content string, attachments []llm.UserAttachment, appendIDs []string, autoAppendText, submissionID, delivery string) (promptAdmission, error) {
 	store.workMu.Lock()
 	defer store.workMu.Unlock()
 	if submissionID == "" {
@@ -113,14 +115,26 @@ func admitPrompt(ctx context.Context, database *sql.DB, request messageRequest, 
 	if err := kritui_db.SetCompletionState(ctx, database, request.chatID, kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort}); err != nil {
 		return promptAdmission{}, err
 	}
+	admission.inbox, err = kritui_db.GetInbox(ctx, database, request.chatID)
+	if err != nil {
+		return promptAdmission{}, err
+	}
+	preparedRequest, err := requestForInbox(registry, request.chatID, request.model, request.toolNames, request.reasoningEffort)
+	if err != nil {
+		return promptAdmission{}, err
+	}
 	id, err := store.createForUser(kritui_db.UserID(ctx), request.chatID, request.model, request.toolNames)
 	if err != nil {
 		return promptAdmission{}, err
 	}
-	admission.requestID, admission.model, admission.tools = id, request.model, request.toolNames
+	tracker, claimed := store.claimForUser(kritui_db.UserID(ctx), id, request.chatID, request.model, request.toolNames)
+	if !claimed {
+		store.delete(id)
+		return promptAdmission{}, errChatCompletionActive
+	}
+	admission.requestID, admission.model, admission.tools, admission.request, admission.tracker = id, request.model, request.toolNames, preparedRequest, tracker
 	admission.messages = snapshot.Messages
-	admission.inbox, err = kritui_db.GetInbox(ctx, database, request.chatID)
-	return admission, err
+	return admission, nil
 }
 
 func requestForInbox(registry *tools.Registry, chatID int64, model string, names []string, effort string) (messageRequest, error) {

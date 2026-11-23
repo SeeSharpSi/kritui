@@ -781,6 +781,16 @@ function ensureSubmissionID(form, body) {
     }
 }
 
+function captureClientTimezone(body) {
+    if (!(body instanceof FormData || body instanceof URLSearchParams)) {
+        return;
+    }
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (timezone) {
+        body.set('client_timezone', timezone);
+    }
+}
+
 function resetSubmissionID(form) {
     const input = form?.querySelector('#message-submission');
     if (input) {
@@ -1864,10 +1874,15 @@ document.addEventListener('htmx:config:request', (event) => {
     const form = source?.matches?.('#message-form')
         ? source
         : source?.closest?.('#message-form');
+    const body = event.detail?.ctx?.request?.body;
+    const request = event.detail?.ctx?.request;
+    const timezoneSource = source?.matches?.('#message-form, .message-edit-form, .completion-retry, .loading-message');
+    if (timezoneSource && ['POST', 'PUT'].includes(request?.method?.toUpperCase())) {
+        captureClientTimezone(body);
+    }
     if (!form) {
         return;
     }
-    const body = event.detail?.ctx?.request?.body;
     ensureSubmissionID(form, body);
     const submitter = event.detail?.ctx?.request?.submitter;
     if (submitter?.name && (body instanceof FormData || body instanceof URLSearchParams) && !body.has(submitter.name)) {
@@ -1998,6 +2013,118 @@ document.addEventListener('htmx:after:request', (event) => {
     }
     syncPanelSendButton();
 });
+
+let resumeStateGeneration = 0;
+let resumeStateRequest = null;
+
+function activeChatState() {
+    const form = document.querySelector('#message-form');
+    if (!form || !document.querySelector('.chat') || !document.querySelector('#message-history') || !document.querySelector('#prompt-inbox')) {
+        return null;
+    }
+    let action;
+    try {
+        action = new URL(form.getAttribute('hx-post'), window.location.href);
+    } catch {
+        return null;
+    }
+    const chatID = action.searchParams.get('chat');
+    return chatID ? { chatID, href: window.location.href } : null;
+}
+
+function invalidateResumeState() {
+    resumeStateGeneration += 1;
+}
+
+function isResumeStateSource(source) {
+    return source?.hasAttribute?.('data-resume-state-request') === true;
+}
+
+function resumeStateIsCurrent(source) {
+    const current = activeChatState();
+    return source.isConnected
+        && resumeStateGeneration === Number(source.dataset.resumeStateGeneration)
+        && window.location.href === source.dataset.resumeStateHref
+        && current?.chatID === source.dataset.resumeStateChat
+        && document.visibilityState === 'visible';
+}
+
+function invalidatesResumeStateTarget(target) {
+    return target === document.body
+        || target?.matches?.('#message-history, #prompt-inbox, #messages, .chat') === true;
+}
+
+function reconcileActiveChat() {
+    if (document.visibilityState !== 'visible' || resumeStateRequest) {
+        return resumeStateRequest;
+    }
+    const active = activeChatState();
+    if (!active) {
+        return null;
+    }
+
+    const generation = resumeStateGeneration;
+    const source = document.createElement('span');
+    source.hidden = true;
+    source.dataset.resumeStateRequest = 'true';
+    source.dataset.resumeStateGeneration = String(generation);
+    source.dataset.resumeStateHref = active.href;
+    source.dataset.resumeStateChat = active.chatID;
+    document.body.append(source);
+    const stateURL = `/chats/${encodeURIComponent(active.chatID)}/state`;
+    const request = htmx.ajax('GET', stateURL, { source, target: '#message-history', swap: 'none' });
+    resumeStateRequest = Promise.resolve(request)
+        .catch(() => {})
+        .finally(() => {
+            source.remove();
+            if (resumeStateRequest === wrapped) {
+                resumeStateRequest = null;
+            }
+        });
+    const wrapped = resumeStateRequest;
+    return wrapped;
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        reconcileActiveChat();
+    }
+});
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted) reconcileActiveChat();
+});
+window.addEventListener('pagehide', invalidateResumeState);
+window.addEventListener('popstate', invalidateResumeState);
+window.addEventListener('hashchange', invalidateResumeState);
+document.addEventListener('htmx:before:request', (event) => {
+    const ctx = event.detail?.ctx;
+    if (!isResumeStateSource(ctx?.sourceElement)
+        && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(ctx?.request?.method?.toUpperCase())) {
+        invalidateResumeState();
+    }
+});
+document.addEventListener('htmx:sse:before:message', invalidateResumeState);
+document.addEventListener('htmx:before:swap', (event) => {
+    const ctx = event.detail?.ctx;
+    if (!isResumeStateSource(ctx?.sourceElement)) {
+        return;
+    }
+    const responseURL = ctx.response?.raw?.url;
+    const redirectedToLogin = ctx.response?.raw?.redirected
+        || (responseURL && new URL(responseURL, window.location.href).pathname.startsWith('/login'));
+    if (!resumeStateIsCurrent(ctx.sourceElement)
+        || redirectedToLogin || ctx.response?.status < 200 || ctx.response?.status >= 400) {
+        event.preventDefault();
+    }
+});
+document.addEventListener('htmx:after:swap', (event) => {
+    const ctx = event.detail?.ctx;
+    if (isResumeStateSource(ctx?.sourceElement)) return;
+    const targets = [ctx?.target, ...(event.detail?.tasks ?? []).map((task) => task?.target)];
+    if (targets.some(invalidatesResumeStateTarget)) {
+        invalidateResumeState();
+    }
+});
 document.addEventListener('htmx:finally:request', () => {
     queueMicrotask(syncPanelSendButton);
 });
@@ -2065,7 +2192,9 @@ document.addEventListener('htmx:sse:after:message', (event) => {
 });
 document.addEventListener('htmx:sse:close', (event) => {
     if (event.detail?.reason === 'message') {
-        showCompletionNetworkError(event, 'Completion status expired. Retry the completion.');
+        if (!reconcileActiveChat()) {
+            showCompletionNetworkError(event, 'Completion status expired. Retry the completion.');
+        }
     }
 });
 document.addEventListener('htmx:response:error', (event) => {

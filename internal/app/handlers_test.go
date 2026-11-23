@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -4274,9 +4275,6 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`class="message-copy-button"`,
 		`class="message-edit-toggle"`,
 		`hx-put="/chats/1/messages/1"`,
-		`hx-post="/messages/complete?chat=1"`,
-		`hx-trigger="load"`,
-		`hx-sync="#messages:queue last"`,
 		`hx-target="#message-history"`,
 		`hx-sse:connect="/messages/tools?request=`,
 		`hx-sse:close="close"`,
@@ -4292,6 +4290,7 @@ func TestMessageHandlerRendersPendingSubmission(t *testing.T) {
 		`hx-post="/messages/retry?chat=1"`,
 		`data-completion-error-message`,
 	)
+	requireNotContains(t, response.Body.String(), `hx-post="/messages/complete?chat=1"`, `hx-trigger="load"`)
 	requireNotContains(t, response.Body.String(), "every 200ms", `type="hidden" name="message"`, `hx-ext="sse"`, `sse-connect=`, `sse-close=`, `sse-swap=`, `hx-disabled-elt=`)
 	if count := strings.Count(response.Body.String(), `name="model" value="selected-model"`); count != 1 {
 		t.Errorf("model input count = %d, want 1", count)
@@ -4342,12 +4341,12 @@ func TestMessageEditHandlerTruncatesAndRestartsCompletion(t *testing.T) {
 		"Earlier answer",
 		"Edited question",
 		"selected-model",
-		`hx-post="/messages/complete?chat=7"`,
-		`hx-trigger="load"`,
+		`hx-sse:connect="/messages/tools?request=`,
 		`hx-put="/chats/7/messages/12"`,
 		`name="model" value="selected-model"`,
 		`name="tool" value="webfetch"`,
 	)
+	requireNotContains(t, response.Body.String(), `hx-post="/messages/complete?chat=7"`, `hx-trigger="load"`)
 	requireNotContains(t, response.Body.String(), "Original question", "Discarded answer", `hx-swap-oob="outerHTML"`)
 
 	rows, err := database.Query(`SELECT id, content FROM messages WHERE chat_id = 7 ORDER BY position`)
@@ -4972,6 +4971,65 @@ func TestMessageCompletionContinuesAfterRequestCancellation(t *testing.T) {
 	}
 }
 
+func TestMessageSubmissionStartsCompletionWithoutCompletionRequest(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 1)
+	providerStarted := make(chan struct{})
+	releaseProvider := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseProvider) }) }
+	defer release()
+	var providerCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		close(providerStarted)
+		select {
+		case <-releaseProvider:
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"response-model","choices":[{"message":{"role":"assistant","content":"Started by send."},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	t.Setenv("LLM_ENDPOINT", server.URL)
+
+	toolCalls := newToolCallStore()
+	handler := messageHandler(database, newTestToolRegistry(t), newTestCommandRegistry(t, database), toolCalls)
+	request := httptest.NewRequest(http.MethodPost, "/messages?chat=1", strings.NewReader(url.Values{
+		"message": {"Start without browser follow-up"},
+		"model":   {"selected-model"},
+	}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	ctx, cancel := context.WithCancel(request.Context())
+	request = request.WithContext(ctx)
+	response := httptest.NewRecorder()
+	handler(response, request)
+	if response.Code != http.StatusOK {
+		cancel()
+		release()
+		t.Fatalf("message status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	requestID := inboxTestRequestID(t, response.Body.String())
+	requireNotContains(t, response.Body.String(), `hx-post="/messages/complete?chat=1"`)
+	waitForTestSignal(t, providerStarted, "completion started by message POST")
+	cancel()
+	release()
+	requireContains(t, waitForCompletionResult(t, toolCalls, requestID), "Started by send.")
+	var stored string
+	if err := database.QueryRow(`SELECT content FROM messages WHERE chat_id = 1 AND role = 'assistant'`).Scan(&stored); err != nil {
+		t.Fatalf("load completion: %v", err)
+	}
+	if stored != "Started by send." {
+		t.Errorf("stored response = %q, want %q", stored, "Started by send.")
+	}
+	if calls := providerCalls.Load(); calls != 1 {
+		t.Errorf("provider calls = %d, want 1", calls)
+	}
+}
+
 func TestHomeHandlerRestoresCompletionState(t *testing.T) {
 	database := openTestDatabase(t)
 	insertAcceptedUser(t, database, 1, "Question")
@@ -5532,7 +5590,8 @@ func TestMessageCompletionHandlerRendersRetryableError(t *testing.T) {
 	if retryResponse.Code != http.StatusOK {
 		t.Fatalf("retry status = %d, want %d; body = %q", retryResponse.Code, http.StatusOK, retryResponse.Body.String())
 	}
-	requireContains(t, retryResponse.Body.String(), `hx-post="/messages/complete?chat=1"`, `hx-sse:connect="/messages/tools?request=`, `hx-trigger="load"`)
+	requireContains(t, retryResponse.Body.String(), `hx-sse:connect="/messages/tools?request=`)
+	requireNotContains(t, retryResponse.Body.String(), `hx-post="/messages/complete?chat=1"`, `hx-trigger="load"`)
 
 	var messages int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = 1`).Scan(&messages); err != nil {

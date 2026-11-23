@@ -451,7 +451,7 @@ templ EditedSubmission(chatID string, requestID string, messages []llm.Message, 
 	<div id="message-history">
 		@Messages(chatID, messages...)
 	</div>
-	@PendingCompletion(chatID, requestID, model, tools)
+	@CompletionWithHistory(chatID, requestID, model, tools, false, messages)
 }
 
 templ ChatTitleRequest(chatID string) {

@@ -39,6 +39,28 @@ templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
 	</div>
 }
 
+// ChatStateSnapshot is fetched outside htmx's request lifecycle, then processed
+// by the client. Keep both fragments in the same shape used by completion SSE.
+templ ChatStateSnapshot(chatID string, messages []llm.Message, items []kritui_db.InboxItem, requestID string, model string, tools []string, active bool, interrupted bool) {
+	<hx-partial hx-target="#messages" hx-swap="innerHTML">
+		<div id="message-history">
+		if active {
+			@Messages(chatID, ActiveCompletionView(messages).Messages...)
+		} else {
+			@Messages(chatID, messages...)
+		}
+		</div>
+		if active {
+			@CompletionWithHistory(chatID, requestID, model, tools, false, messages)
+		} else if interrupted {
+			@CompletionError(chatID, "Completion was interrupted. Retry the completion.", model, tools)
+		}
+	</hx-partial>
+	<hx-partial hx-target="#prompt-inbox" hx-swap="outerHTML">
+		@PromptInbox(chatID, items)
+	</hx-partial>
+}
+
 templ HistoryPage(chatID string) {
 	<section
 		id="history-page"

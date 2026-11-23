@@ -393,6 +393,94 @@ func chatSummaryHandler(database *sql.DB) http.HandlerFunc {
 	}
 }
 
+// chatStateHandler returns a read-only, server-rendered snapshot of a chat's
+// transcript and prompt inbox. workMu keeps the persisted checkpoint and live
+// completion marker from being observed on opposite sides of a boundary.
+func chatStateHandler(database *sql.DB, toolCalls *toolCallStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		chatID, ok := positiveID(r.PathValue("chat"))
+		if !ok {
+			renderPageError(w, r, http.StatusBadRequest, "A valid chat is required.")
+			return
+		}
+
+		var (
+			owned           bool
+			messages        []llm.Message
+			inbox           []kritui_db.InboxItem
+			completionState kritui_db.CompletionState
+			completion      activeCompletion
+			active          bool
+			readErr         error
+		)
+		func() {
+			toolCalls.workMu.Lock()
+			defer toolCalls.workMu.Unlock()
+			owned, readErr = requireOwnedChat(r.Context(), database, chatID)
+			if readErr != nil || !owned {
+				return
+			}
+			messages, readErr = kritui_db.GetMessages(r.Context(), database, chatID)
+			if readErr != nil {
+				return
+			}
+			inbox, readErr = kritui_db.GetInbox(r.Context(), database, chatID)
+			if readErr != nil {
+				return
+			}
+			completionState, readErr = kritui_db.GetCompletionState(r.Context(), database, chatID)
+			if readErr != nil {
+				return
+			}
+			completion, active = toolCalls.activeForUser(kritui_db.UserID(r.Context()), chatID)
+		}()
+		if readErr != nil {
+			log.Printf("read chat state: %v", readErr)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat state.")
+			return
+		}
+		if !owned {
+			renderPageError(w, r, http.StatusNotFound, "Chat not found.")
+			return
+		}
+
+		interrupted := !active && (completionState.Pending || len(messages) > 0 && messages[len(messages)-1].Role == "user")
+		model, tools := completion.model, completion.tools
+		if !active && completionState.Pending {
+			model, tools = completionState.Model, completionState.Tools
+		}
+		if interrupted && strings.TrimSpace(model) == "" {
+			var err error
+			model, err = kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
+			if err != nil {
+				log.Printf("get chat state retry model: %v", err)
+				renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat state.")
+				return
+			}
+		}
+		if interrupted && !completionState.Pending {
+			var err error
+			tools, err = kritui_db.GetChatTools(r.Context(), database, chatID)
+			if err != nil {
+				log.Printf("get chat state retry tools: %v", err)
+				renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat state.")
+				return
+			}
+		}
+
+		var snapshot bytes.Buffer
+		chat := strconv.FormatInt(chatID, 10)
+		if err := templates.ChatStateSnapshot(chat, messages, inbox, completion.requestID, model, tools, active, interrupted).Render(r.Context(), &snapshot); err != nil {
+			log.Printf("render chat state snapshot: %v", err)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to render chat state.")
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(snapshot.Bytes())
+	}
+}
+
 func historyHandler(database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chat := r.URL.Query().Get("chat")

@@ -83,7 +83,8 @@ var (
 	errPromptAppendTooLarge = errors.New("message with prompt appends is too large")
 )
 
-func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry *commands.Registry, toolCalls *toolCallStore) http.HandlerFunc {
+func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry *commands.Registry, toolCalls *toolCallStore, loggers ...*log.Logger) http.HandlerFunc {
+	toolCallLogger := firstLogger(loggers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !parseMessageForm(w, r, maxMessagePostBytes) {
 			return
@@ -200,7 +201,9 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 			renderMessageError(w, r, http.StatusBadRequest, "Invalid submission ID.")
 			return
 		}
-		admission, err := admitPrompt(r.Context(), database, request, toolCalls, message, attachments, r.Form["append"], autoAppendText, submissionID, delivery)
+		admissionCtx, cancelAdmission := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+		admission, err := admitPrompt(admissionCtx, database, registry, request, toolCalls, message, attachments, r.Form["append"], autoAppendText, submissionID, delivery)
+		cancelAdmission()
 		if err != nil {
 			switch {
 			case errors.Is(err, errInvalidAppendSelection):
@@ -217,12 +220,15 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 			}
 			return
 		}
+		if admission.requestID != "" {
+			startMessageCompletion(r.Context(), database, registry, admission.request, admission.requestID, admission.tracker, toolCalls, toolCallLogger, r.FormValue("client_timezone"))
+		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if admission.requestID != "" {
 			_ = templates.ClearCompletionErrors().Render(r.Context(), w)
 			_ = templates.ActiveCompletionResult(request.chat, admission.messages, admission.inbox).Render(r.Context(), w)
-			_ = templates.CompletionWithHistory(request.chat, admission.requestID, admission.model, admission.tools, true, admission.messages).Render(r.Context(), w)
+			_ = templates.CompletionWithHistory(request.chat, admission.requestID, admission.model, admission.tools, false, admission.messages).Render(r.Context(), w)
 			if isInitialUserTurn(admission.messages) {
 				settings, titleErr := kritui_db.GetTitleGenerationSettings(r.Context(), database)
 				if titleErr != nil {
@@ -238,7 +244,8 @@ func messageHandler(database *sql.DB, registry *tools.Registry, commandRegistry 
 	}
 }
 
-func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
+func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore, loggers ...*log.Logger) http.HandlerFunc {
+	toolCallLogger := firstLogger(loggers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		messageID, ok := positiveID(r.PathValue("message"))
 		if !ok {
@@ -288,7 +295,9 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			return
 		}
 
-		err = editUserMessage(r.Context(), database, request.chatID, messageID, message, request.toolNames, r.Form["append"], kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort})
+		admissionCtx, cancelAdmission := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+		err = editUserMessage(admissionCtx, database, request.chatID, messageID, message, request.toolNames, r.Form["append"], kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort})
+		cancelAdmission()
 		if err != nil {
 			toolCalls.delete(requestID)
 			switch {
@@ -308,17 +317,22 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 			}
 			return
 		}
+		tracker, claimed := toolCalls.claimForUser(kritui_db.UserID(r.Context()), requestID, request.chatID, request.model, request.toolNames)
+		if !claimed {
+			toolCalls.delete(requestID)
+			renderMessageEditError(w, r, http.StatusConflict, messageID, "A response is already in progress.")
+			return
+		}
+		startMessageCompletion(r.Context(), database, registry, request, requestID, tracker, toolCalls, toolCallLogger, r.FormValue("client_timezone"))
 
 		messages, err := kritui_db.GetMessages(r.Context(), database, request.chatID)
 		if err != nil {
-			toolCalls.delete(requestID)
 			log.Printf("reload edited conversation: %v", err)
 			renderMessageEditError(w, r, http.StatusInternalServerError, messageID, "Message was edited, but the conversation could not be displayed.")
 			return
 		}
 		var fragment bytes.Buffer
 		if err := templates.EditedSubmission(request.chat, requestID, messages, request.model, request.toolNames).Render(r.Context(), &fragment); err != nil {
-			toolCalls.delete(requestID)
 			log.Printf("render edited conversation: %v", err)
 			renderMessageEditError(w, r, http.StatusInternalServerError, messageID, "Message was edited, but the conversation could not be displayed.")
 			return
@@ -437,12 +451,15 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 		userID := kritui_db.UserID(r.Context())
 		tracker, ok := toolCalls.claimForUser(userID, requestID, request.chatID, request.model, selectedTools)
 		if !ok {
+			if active, running := toolCalls.activeForUser(userID, request.chatID); running && active.requestID == requestID && active.started {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			renderMessageError(w, r, http.StatusBadRequest, "This completion request is no longer valid.")
 			return
 		}
 		clientTimezone := r.FormValue("client_timezone")
-		completionContext := kritui_db.WithUser(context.WithoutCancel(r.Context()), userID)
-		go runMessageCompletion(completionContext, database, registry, request, requestID, tracker, toolCalls, toolCallLogger, clientTimezone)
+		startMessageCompletion(r.Context(), database, registry, request, requestID, tracker, toolCalls, toolCallLogger, clientTimezone)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -804,7 +821,8 @@ func renderCompletionFragment(ctx context.Context, component templ.Component) st
 	return fragment.String()
 }
 
-func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore) http.HandlerFunc {
+func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *toolCallStore, loggers ...*log.Logger) http.HandlerFunc {
+	toolCallLogger := firstLogger(loggers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !parseMessageForm(w, r, maxRetryBodyBytes) {
 			return
@@ -854,13 +872,31 @@ func messageRetryHandler(database *sql.DB, registry *tools.Registry, toolCalls *
 			renderCompletionError(w, r, http.StatusInternalServerError, request.chat, "Failed to prepare retry.", request.model, request.toolNames)
 			return
 		}
+		tracker, claimed := toolCalls.claimForUser(kritui_db.UserID(r.Context()), requestID, request.chatID, request.model, request.toolNames)
+		if !claimed {
+			toolCalls.delete(requestID)
+			renderCompletionError(w, r, http.StatusConflict, request.chat, "A response is already in progress.", request.model, request.toolNames)
+			return
+		}
+		startMessageCompletion(r.Context(), database, registry, request, requestID, tracker, toolCalls, toolCallLogger, r.FormValue("client_timezone"))
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := templates.PendingCompletion(request.chat, requestID, request.model, request.toolNames).Render(r.Context(), w); err != nil {
-			toolCalls.delete(requestID)
+		if err := templates.ActiveCompletion(request.chat, requestID, request.model, request.toolNames).Render(r.Context(), w); err != nil {
 			log.Printf("render retry: %v", err)
 		}
 	}
+}
+
+func firstLogger(loggers []*log.Logger) *log.Logger {
+	if len(loggers) == 0 {
+		return nil
+	}
+	return loggers[0]
+}
+
+func startMessageCompletion(ctx context.Context, database *sql.DB, registry *tools.Registry, request messageRequest, requestID string, tracker *toolCallTracker, store *toolCallStore, logger *log.Logger, timezone string) {
+	completionContext := kritui_db.WithUser(context.WithoutCancel(ctx), kritui_db.UserID(ctx))
+	go runMessageCompletion(completionContext, database, registry, request, requestID, tracker, store, logger, timezone)
 }
 
 func clientLocation(name string) *time.Location {
