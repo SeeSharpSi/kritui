@@ -373,10 +373,10 @@ func TestMessageCompletionSummaryUsesItsStoredProtocolAndNeverPersistsSummary(t 
 	}); err != nil {
 		t.Fatalf("save elision settings: %v", err)
 	}
-	if err := kritui_db.SetModelEndpointType(context.Background(), database, mainModel, llm.EndpointChatCompletions); err != nil {
+	if err := kritui_db.SetModelEndpointType(context.Background(), database, -1, mainModel, llm.EndpointChatCompletions); err != nil {
 		t.Fatalf("set main model endpoint preference: %v", err)
 	}
-	if err := kritui_db.SetModelEndpointType(context.Background(), database, summaryModel, llm.EndpointMessages); err != nil {
+	if err := kritui_db.SetModelEndpointType(context.Background(), database, -1, summaryModel, llm.EndpointMessages); err != nil {
 		t.Fatalf("set summary model endpoint preference: %v", err)
 	}
 
@@ -475,12 +475,12 @@ func TestMessageCompletionSummaryUsesItsStoredProtocolAndNeverPersistsSummary(t 
 	if got := mainRequestNumber.Load(); got != 2 {
 		t.Errorf("main provider request count = %d, want 2", got)
 	}
-	if got, err := kritui_db.GetModelEndpointType(context.Background(), database, mainModel); err != nil {
+	if got, err := kritui_db.GetModelEndpointType(context.Background(), database, -1, mainModel); err != nil {
 		t.Fatalf("get main endpoint preference: %v", err)
 	} else if got != llm.EndpointChatCompletions {
 		t.Errorf("main endpoint preference = %q, want chat_completions", got)
 	}
-	if got, err := kritui_db.GetModelEndpointType(context.Background(), database, summaryModel); err != nil {
+	if got, err := kritui_db.GetModelEndpointType(context.Background(), database, -1, summaryModel); err != nil {
 		t.Fatalf("get summary endpoint preference: %v", err)
 	} else if got != llm.EndpointMessages {
 		t.Errorf("summary endpoint preference = %q, want messages", got)
@@ -517,7 +517,7 @@ func TestMessageCompletionSummaryFailureReturnsRetryWithoutPersistingTail(t *tes
 	}); err != nil {
 		t.Fatalf("save elision settings: %v", err)
 	}
-	if err := kritui_db.SetModelEndpointType(context.Background(), database, "summary-model", llm.EndpointMessages); err != nil {
+	if err := kritui_db.SetModelEndpointType(context.Background(), database, -1, "summary-model", llm.EndpointMessages); err != nil {
 		t.Fatalf("set summary model endpoint preference: %v", err)
 	}
 	var before int
@@ -587,7 +587,7 @@ func TestMigrateVersion22AddsDefaultToolResultElisionSettings(t *testing.T) {
 	`, defaultModel, llmEndpoint, llmAPIKey, ntfyEndpoint, ntfyTopic, ntfyAPIKey); err != nil {
 		t.Fatalf("seed version-22 settings: %v", err)
 	}
-	if err := kritui_db.SetModelEndpointType(context.Background(), database, defaultModel, llm.EndpointMessages); err != nil {
+	if err := kritui_db.SetModelEndpointType(context.Background(), database, 0, defaultModel, llm.EndpointMessages); err != nil {
 		t.Fatalf("seed endpoint preference: %v", err)
 	}
 
@@ -870,7 +870,7 @@ func assertMigratedToolElisionSettings(t *testing.T, database *sql.DB, model, ll
 	} else if want := (llm.ToolResultElisionConfig{Mode: llm.ToolResultElisionNone}); got != want {
 		t.Errorf("migrated elision config = %#v, want %#v", got, want)
 	}
-	if got, err := kritui_db.GetModelEndpointType(context.Background(), database, model); err != nil {
+	if got, err := kritui_db.GetModelEndpointType(context.Background(), database, 0, model); err != nil {
 		t.Fatalf("get preserved endpoint preference: %v", err)
 	} else if got != llm.EndpointMessages {
 		t.Errorf("migrated endpoint preference = %q, want messages", got)
@@ -954,7 +954,7 @@ func version31SchemaFixture(t *testing.T) string {
 	fixture := strings.Replace(schema, resultElidedColumn, "", 1)
 	fixture = strings.Replace(fixture, "    system_prompt TEXT,\n", "", 1)
 	fixture = strings.Replace(fixture, "    compaction_prompt TEXT,\n", "", 1)
-	const currentVersion = "PRAGMA user_version = 37;"
+	const currentVersion = "PRAGMA user_version = 38;"
 	if !strings.Contains(fixture, currentVersion) {
 		t.Fatalf("schema version marker is not 32: %s", currentVersion)
 	}
@@ -976,7 +976,7 @@ func version22SchemaFixture(t *testing.T) string {
 	fixture := prefix + schema[start+relativeEnd:]
 	fixture = strings.Replace(fixture, "    system_prompt TEXT,\n", "", 1)
 	fixture = strings.Replace(fixture, "    compaction_prompt TEXT,\n", "", 1)
-	const currentVersion = "PRAGMA user_version = 37;"
+	const currentVersion = "PRAGMA user_version = 38;"
 	if !strings.Contains(fixture, currentVersion) {
 		t.Fatalf("schema version marker is not 32: %s", currentVersion)
 	}

@@ -21,14 +21,24 @@ type HomeData struct {
 	Models                   []string
 	ModelListFallback        bool
 	ModelDetails             map[string]ModelDetail
-	SelectedModel            string
-	SelectedReasoningEffort  string
-	DefaultReasoningEffort   string
-	TitleReasoningEffort     string
-	DefaultModel             string
+	ModelNames                map[string]string
+	ModelProviders            map[string]string
+	SelectedModel             string
+	SelectedModelValue        string
+	SelectedProviderID        int64
+	SelectedReasoningEffort   string
+	DefaultReasoningEffort    string
+	TitleReasoningEffort      string
+	DefaultModel              string
+	DefaultModelValue         string
+	DefaultProviderID         int64
+	TitleGenerationModel      string
+	TitleGenerationModelValue string
+	TitleGenerationProviderID int64
+	Providers                 []ProviderCard
+	SummaryProviderID         int64
 	MaxToolRounds            int
 	TitleGenerationEnabled   bool
-	TitleGenerationModel     string
 	SystemPrompt             string
 	CompactionPrompt         string
 	ToolResultElision        llm.ToolResultElisionConfig
@@ -70,7 +80,15 @@ templ Home(data HomeData) {
 									Models:                   data.Models,
 									ModelListFallback:        data.ModelListFallback,
 									ModelDetails:             data.ModelDetails,
+									ModelNames:               data.ModelNames,
+									ModelProviders:           data.ModelProviders,
 									SelectedModel:            data.DefaultModel,
+									SelectedModelValue:       data.DefaultModelValue,
+									SelectedProviderID:       data.DefaultProviderID,
+									TitleGenerationModelValue: data.TitleGenerationModelValue,
+									TitleGenerationProviderID: data.TitleGenerationProviderID,
+									Providers:                data.Providers,
+									SummaryProviderID:        data.SummaryProviderID,
 									ReasoningEffort:          data.DefaultReasoningEffort,
 									TitleReasoningEffort:     data.TitleReasoningEffort,
 									MaxToolRounds:            data.MaxToolRounds,
@@ -153,7 +171,7 @@ templ Home(data HomeData) {
 										</strong>
 									</summary>
 									<div class="model-options">
-										for _, model := range data.Models {
+										for _, modelValue := range data.Models {
 											<label>
 												<input
 													hx-get="/thinking?scope=chat"
@@ -165,15 +183,17 @@ templ Home(data HomeData) {
 													hx-sync=".chat-options:replace"
 													type="radio"
 													name="model"
-													value={ model }
+													value={ modelValue }
+													data-model-label={ data.ModelNames[modelValue] }
 													form="message-form"
-													if model == data.SelectedModel {
+													if modelValue == data.SelectedModelValue {
 														checked
 													}
-													onchange="this.closest('details').querySelector('strong').textContent = this.value; this.closest('details').removeAttribute('open')"
+													onchange="this.closest('details').querySelector('strong').textContent = this.dataset.modelLabel; this.closest('details').removeAttribute('open')"
 												/>
-												<span class="model-name">{ model }</span>
-												if detail, ok := data.ModelDetails[model]; ok && len(detail.Modalities) > 0 {
+												<span class="model-name">{ data.ModelNames[modelValue] }</span>
+												<span class="model-provider">{ data.ModelProviders[modelValue] }</span>
+												if detail, ok := data.ModelDetails[modelValue]; ok && len(detail.Modalities) > 0 {
 													<span class="model-modalities">
 														for _, modality := range detail.Modalities {
 															@ModelModalityIcon(modality)

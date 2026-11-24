@@ -308,10 +308,10 @@ func TestUserAccountsMigrationPreservesVersion23Ownership(t *testing.T) {
 		VALUES (?, 'second-model', 'chat_completions')`, second.ID); err != nil {
 		t.Fatalf("insert second user protocol preference: %v", err)
 	}
-	if got, err := kritui_db.GetModelEndpointType(secondCtx, database, "second-model"); err != nil || got != llm.EndpointChatCompletions {
+	if got, err := kritui_db.GetModelEndpointType(secondCtx, database, 0, "second-model"); err != nil || got != llm.EndpointChatCompletions {
 		t.Fatalf("second user protocol = %q, %v", got, err)
 	}
-	if got, err := kritui_db.GetModelEndpointType(ownerCtx, database, "second-model"); err != nil || got != "" {
+	if got, err := kritui_db.GetModelEndpointType(ownerCtx, database, 0, "second-model"); err != nil || got != "" {
 		t.Fatalf("owner protocol for second model = %q, %v, want empty", got, err)
 	}
 }

@@ -9,9 +9,10 @@ import (
 	"seesharpsi/kritui/llm"
 )
 
-// GetModelEndpointType returns the last successful protocol for model. Its zero
-// value means no protocol has succeeded yet.
-func GetModelEndpointType(ctx context.Context, db *sql.DB, model string) (llm.EndpointType, error) {
+// GetModelEndpointType returns the last successful protocol for model under one
+// provider. Its zero value means no protocol has succeeded yet. providerID may
+// be 0 (legacy/unscoped), EnvProviderID (environment), or a stored provider ID.
+func GetModelEndpointType(ctx context.Context, db *sql.DB, providerID int64, model string) (llm.EndpointType, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return "", fmt.Errorf("get model endpoint type: model is required")
@@ -24,8 +25,8 @@ func GetModelEndpointType(ctx context.Context, db *sql.DB, model string) (llm.En
 	err = db.QueryRowContext(ctx, `
 		SELECT endpoint_type
 		FROM model_endpoint_preferences
-		WHERE user_id = ? AND model = ?
-	`, userID, model).Scan(&storedType)
+		WHERE user_id = ? AND provider_id = ? AND model = ?
+	`, userID, providerID, model).Scan(&storedType)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -39,8 +40,9 @@ func GetModelEndpointType(ctx context.Context, db *sql.DB, model string) (llm.En
 	return endpointType, nil
 }
 
-// SetModelEndpointType records the most recently successful protocol for model.
-func SetModelEndpointType(ctx context.Context, db *sql.DB, model string, endpointType llm.EndpointType) error {
+// SetModelEndpointType records the most recently successful protocol for model
+// under one provider. providerID is stored as given.
+func SetModelEndpointType(ctx context.Context, db *sql.DB, providerID int64, model string, endpointType llm.EndpointType) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return fmt.Errorf("set model endpoint type: model is required")
@@ -53,10 +55,10 @@ func SetModelEndpointType(ctx context.Context, db *sql.DB, model string, endpoin
 		return fmt.Errorf("set model endpoint type: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO model_endpoint_preferences (user_id, model, endpoint_type)
-		VALUES (?, ?, ?)
-		ON CONFLICT(user_id, model) DO UPDATE SET endpoint_type = excluded.endpoint_type
-	`, userID, model, endpointType); err != nil {
+		INSERT INTO model_endpoint_preferences (user_id, provider_id, model, endpoint_type)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(user_id, provider_id, model) DO UPDATE SET endpoint_type = excluded.endpoint_type
+	`, userID, providerID, model, endpointType); err != nil {
 		return fmt.Errorf("set model endpoint type: %w", err)
 	}
 	return nil

@@ -26,6 +26,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id);
 
+CREATE TABLE IF NOT EXISTS providers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    name TEXT NOT NULL COLLATE NOCASE CHECK (trim(name) <> '' AND length(CAST(name AS BLOB)) <= 100),
+    endpoint TEXT NOT NULL CHECK (endpoint <> ''),
+    api_key TEXT,
+    UNIQUE (user_id, position),
+    UNIQUE (user_id, name)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS settings (
     id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     default_model TEXT,
@@ -56,7 +67,10 @@ CREATE TABLE IF NOT EXISTS settings (
         CHECK (title_generation_enabled IN (0, 1)),
     title_generation_model TEXT
         CHECK (title_generation_model IS NULL OR
-            (trim(title_generation_model) <> '' AND length(CAST(title_generation_model AS BLOB)) <= 512))
+            (trim(title_generation_model) <> '' AND length(CAST(title_generation_model AS BLOB)) <= 512)),
+    default_provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
+    title_provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
+    tool_result_elision_summary_provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL
 ) STRICT;
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -103,9 +117,10 @@ CREATE TABLE IF NOT EXISTS git_hosts (
 
 CREATE TABLE IF NOT EXISTS model_endpoint_preferences (
     user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+    provider_id INTEGER NOT NULL DEFAULT 0,
     model TEXT NOT NULL CHECK (trim(model) <> ''),
     endpoint_type TEXT NOT NULL CHECK (endpoint_type IN ('responses', 'messages', 'chat_completions')),
-    PRIMARY KEY (user_id, model)
+    PRIMARY KEY (user_id, provider_id, model)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS chats (
@@ -115,7 +130,9 @@ CREATE TABLE IF NOT EXISTS chats (
     title TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1))
+    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+    model TEXT CHECK (model IS NULL OR (trim(model) <> '' AND length(CAST(model AS BLOB)) <= 512)),
+    provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
@@ -278,6 +295,7 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     model TEXT NOT NULL CHECK (
         length(CAST(model AS BLOB)) <= 512
     ),
+    provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'delivered', 'cancelled')),
     message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
@@ -330,6 +348,7 @@ CREATE TABLE IF NOT EXISTS completion_state (
     model TEXT NOT NULL DEFAULT '' CHECK (
         length(CAST(model AS BLOB)) <= 512
     ),
+    provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 ) STRICT;
 
@@ -347,4 +366,4 @@ CREATE TABLE IF NOT EXISTS models_dev_cache (
     payload BLOB NOT NULL
 ) STRICT;
 
-PRAGMA user_version = 37;
+PRAGMA user_version = 38;

@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     model TEXT NOT NULL CHECK (
         length(CAST(model AS BLOB)) <= 512
     ),
+    provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'delivered', 'cancelled')),
     message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS completion_state (
     model TEXT NOT NULL DEFAULT '' CHECK (
         length(CAST(model AS BLOB)) <= 512
     ),
+    provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 ) STRICT;
 

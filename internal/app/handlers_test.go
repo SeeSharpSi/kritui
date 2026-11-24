@@ -709,10 +709,9 @@ func TestHomeHandlerUsesMostRecentResponseModel(t *testing.T) {
 	}
 	requireContains(t, response.Body.String(),
 		"<strong>latest-model</strong>",
-		`value="latest-model" form="message-form" checked`,
-		`name="model" value="default-model" checked`,
+		`value="default-model"`,
 	)
-	requireNotContains(t, response.Body.String(), `class="model-picker"><summary><strong>default-model</strong></summary>`, `value="earlier-model" form="message-form" checked`)
+	requireNotContains(t, response.Body.String(), `class="model-picker"><summary><strong>default-model</strong></summary>`)
 }
 
 func TestHomeHandlerChecksStoredChatTools(t *testing.T) {
@@ -2341,7 +2340,7 @@ func TestMigrateDatabaseAddsChatPinsFromVersion26(t *testing.T) {
 	previous = strings.Replace(previous, `CREATE INDEX IF NOT EXISTS chats_user_pinned_updated_idx
     ON chats (user_id, pinned DESC, updated_at DESC, id DESC);`, `CREATE INDEX IF NOT EXISTS chats_user_updated_idx
     ON chats (user_id, updated_at DESC, id DESC);`, 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 37;", "PRAGMA user_version = 26;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 38;", "PRAGMA user_version = 26;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "pinned") {
@@ -2404,7 +2403,7 @@ func TestMigrateDatabaseAddsTitleGenerationSettingsFromVersion27(t *testing.T) {
 	}
 	prefix := strings.TrimSuffix(schema[:start], ",\n")
 	previous := prefix + schema[start+relativeEnd:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 37;", "PRAGMA user_version = 27;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 38;", "PRAGMA user_version = 27;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if previous == schema || strings.Contains(previous, "title_generation") {
@@ -2460,7 +2459,7 @@ func TestMigrateDatabaseRetiresPlaintextSharesFromVersion29(t *testing.T) {
 		t.Fatalf("read legacy share schema: %v", err)
 	}
 	previous := schema[:start] + string(legacyDDL) + "\n\n" + schema[start+end:]
-	previous = strings.Replace(previous, "PRAGMA user_version = 37;", "PRAGMA user_version = 29;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 38;", "PRAGMA user_version = 29;", 1)
 	previous = strings.Replace(previous, "    system_prompt TEXT,\n", "", 1)
 	previous = strings.Replace(previous, "    compaction_prompt TEXT,\n", "", 1)
 	if !strings.Contains(previous, "PRAGMA user_version = 29;") {
@@ -2582,7 +2581,7 @@ func TestSettingsHandlerStoresTitleGenerationSettings(t *testing.T) {
 		`id="title-generation-enabled"`,
 		`name="title_generation_enabled" value="1" checked`,
 		`id="title-generation-model"`,
-		`name="title_generation_model" value="title-model" checked`,
+		`name="title_generation_model" value="0/title-model"`,
 	)
 
 	request := httptest.NewRequest(http.MethodGet, "/?chat=8", nil)
@@ -2593,7 +2592,7 @@ func TestSettingsHandlerStoresTitleGenerationSettings(t *testing.T) {
 	}
 	requireContains(t, homeResponse.Body.String(),
 		`name="title_generation_enabled" value="1" checked`,
-		`name="title_generation_model" value="title-model" checked`,
+		`name="title_generation_model" value="0/title-model"`,
 	)
 }
 
@@ -2618,7 +2617,7 @@ func TestSettingsHandlerPreservesTitleModelWhileDisabled(t *testing.T) {
 	if settings.Enabled || settings.Model != "kept-model" {
 		t.Fatalf("title generation settings = %#v, want disabled with kept-model", settings)
 	}
-	requireContains(t, response.Body.String(), `name="title_generation_model" value="kept-model" checked`)
+	requireContains(t, response.Body.String(), `name="title_generation_model" value="0/kept-model"`)
 }
 
 func TestSettingsHandlerRejectsEnabledTitleGenerationWithoutModel(t *testing.T) {
@@ -2658,7 +2657,7 @@ func TestSettingsHandlerPreservesTitleGenerationDuringAppendAction(t *testing.T)
 	}
 	requireContains(t, response.Body.String(),
 		`name="title_generation_enabled" value="1" checked`,
-		`name="title_generation_model" value="title-model" checked`,
+		`name="title_generation_model" value="0/title-model"`,
 	)
 }
 
@@ -2729,7 +2728,7 @@ func TestSettingsHandlerStoresDefaultModelAndMaxToolRounds(t *testing.T) {
 	if maxToolRounds != 32 {
 		t.Errorf("max tool rounds = %d, want 32", maxToolRounds)
 	}
-	requireContains(t, response.Body.String(), `value="saved-model" checked`, `name="max_tool_rounds"`, `value="32"`)
+	requireContains(t, response.Body.String(), `value="saved-model"`, `name="max_tool_rounds"`, `value="32"`)
 }
 
 func TestSettingsHandlerRejectsInvalidMaxToolRounds(t *testing.T) {
@@ -5634,7 +5633,7 @@ func TestMessageCompletionPersistsSuccessfulEndpointType(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first completion status = %d, want %d; body = %q", first.Code, http.StatusOK, first.Body.String())
 	}
-	if endpointType, err := kritui_db.GetModelEndpointType(context.Background(), database, "selected-model"); err != nil {
+	if endpointType, err := kritui_db.GetModelEndpointType(context.Background(), database, -1, "selected-model"); err != nil {
 		t.Fatalf("get stored endpoint type: %v", err)
 	} else if endpointType != llm.EndpointChatCompletions {
 		t.Errorf("stored endpoint type = %q, want chat_completions", endpointType)
@@ -6636,10 +6635,10 @@ func TestMigrateDatabaseAddsModelEndpointPreferences(t *testing.T) {
 	if err := migrateDatabase(database); err != nil {
 		t.Fatalf("migrate database: %v", err)
 	}
-	if err := kritui_db.SetModelEndpointType(context.Background(), database, "model", llm.EndpointMessages); err != nil {
+	if err := kritui_db.SetModelEndpointType(context.Background(), database, 0, "model", llm.EndpointMessages); err != nil {
 		t.Fatalf("set migrated model endpoint type: %v", err)
 	}
-	endpointType, err := kritui_db.GetModelEndpointType(context.Background(), database, "model")
+	endpointType, err := kritui_db.GetModelEndpointType(context.Background(), database, 0, "model")
 	if err != nil {
 		t.Fatalf("get migrated model endpoint type: %v", err)
 	}
@@ -7398,14 +7397,14 @@ func TestSettingsHandlerRendersLLMConnectionWithoutSecret(t *testing.T) {
 	}
 	requireContains(t, response.Body.String(),
 		`id="llm-settings"`,
-		`name="llm_form" value="1"`,
-		`name="llm_endpoint"`,
-		`id="llm-api-key"`,
+		`name="providers_form" value="1"`,
+		`name="provider_name"`,
+		`name="provider_endpoint"`,
 		`type="password"`,
 		`id="default-model"`,
 		`type="text"`,
 	)
-	requireNotContains(t, response.Body.String(), `name="llm_api_key" value=`)
+	requireNotContains(t, response.Body.String(), `name="provider_api_key" value=`)
 }
 
 func TestSettingsHandlerRendersGitHostsWithoutSecrets(t *testing.T) {
@@ -7543,13 +7542,16 @@ func TestSettingsHandlerRendersStoredLLMEndpointWithoutSecret(t *testing.T) {
 	defer provider.Close()
 	const apiKey = "stored-llm-secret"
 	endpoint := provider.URL + "/v1/responses"
-	if err := kritui_db.SaveLLMSettings(context.Background(), database, kritui_db.LLMSettingsUpdate{
+	ids, err := kritui_db.SaveProviders(context.Background(), database, []kritui_db.ProviderDraft{{
+		Name:         "Primary",
 		Endpoint:     endpoint,
 		APIKeyChange: kritui_db.LLMReplaceAPIKey,
 		APIKeyValue:  apiKey,
-	}); err != nil {
-		t.Fatalf("seed LLM settings: %v", err)
+	}})
+	if err != nil {
+		t.Fatalf("seed provider: %v", err)
 	}
+	providerID := ids[0]
 
 	response := httptest.NewRecorder()
 	settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil))
@@ -7558,11 +7560,12 @@ func TestSettingsHandlerRendersStoredLLMEndpointWithoutSecret(t *testing.T) {
 	}
 	requireContains(t, response.Body.String(),
 		`id="llm-settings"`,
-		`name="llm_endpoint" value="`+endpoint+`"`,
+		`name="provider_name" value="Primary"`,
+		`name="provider_endpoint" value="`+endpoint+`"`,
 		"Clear stored key",
-		`name="clear_llm_api_key" value="1" hidden`,
+		`name="provider_clear_key" value="`+fmt.Sprint(providerID)+`"`,
 	)
-	requireNotContains(t, response.Body.String(), apiKey, `name="llm_api_key" value=`)
+	requireNotContains(t, response.Body.String(), apiKey, `name="provider_api_key" value=`)
 }
 
 func TestSettingsHandlerStoresPreservesAndClearsLLMSecret(t *testing.T) {
@@ -7580,67 +7583,73 @@ func TestSettingsHandlerStoresPreservesAndClearsLLMSecret(t *testing.T) {
 	const apiKey = "stored-llm-secret"
 
 	response := postForm(t, handler, "/settings?chat=8", url.Values{
-		"model":           {"saved-model"},
-		"max_tool_rounds": {"16"},
-		"llm_form":        {"1"},
-		"llm_endpoint":    {endpoint},
-		"llm_api_key":     {apiKey},
+		"model":             {"saved-model"},
+		"max_tool_rounds":   {"16"},
+		"providers_form":    {"1"},
+		"provider_id":       {"0"},
+		"provider_name":     {"Primary"},
+		"provider_endpoint": {endpoint},
+		"provider_api_key":  {apiKey},
 	})
 	if response.Code != http.StatusOK {
 		t.Fatalf("save status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	requireContains(t, response.Body.String(), "Settings saved.", "Clear stored key", `name="llm_endpoint" value="`+endpoint+`"`)
-	requireNotContains(t, response.Body.String(), apiKey, `name="llm_api_key" value=`)
-	config, err := kritui_db.GetLLMConfig(context.Background(), database)
+	requireContains(t, response.Body.String(), "Settings saved.", "Clear stored key", `name="provider_endpoint" value="`+endpoint+`"`)
+	requireNotContains(t, response.Body.String(), apiKey, `name="provider_api_key" value=`)
+	configs, err := kritui_db.ListProviderConfigs(context.Background(), database)
 	if err != nil {
-		t.Fatalf("get LLM config: %v", err)
+		t.Fatalf("list providers: %v", err)
 	}
-	if config.Endpoint != endpoint || config.APIKey != apiKey {
-		t.Errorf("stored LLM config = %#v, want submitted endpoint and key", config)
+	if len(configs) != 1 || configs[0].Endpoint != endpoint || configs[0].APIKey != apiKey {
+		t.Fatalf("stored providers = %#v, want submitted endpoint and key", configs)
 	}
+	providerID := configs[0].ID
 
 	response = postForm(t, handler, "/settings?chat=8", url.Values{
-		"model":           {"saved-model"},
-		"max_tool_rounds": {"16"},
-		"llm_form":        {"1"},
-		"llm_endpoint":    {endpoint},
+		"model":             {"saved-model"},
+		"max_tool_rounds":   {"16"},
+		"providers_form":    {"1"},
+		"provider_id":       {fmt.Sprint(providerID)},
+		"provider_name":     {"Primary"},
+		"provider_endpoint": {endpoint},
+		"provider_api_key":  {""},
 	})
 	if response.Code != http.StatusOK {
 		t.Fatalf("preserve status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	requireNotContains(t, response.Body.String(), apiKey)
-	config, err = kritui_db.GetLLMConfig(context.Background(), database)
+	configs, err = kritui_db.ListProviderConfigs(context.Background(), database)
 	if err != nil {
-		t.Fatalf("get LLM config after preserve: %v", err)
+		t.Fatalf("list providers after preserve: %v", err)
 	}
-	if config.Endpoint != endpoint || config.APIKey != apiKey {
-		t.Errorf("config after preserve = %#v, want endpoint and preserved key", config)
+	if len(configs) != 1 || configs[0].Endpoint != endpoint || configs[0].APIKey != apiKey {
+		t.Errorf("providers after preserve = %#v, want endpoint and preserved key", configs)
 	}
 
 	response = postForm(t, handler, "/settings?chat=8", url.Values{
-		"model":             {"saved-model"},
-		"max_tool_rounds":   {"16"},
-		"llm_form":          {"1"},
-		"llm_endpoint":      {endpoint},
-		"clear_llm_api_key": {"1"},
+		"model":              {"saved-model"},
+		"max_tool_rounds":    {"16"},
+		"providers_form":     {"1"},
+		"provider_id":        {fmt.Sprint(providerID)},
+		"provider_name":      {"Primary"},
+		"provider_endpoint":  {endpoint},
+		"provider_api_key":   {""},
+		"provider_clear_key": {fmt.Sprint(providerID)},
 	})
 	if response.Code != http.StatusOK {
 		t.Fatalf("clear status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
 	requireNotContains(t, response.Body.String(), apiKey)
-	if strings.Contains(response.Body.String(), `name="clear_llm_api_key"`) {
-		t.Error("clear response reports configured API key")
-	}
-	config, err = kritui_db.GetLLMConfig(context.Background(), database)
+	configs, err = kritui_db.ListProviderConfigs(context.Background(), database)
 	if err != nil {
-		t.Fatalf("get LLM config after clear: %v", err)
+		t.Fatalf("list providers after clear: %v", err)
 	}
-	if config.APIKey != "" || config.Endpoint != endpoint {
-		t.Errorf("config after clear = %#v, want endpoint and empty key", config)
+	if len(configs) != 1 || configs[0].Endpoint != endpoint || configs[0].APIKey != "" {
+		t.Errorf("providers after clear = %#v, want endpoint and empty key", configs)
 	}
 }
 
-func TestSettingsHandlerHidesLLMWhenEnvironmentConfigured(t *testing.T) {
+func TestSettingsHandlerShowsEnvironmentProviderReadOnly(t *testing.T) {
 	database := openTestDatabase(t)
 	seedCurrentChat(t, database, 8)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -7650,41 +7659,32 @@ func TestSettingsHandlerHidesLLMWhenEnvironmentConfigured(t *testing.T) {
 	defer provider.Close()
 	const storedKey = "stored-llm-secret"
 	storedEndpoint := provider.URL + "/stored"
-	if err := kritui_db.SaveLLMSettings(context.Background(), database, kritui_db.LLMSettingsUpdate{
+	if _, err := kritui_db.SaveProviders(context.Background(), database, []kritui_db.ProviderDraft{{
+		Name:         "Primary",
 		Endpoint:     storedEndpoint,
 		APIKeyChange: kritui_db.LLMReplaceAPIKey,
 		APIKeyValue:  storedKey,
-	}); err != nil {
-		t.Fatalf("seed LLM settings: %v", err)
+	}}); err != nil {
+		t.Fatalf("seed provider: %v", err)
 	}
+	envEndpoint := provider.URL + "/env"
 	t.Setenv("LLM_KEY", "env-llm-secret")
-	t.Setenv("LLM_ENDPOINT", provider.URL+"/env")
+	t.Setenv("LLM_ENDPOINT", envEndpoint)
 
 	response := httptest.NewRecorder()
 	settingsHandler(database, newTestToolRegistry(t))(response, httptest.NewRequest(http.MethodGet, "/settings?chat=8", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	requireNotContains(t, response.Body.String(), `id="llm-settings"`, `name="llm_form"`, `name="llm_endpoint"`, storedEndpoint, storedKey, "env-llm-secret")
-
-	forged := postForm(t, settingsHandler(database, newTestToolRegistry(t)), "/settings?chat=8", url.Values{
-		"model":           {"saved-model"},
-		"max_tool_rounds": {"16"},
-		"llm_form":        {"1"},
-		"llm_endpoint":    {"https://forged.example/v1"},
-		"llm_api_key":     {"forged-secret"},
-	})
-	if forged.Code != http.StatusOK {
-		t.Fatalf("forged status = %d, want %d; body = %q", forged.Code, http.StatusOK, forged.Body.String())
-	}
-	requireNotContains(t, forged.Body.String(), "forged-secret", storedKey)
-	config, err := kritui_db.GetLLMConfig(context.Background(), database)
-	if err != nil {
-		t.Fatalf("get LLM config after forged save: %v", err)
-	}
-	if config.Endpoint != storedEndpoint || config.APIKey != storedKey {
-		t.Errorf("stored LLM config after forged save = %#v, want unchanged seed", config)
-	}
+	requireContains(t, response.Body.String(),
+		`id="llm-settings"`,
+		"Environment",
+		envEndpoint,
+		`name="provider_name" value="Primary"`,
+		storedEndpoint,
+		"The environment provider is read-only.",
+	)
+	requireNotContains(t, response.Body.String(), storedKey, "env-llm-secret", `name="provider_api_key" value=`)
 }
 
 func TestSettingsHandlerPartialEnvironmentKeepsControls(t *testing.T) {
@@ -7704,7 +7704,7 @@ func TestSettingsHandlerPartialEnvironmentKeepsControls(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 	}
-	requireContains(t, response.Body.String(), `id="llm-settings"`, `name="llm_endpoint"`)
+	requireContains(t, response.Body.String(), `id="llm-settings"`, `name="provider_name"`, `name="providers_form" value="1"`)
 }
 
 func TestEffectiveLLMConfigPrefersEnvironmentFieldByField(t *testing.T) {
@@ -7815,4 +7815,79 @@ func TestStaticSaveCleanupClearsLLMSecretInput(t *testing.T) {
 		t.Fatalf("read app script: %v", err)
 	}
 	requireContains(t, string(script), "#llm-api-key")
+}
+
+func TestSettingsHandlerSavesMultipleProvidersAndListsTheirModels(t *testing.T) {
+	database := openTestDatabase(t)
+	seedCurrentChat(t, database, 8)
+	t.Setenv("LLM_KEY", "")
+	t.Setenv("LLM_ENDPOINT", "")
+	providerServer := func(models ...string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			var data []map[string]string
+			for _, model := range models {
+				data = append(data, map[string]string{"id": model})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+		}))
+	}
+	first := providerServer("a-small")
+	defer first.Close()
+	second := providerServer("b-small")
+	defer second.Close()
+	handler := settingsHandler(database, newTestToolRegistry(t))
+
+	response := postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":             {"a-small"},
+		"max_tool_rounds":   {"16"},
+		"providers_form":    {"1"},
+		"provider_id":       {"0", "0"},
+		"provider_name":     {"Provider A", "Provider B"},
+		"provider_endpoint": {first.URL + "/v1/responses", second.URL + "/v1/responses"},
+		"provider_api_key":  {"key-a", "key-b"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
+	}
+	configs, err := kritui_db.ListProviderConfigs(context.Background(), database)
+	if err != nil {
+		t.Fatalf("list providers: %v", err)
+	}
+	if len(configs) != 2 {
+		t.Fatalf("providers = %d, want 2", len(configs))
+	}
+	requireContains(t, response.Body.String(),
+		"Provider A", "Provider B",
+		`data-model-label="a-small"`, `data-model-label="b-small"`,
+		`value="`+fmt.Sprintf("%d/a-small", configs[0].ID)+`"`,
+		`value="`+fmt.Sprintf("%d/b-small", configs[1].ID)+`"`,
+	)
+
+	selected := postForm(t, handler, "/settings?chat=8", url.Values{
+		"model":             {fmt.Sprintf("%d/b-small", configs[1].ID)},
+		"max_tool_rounds":   {"16"},
+		"providers_form":    {"1"},
+		"provider_id":       {fmt.Sprint(configs[0].ID), fmt.Sprint(configs[1].ID)},
+		"provider_name":     {"Provider A", "Provider B"},
+		"provider_endpoint": {first.URL + "/v1/responses", second.URL + "/v1/responses"},
+		"provider_api_key":  {"", ""},
+	})
+	if selected.Code != http.StatusOK {
+		t.Fatalf("selection status = %d, want %d; body = %q", selected.Code, http.StatusOK, selected.Body.String())
+	}
+	if got, err := kritui_db.GetDefaultProviderID(context.Background(), database); err != nil {
+		t.Fatalf("get default provider: %v", err)
+	} else if got != configs[1].ID {
+		t.Errorf("default provider = %d, want %d", got, configs[1].ID)
+	}
+	if got, err := kritui_db.GetDefaultModel(context.Background(), database, ""); err != nil {
+		t.Fatalf("get default model: %v", err)
+	} else if got != "b-small" {
+		t.Errorf("default model = %q, want b-small", got)
+	}
 }

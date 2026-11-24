@@ -16,7 +16,15 @@ type SettingsPanelData struct {
 	Models                      []string
 	ModelListFallback           bool
 	ModelDetails                map[string]ModelDetail
+	ModelNames                  map[string]string
+	ModelProviders              map[string]string
 	SelectedModel               string
+	SelectedModelValue          string
+	SelectedProviderID          int64
+	TitleGenerationModelValue   string
+	TitleGenerationProviderID   int64
+	Providers                   []ProviderCard
+	SummaryProviderID           int64
 	ReasoningEffort             string
 	TitleReasoningEffort        string
 	MaxToolRounds               int
@@ -182,58 +190,26 @@ templ SettingsPage(data SettingsPanelData) {
 			if data.ErrorMessage != "" {
 				<p class="settings-status settings-error" role="alert">{ data.ErrorMessage }</p>
 			}
-			if !data.LLMEnvironmentConfigured {
-				<section id="llm-settings" class="settings-section" aria-labelledby="llm-settings-heading">
-					<header class="settings-section-heading">
-					<h2 id="llm-settings-heading">Model connection</h2>
-						<p>Stored on server. Environment values take precedence when set.</p>
-					</header>
-					<input type="hidden" name="llm_form" value="1"/>
-					<div class="settings-fields">
-						<div class="settings-field">
-							<div class="settings-field-copy">
-								<label for="llm-endpoint">Endpoint</label>
-								<p class="settings-help">Full endpoint URL, for example https://api.example.com/v1/responses.</p>
-							</div>
-							<div class="settings-control">
-								<input id="llm-endpoint" type="url" name="llm_endpoint" value={ data.LLMSettings.Endpoint } maxlength="2048" placeholder="https://api.example.com/v1/responses"/>
-							</div>
-						</div>
-						<div class="settings-field">
-							<div class="settings-field-copy">
-								<label for="llm-api-key">API key</label>
-								<p class="settings-help">Stored on server. Never shown here. Blank preserves existing key.</p>
-							</div>
-							<div class="settings-control settings-control-column">
-								<input
-									id="llm-api-key"
-									type="password"
-									name="llm_api_key"
-									autocomplete="new-password"
-									maxlength="16384"
-									hx-preserve="true"
-									if data.ClearLLMAPIKey {
-										disabled
-									}
-								/>
-								if data.LLMSettings.APIKeyConfigured {
-									<input id="clear-llm-api-key" type="checkbox" name="clear_llm_api_key" value="1" hidden if data.ClearLLMAPIKey { checked }/>
-									<button class="settings-clear-key" type="button" data-settings-clear-open if data.ClearLLMAPIKey { hidden }>Clear stored key</button>
-									<p class="settings-clear-pending" data-settings-clear-pending role="status" if !data.ClearLLMAPIKey { hidden }>API key will be removed when settings are saved. <button type="button" data-settings-clear-undo>Undo</button></p>
-								}
-							</div>
-						</div>
-					</div>
-					<dialog class="settings-dialog" data-settings-clear-dialog aria-labelledby="llm-clear-title">
-						<h2 id="llm-clear-title">Clear stored API key?</h2>
-						<p>This removes saved model provider credentials when you save settings.</p>
-						<div class="settings-dialog-actions">
-							<button type="button" data-settings-clear-cancel>Cancel</button>
-							<button class="settings-dialog-danger" type="button" data-settings-clear-confirm>Clear key</button>
-						</div>
-					</dialog>
-				</section>
-			}
+			{{ emptyProvider := ProviderCard{} }}
+			<section id="llm-settings" class="settings-section" aria-labelledby="llm-settings-heading">
+				<header class="settings-section-heading">
+					<h2 id="llm-settings-heading">Model providers</h2>
+					<p>Each provider has its own endpoint and key. Model pickers list every provider's models.</p>
+				</header>
+				<input type="hidden" name="providers_form" value="1"/>
+				<div class="settings-provider-list" data-provider-list>
+					for _, provider := range data.Providers {
+						@ProviderEditor(provider)
+					}
+				</div>
+				<button class="settings-provider-add" type="button" data-provider-add>+ Add provider</button>
+				if data.LLMEnvironmentConfigured {
+					<p class="settings-help">The environment provider is read-only. Remove LLM_ENDPOINT and LLM_KEY from the environment to edit it here.</p>
+				}
+				<template id="provider-row-template">
+					@ProviderEditor(emptyProvider)
+				</template>
+			</section>
 			<section class="settings-section" aria-labelledby="chat-defaults-heading">
 				<header class="settings-section-heading">
 				<h2 id="chat-defaults-heading">Chat defaults</h2>
@@ -247,14 +223,22 @@ templ SettingsPage(data SettingsPanelData) {
 							</div>
 							<div class="settings-control settings-control-column">
 								if len(data.Models) == 0 {
-									<input id="default-model" type="text" name="model" value={ data.SelectedModel } placeholder="Provider model ID" required hx-get="/thinking?scope=default" hx-trigger="change" hx-include="this, #default-thinking" hx-target="#default-thinking" hx-swap="outerHTML" hx-sync="#default-model:replace"/>
+									<input id="default-model" type="text" name="model" value={ data.SelectedModel } placeholder="Provider model ID" required hx-get="/thinking?scope=default" hx-trigger="change" hx-include="this, #default-model-provider, #default-thinking" hx-target="#default-thinking" hx-swap="outerHTML" hx-sync="#default-model:replace"/>
+									<select id="default-model-provider" name="model_provider">
+										<option value="">Default provider</option>
+										for _, provider := range data.Providers {
+											if !provider.ReadOnly {
+												<option value={ strconv.FormatInt(provider.ID, 10) } if provider.ID == data.SelectedProviderID { selected }>{ provider.Name }</option>
+											}
+										}
+									</select>
 								} else {
 									<details id="default-model" class="settings-model-picker" aria-labelledby="default-model-label">
 										<summary>
 											<strong>{ data.SelectedModel }</strong>
 										</summary>
 										<div class="settings-model-options">
-											for _, model := range data.Models {
+											for _, modelValue := range data.Models {
 												<label>
 													<input
 														hx-get="/thinking?scope=default"
@@ -265,15 +249,17 @@ templ SettingsPage(data SettingsPanelData) {
 														hx-sync="#default-model:replace"
 														type="radio"
 														name="model"
-														value={ model }
-														if model == data.SelectedModel {
+														value={ modelValue }
+														data-model-label={ data.ModelNames[modelValue] }
+														if modelValue == data.SelectedModelValue {
 															checked
 														}
 														required
-														onchange="const picker = this.closest('details'); picker.querySelector('summary strong').textContent = this.value; picker.removeAttribute('open'); picker.querySelector('summary').focus()"
+														onchange="const picker = this.closest('details'); picker.querySelector('summary strong').textContent = this.dataset.modelLabel; picker.removeAttribute('open'); picker.querySelector('summary').focus()"
 													/>
-													<span class="model-name">{ model }</span>
-													if detail, ok := data.ModelDetails[model]; ok && len(detail.Modalities) > 0 {
+													<span class="model-name">{ data.ModelNames[modelValue] }</span>
+													<span class="model-provider">{ data.ModelProviders[modelValue] }</span>
+													if detail, ok := data.ModelDetails[modelValue]; ok && len(detail.Modalities) > 0 {
 														<span class="model-modalities">
 															for _, modality := range detail.Modalities {
 																@ModelModalityIcon(modality)
@@ -310,7 +296,15 @@ templ SettingsPage(data SettingsPanelData) {
 						</div>
 						<div class="settings-control settings-control-column">
 							if len(data.Models) == 0 {
-								<input id="title-generation-model" type="text" name="title_generation_model" value={ data.TitleGenerationModel } maxlength="512" placeholder="Provider model ID" hx-get="/thinking?scope=title" hx-trigger="change" hx-include="this, #title-thinking" hx-target="#title-thinking" hx-swap="outerHTML" hx-sync="#title-generation-model:replace"/>
+								<input id="title-generation-model" type="text" name="title_generation_model" value={ data.TitleGenerationModel } maxlength="512" placeholder="Provider model ID" hx-get="/thinking?scope=title" hx-trigger="change" hx-include="this, #title-generation-provider, #title-thinking" hx-target="#title-thinking" hx-swap="outerHTML" hx-sync="#title-generation-model:replace"/>
+								<select id="title-generation-provider" name="title_model_provider">
+									<option value="">Default provider</option>
+									for _, provider := range data.Providers {
+										if !provider.ReadOnly {
+											<option value={ strconv.FormatInt(provider.ID, 10) } if provider.ID == data.TitleGenerationProviderID { selected }>{ provider.Name }</option>
+										}
+									}
+								</select>
 							} else {
 								<details id="title-generation-model" class="settings-model-picker" aria-labelledby="title-generation-model-label">
 									<summary>
@@ -335,7 +329,7 @@ templ SettingsPage(data SettingsPanelData) {
 											/>
 											<span class="model-name">None</span>
 										</label>
-										for _, model := range data.Models {
+										for _, modelValue := range data.Models {
 											<label>
 												<input
 													hx-get="/thinking?scope=title"
@@ -346,14 +340,16 @@ templ SettingsPage(data SettingsPanelData) {
 													hx-sync="#title-generation-model:replace"
 													type="radio"
 													name="title_generation_model"
-													value={ model }
-													if model == data.TitleGenerationModel {
+													value={ modelValue }
+													data-model-label={ data.ModelNames[modelValue] }
+													if modelValue == data.TitleGenerationModelValue {
 														checked
 													}
-													onchange="const picker = this.closest('details'); picker.querySelector('summary strong').textContent = this.value || 'None'; picker.removeAttribute('open'); picker.querySelector('summary').focus()"
+													onchange="const picker = this.closest('details'); picker.querySelector('summary strong').textContent = this.value ? this.dataset.modelLabel : 'None'; picker.removeAttribute('open'); picker.querySelector('summary').focus()"
 												/>
-												<span class="model-name">{ model }</span>
-												if detail, ok := data.ModelDetails[model]; ok && len(detail.Modalities) > 0 {
+												<span class="model-name">{ data.ModelNames[modelValue] }</span>
+												<span class="model-provider">{ data.ModelProviders[modelValue] }</span>
+												if detail, ok := data.ModelDetails[modelValue]; ok && len(detail.Modalities) > 0 {
 													<span class="model-modalities">
 														for _, modality := range detail.Modalities {
 															@ModelModalityIcon(modality)
@@ -448,9 +444,17 @@ templ SettingsPage(data SettingsPanelData) {
 						</div>
 						<div class="settings-control">
 							<input id="tool-result-elision-summary-model" type="text" name="tool_result_elision_summary_model" list="tool-result-elision-summary-model-options" value={ data.ToolResultElision.SummaryModel } maxlength="512" placeholder="Provider model ID" if mode != string(llm.ToolResultElisionSummarize) { disabled } if mode == string(llm.ToolResultElisionSummarize) { required }/>
+							<select id="tool-result-elision-summary-provider" name="tool_result_elision_summary_provider" if mode != string(llm.ToolResultElisionSummarize) { disabled }>
+								<option value="">Default provider</option>
+								for _, provider := range data.Providers {
+									if !provider.ReadOnly {
+										<option value={ strconv.FormatInt(provider.ID, 10) } if provider.ID == data.SummaryProviderID { selected }>{ provider.Name }</option>
+									}
+								}
+							</select>
 							<datalist id="tool-result-elision-summary-model-options">
-								for _, model := range data.Models {
-									<option value={ model }></option>
+								for _, modelValue := range data.Models {
+									<option value={ data.ModelNames[modelValue] } label={ data.ModelProviders[modelValue] }></option>
 								}
 							</datalist>
 						</div>
@@ -684,4 +688,59 @@ templ SettingsButton() {
 	>
 		Settings
 	</button>
+}
+
+// ProviderEditor renders one editable provider row. Read-only cards come from
+// environment configuration and never submit credentials.
+templ ProviderEditor(provider ProviderCard) {
+	if provider.ReadOnly {
+		<div class="settings-provider settings-provider-readonly">
+			<div class="settings-provider-copy">
+				<strong>{ provider.Name }</strong>
+				<p class="settings-help">{ provider.Endpoint }</p>
+			</div>
+			<p class="settings-help">Read-only provider.</p>
+		</div>
+	} else {
+		<fieldset class="settings-provider" data-provider-row>
+			<legend>
+				if provider.Name != "" {
+					{ provider.Name }
+				} else {
+					Provider
+				}
+			</legend>
+			<input type="hidden" name="provider_id" value={ strconv.FormatInt(provider.ID, 10) }/>
+			<div class="settings-provider-fields">
+				<label>
+					<span>Name</span>
+					<input type="text" name="provider_name" value={ provider.Name } maxlength="100" placeholder="Provider name" required/>
+				</label>
+				<label>
+					<span>Endpoint</span>
+					<input type="url" name="provider_endpoint" value={ provider.Endpoint } maxlength="2048" placeholder="https://api.example.com/v1/responses" required/>
+				</label>
+				<label>
+					<span>API key</span>
+					<input type="password" name="provider_api_key" autocomplete="new-password" maxlength="16384" placeholder={ providerAPIKeyPlaceholder(provider) }/>
+				</label>
+			</div>
+			<div class="settings-provider-actions">
+				if provider.APIKeyConfigured {
+					<label class="settings-provider-clear">
+						<input type="checkbox" name="provider_clear_key" value={ strconv.FormatInt(provider.ID, 10) }/>
+						<span>Clear stored key</span>
+					</label>
+				}
+				<button class="settings-provider-remove" type="button" data-provider-remove>Remove</button>
+			</div>
+		</fieldset>
+	}
+}
+
+func providerAPIKeyPlaceholder(provider ProviderCard) string {
+	if provider.APIKeyConfigured {
+		return "Stored - blank keeps key"
+	}
+	return "API key"
 }

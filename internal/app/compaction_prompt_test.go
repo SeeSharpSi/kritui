@@ -245,7 +245,7 @@ func TestMigrateDatabaseAddsCompactionPromptFromVersion33(t *testing.T) {
 		t.Fatal("schema does not contain compaction_prompt column")
 	}
 	previous := strings.Replace(schema, column, "", 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 37;", "PRAGMA user_version = 33;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 38;", "PRAGMA user_version = 33;", 1)
 	if _, err := database.Exec(previous); err != nil {
 		t.Fatalf("initialize version 33 database: %v", err)
 	}
@@ -289,10 +289,10 @@ func TestMessageCompletionSummaryUsesStoredCompactionPrompt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save elision settings: %v", err)
 	}
-	if err := kritui_db.SetModelEndpointType(context.Background(), database, mainModel, llm.EndpointChatCompletions); err != nil {
+	if err := kritui_db.SetModelEndpointType(context.Background(), database, -1, mainModel, llm.EndpointChatCompletions); err != nil {
 		t.Fatalf("set main model endpoint preference: %v", err)
 	}
-	if err := kritui_db.SetModelEndpointType(context.Background(), database, summaryModel, llm.EndpointMessages); err != nil {
+	if err := kritui_db.SetModelEndpointType(context.Background(), database, -1, summaryModel, llm.EndpointMessages); err != nil {
 		t.Fatalf("set summary model endpoint preference: %v", err)
 	}
 

@@ -4019,3 +4019,84 @@ body:has(#chat-title-request.htmx-request) #history-entries .history-entry.curre
         }
     }
 }
+
+.settings-provider-list {
+    display: grid;
+    gap: .75rem;
+}
+
+.settings-provider {
+    margin: 0;
+    padding: .75rem;
+    border: 1px solid var(--settings-control-border);
+    background: var(--settings-input-background);
+}
+
+.settings-provider legend {
+    padding: 0 .35rem;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.settings-provider-fields {
+    display: grid;
+    gap: .6rem;
+}
+
+.settings-provider-fields label {
+    display: grid;
+    gap: .25rem;
+    color: var(--settings-help-text);
+    font-size: 12px;
+}
+
+.settings-provider-fields input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.settings-provider-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: .65rem;
+}
+
+.settings-provider-clear {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: 12px;
+}
+
+.settings-provider-add {
+    margin-top: .75rem;
+}
+
+.settings-provider-readonly {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.settings-provider-copy {
+    min-width: 0;
+}
+
+.settings-provider-copy p {
+    overflow-wrap: anywhere;
+}
+
+.model-provider {
+    margin-left: .5rem;
+    color: var(--color-text-muted);
+    font-size: .72rem;
+    font-weight: 400;
+}
+
+.settings-model-options .model-provider {
+    margin-left: .4rem;
+}

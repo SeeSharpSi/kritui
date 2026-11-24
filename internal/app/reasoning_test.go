@@ -150,7 +150,7 @@ func TestReasoningMigrationFromVersion36(t *testing.T) {
 	}
 	defer database.Close()
 	database.SetMaxOpenConns(1)
-	previous := strings.Replace(schema, "PRAGMA user_version = 37;", "PRAGMA user_version = 36;", 1)
+	previous := strings.Replace(schema, "PRAGMA user_version = 38;", "PRAGMA user_version = 36;", 1)
 	for _, column := range []string{"    default_reasoning_effort TEXT NOT NULL DEFAULT '',\n", "    title_reasoning_effort TEXT NOT NULL DEFAULT '',\n", "    reasoning_effort TEXT,\n", "    reasoning_effort TEXT NOT NULL DEFAULT '',\n"} {
 		previous = strings.ReplaceAll(previous, column, "")
 	}
@@ -258,7 +258,7 @@ func TestQueuedCompletionUsesCapturedThinking(t *testing.T) {
 	t.Setenv("LLM_KEY", "test-key")
 	t.Setenv("LLM_ENDPOINT", server.URL+"/chat/completions")
 	registry := newTestToolRegistry(t)
-	request, err := requestForInbox(registry, 1, "first-model", nil, "high")
+	request, err := requestForInbox(registry, 1, "first-model", 0, nil, "high")
 	if err != nil {
 		t.Fatal(err)
 	}

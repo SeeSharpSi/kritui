@@ -456,19 +456,19 @@ func TestModelEndpointPreferencesArePerUser(t *testing.T) {
 	_, bobCtx := createIsolationUser(t, database, "Bob")
 	_, carolCtx := createIsolationUser(t, database, "Carol")
 
-	if err := SetModelEndpointType(aliceCtx, database, "shared-model", llm.EndpointResponses); err != nil {
+	if err := SetModelEndpointType(aliceCtx, database, 0, "shared-model", llm.EndpointResponses); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetModelEndpointType(bobCtx, database, "shared-model", llm.EndpointChatCompletions); err != nil {
+	if err := SetModelEndpointType(bobCtx, database, 0, "shared-model", llm.EndpointChatCompletions); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := GetModelEndpointType(aliceCtx, database, "shared-model"); err != nil || got != llm.EndpointResponses {
+	if got, err := GetModelEndpointType(aliceCtx, database, 0, "shared-model"); err != nil || got != llm.EndpointResponses {
 		t.Fatalf("alice endpoint type = %q, %v", got, err)
 	}
-	if got, err := GetModelEndpointType(bobCtx, database, "shared-model"); err != nil || got != llm.EndpointChatCompletions {
+	if got, err := GetModelEndpointType(bobCtx, database, 0, "shared-model"); err != nil || got != llm.EndpointChatCompletions {
 		t.Fatalf("bob endpoint type = %q, %v", got, err)
 	}
-	if got, err := GetModelEndpointType(carolCtx, database, "shared-model"); err != nil || got != "" {
+	if got, err := GetModelEndpointType(carolCtx, database, 0, "shared-model"); err != nil || got != "" {
 		t.Fatalf("carol endpoint type = %q, %v, want empty", got, err)
 	}
 	var rows int

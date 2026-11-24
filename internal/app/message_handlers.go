@@ -38,6 +38,7 @@ type messageRequest struct {
 	chat            string
 	chatID          int64
 	model           string
+	providerID      int64
 	reasoningEffort string
 	selected        *tools.Registry
 	toolNames       []string
@@ -296,7 +297,7 @@ func messageEditHandler(database *sql.DB, registry *tools.Registry, toolCalls *t
 		}
 
 		admissionCtx, cancelAdmission := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
-		err = editUserMessage(admissionCtx, database, request.chatID, messageID, message, request.toolNames, r.Form["append"], kritui_db.CompletionState{Pending: true, Model: request.model, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort})
+		err = editUserMessage(admissionCtx, database, request.chatID, messageID, message, request.toolNames, r.Form["append"], kritui_db.CompletionState{Pending: true, Model: request.model, ProviderID: request.providerID, Tools: request.toolNames, ReasoningEffort: request.reasoningEffort})
 		cancelAdmission()
 		if err != nil {
 			toolCalls.delete(requestID)
@@ -490,13 +491,14 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load settings.", request.model, selectedTools))
 		return
 	}
-	effectiveConfig, err := effectiveLLMConfig(ctx, database)
+	provider, err := resolveProviderConfig(ctx, database, request.providerID)
 	if err != nil {
-		log.Printf("get LLM config: %v", err)
+		log.Printf("get provider config: %v", err)
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load model settings.", request.model, selectedTools))
 		return
 	}
-	preferredEndpoint, err := kritui_db.GetModelEndpointType(ctx, database, request.model)
+	effectiveConfig := providerConfig(provider)
+	preferredEndpoint, err := kritui_db.GetModelEndpointType(ctx, database, provider.ID, request.model)
 	if err != nil {
 		log.Printf("get model endpoint type: %v", err)
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load model settings.", request.model, selectedTools))
@@ -508,7 +510,7 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		PreferredEndpoint: preferredEndpoint,
 		EstimateCost:      modelCostEstimator(effectiveConfig.Endpoint, request.model),
 		EndpointSelected: func(endpointType llm.EndpointType) {
-			if err := kritui_db.SetModelEndpointType(ctx, database, request.model, endpointType); err != nil {
+			if err := kritui_db.SetModelEndpointType(ctx, database, provider.ID, request.model, endpointType); err != nil {
 				log.Printf("store model endpoint type: %v", err)
 			}
 		},
@@ -600,17 +602,29 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 	var summarizer *llm.Client
 	if toolResultElision.Mode == llm.ToolResultElisionSummarize {
 		summaryModel := toolResultElision.SummaryModel
-		summaryEndpoint, err := kritui_db.GetModelEndpointType(ctx, database, summaryModel)
+		summaryProviderID, providerErr := kritui_db.GetToolResultElisionSummaryProviderID(ctx, database)
+		if providerErr != nil {
+			log.Printf("get summary provider: %v", providerErr)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load model settings.", request.model, selectedTools))
+			return
+		}
+		summaryProvider, providerErr := resolveProviderConfig(ctx, database, summaryProviderID)
+		if providerErr != nil {
+			log.Printf("configure summary provider: %v", providerErr)
+			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure summary model.", request.model, selectedTools))
+			return
+		}
+		summaryEndpoint, err := kritui_db.GetModelEndpointType(ctx, database, summaryProvider.ID, summaryModel)
 		if err != nil {
 			log.Printf("get summary model endpoint type: %v", err)
 			terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to load model settings.", request.model, selectedTools))
 			return
 		}
-		summarizer, err = llm.New(effectiveConfig.APIKey, summaryModel, effectiveConfig.Endpoint, llm.ClientOptions{
+		summarizer, err = llm.New(summaryProvider.APIKey, summaryModel, summaryProvider.Endpoint, llm.ClientOptions{
 			SessionID:         strconv.FormatInt(request.chatID, 10),
 			PreferredEndpoint: summaryEndpoint,
 			EndpointSelected: func(endpointType llm.EndpointType) {
-				if err := kritui_db.SetModelEndpointType(ctx, database, summaryModel, endpointType); err != nil {
+				if err := kritui_db.SetModelEndpointType(ctx, database, summaryProvider.ID, summaryModel, endpointType); err != nil {
 					log.Printf("store summary model endpoint type: %v", err)
 				}
 			},
@@ -934,7 +948,8 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 		renderError(http.StatusNotFound, "Chat not found.")
 		return messageRequest{}, false
 	}
-	model := strings.TrimSpace(r.FormValue("model"))
+	modelValue := strings.TrimSpace(r.FormValue("model"))
+	providerID, model := parseModelSelection(modelValue)
 	effort := strings.ToLower(strings.TrimSpace(r.FormValue("reasoning_effort")))
 	_, effortSubmitted := r.Form["reasoning_effort"]
 	captured := false
@@ -945,10 +960,17 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 			return messageRequest{}, false
 		}
 		if state.Pending && state.Model != "" {
-			model, effort, captured = state.Model, state.ReasoningEffort, true
+			model, effort, providerID, captured = state.Model, state.ReasoningEffort, state.ProviderID, true
 			r.Form["tool"] = state.Tools
 		}
 	}
+	entries, err := loadProviderEntries(r.Context(), database)
+	if err != nil {
+		log.Printf("load providers for message: %v", err)
+		renderError(http.StatusInternalServerError, "Failed to load model settings.")
+		return messageRequest{}, false
+	}
+	defaultID := defaultProviderID(r.Context(), database, entries)
 	if model == "" {
 		model, err = kritui_db.GetDefaultModel(r.Context(), database, os.Getenv("LLM_MODEL"))
 		if err != nil {
@@ -956,13 +978,17 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 			renderError(http.StatusInternalServerError, "Failed to load settings.")
 			return messageRequest{}, false
 		}
+		providerID = 0
 	}
-	if !captured {
-		config, configErr := effectiveLLMConfig(r.Context(), database)
-		if configErr != nil {
-			renderError(http.StatusInternalServerError, "Failed to load model settings.")
-			return messageRequest{}, false
+	if providerID == 0 {
+		chatProviderID, chatModel, selectionErr := kritui_db.GetChatModelSelection(r.Context(), database, chatID)
+		if selectionErr == nil && chatModel == model && chatProviderID > 0 {
+			providerID = chatProviderID
 		}
+	}
+	providerID = selectionProviderID(entries, providerID, defaultID)
+	if !captured {
+		endpoint := providerEndpoint(entries, providerID, defaultID)
 		if !effortSubmitted {
 			effort, err = kritui_db.GetChatReasoningEffort(r.Context(), database, chatID)
 			if err != nil {
@@ -970,10 +996,10 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 				return messageRequest{}, false
 			}
 			// An inherited preference may not apply to the submitted model.
-			if validateModelReasoning(config.Endpoint, model, effort) != nil {
+			if validateModelReasoning(endpoint, model, effort) != nil {
 				effort = ""
 			}
-		} else if err := validateModelReasoning(config.Endpoint, model, effort); err != nil {
+		} else if err := validateModelReasoning(endpoint, model, effort); err != nil {
 			renderError(http.StatusBadRequest, fmt.Sprintf("Thinking selection is invalid: %v.", err))
 			return messageRequest{}, false
 		}
@@ -995,6 +1021,7 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 			chat:            chat,
 			chatID:          chatID,
 			model:           model,
+			providerID:      providerID,
 			reasoningEffort: effort,
 			selected:        selected,
 			toolNames:       selected.Names(),
@@ -1030,6 +1057,7 @@ func parseMessageOptions(r *http.Request, database *sql.DB, registry *tools.Regi
 		chat:            chat,
 		chatID:          chatID,
 		model:           model,
+		providerID:      providerID,
 		reasoningEffort: effort,
 		selected:        selected,
 		toolNames:       selectedNames,
@@ -1122,6 +1150,9 @@ func editUserMessage(ctx context.Context, database *sql.DB, chatID, messageID in
 		return err
 	}
 	if err := kritui_db.SetChatReasoningEffort(ctx, tx, chatID, completion.ReasoningEffort); err != nil {
+		return err
+	}
+	if err := kritui_db.SetChatModelSelection(ctx, tx, chatID, completion.ProviderID, completion.Model); err != nil {
 		return err
 	}
 	if err := kritui_db.SetCompletionState(ctx, tx, chatID, completion); err != nil {

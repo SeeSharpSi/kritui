@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"seesharpsi/kritui/llm"
@@ -180,13 +181,24 @@ func thinkingPickerHandler(database *sql.DB) http.HandlerFunc {
 			http.Error(w, "Invalid thinking picker.", http.StatusBadRequest)
 			return
 		}
-		config, err := effectiveLLMConfig(r.Context(), database)
+		modelValue := r.URL.Query().Get(modelField)
+		providerID, model := parseModelSelection(modelValue)
+		providerField := "model_provider"
+		if scope == "title" {
+			providerField = "title_model_provider"
+		}
+		if submitted := strings.TrimSpace(r.URL.Query().Get(providerField)); submitted != "" {
+			if id, err := strconv.ParseInt(submitted, 10, 64); err == nil {
+				providerID = id
+			}
+		}
+		entries, err := loadProviderEntries(r.Context(), database)
 		if err != nil {
 			http.Error(w, "Failed to load model settings.", http.StatusInternalServerError)
 			return
 		}
-		model := r.URL.Query().Get(modelField)
-		detail := modelDetailsForEndpoint(config.Endpoint, []string{model})[model]
+		endpoint := providerEndpoint(entries, providerID, defaultProviderID(r.Context(), database, entries))
+		detail := modelDetailsForEndpoint(endpoint, []string{model})[model]
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = templates.ThinkingPicker(scope, detail, r.URL.Query().Get(field)).Render(r.Context(), w)
 	}

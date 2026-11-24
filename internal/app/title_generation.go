@@ -110,11 +110,11 @@ func generateChatTitle(ctx context.Context, database *sql.DB, chatID int64) (boo
 		return false, nil
 	}
 
-	config, err := effectiveLLMConfig(ctx, database)
+	provider, err := resolveProviderConfig(ctx, database, settings.ProviderID)
 	if err != nil {
 		return false, fmt.Errorf("load title model connection: %w", err)
 	}
-	preferredEndpoint, err := kritui_db.GetModelEndpointType(ctx, database, model)
+	preferredEndpoint, err := kritui_db.GetModelEndpointType(ctx, database, provider.ID, model)
 	if err != nil {
 		return false, fmt.Errorf("load title model endpoint type: %w", err)
 	}
@@ -122,12 +122,12 @@ func generateChatTitle(ctx context.Context, database *sql.DB, chatID int64) (boo
 	if err != nil {
 		return false, err
 	}
-	client, err := llm.New(config.APIKey, model, config.Endpoint, llm.ClientOptions{
+	client, err := llm.New(provider.APIKey, model, provider.Endpoint, llm.ClientOptions{
 		SessionID:         sessionID,
 		ReasoningEffort:   settings.ReasoningEffort,
 		PreferredEndpoint: preferredEndpoint,
 		EndpointSelected: func(endpointType llm.EndpointType) {
-			if err := kritui_db.SetModelEndpointType(ctx, database, model, endpointType); err != nil {
+			if err := kritui_db.SetModelEndpointType(ctx, database, provider.ID, model, endpointType); err != nil {
 				log.Printf("store title model endpoint type: %v", err)
 			}
 		},

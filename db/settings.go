@@ -88,12 +88,16 @@ type SettingsUpdate struct {
 	SystemPrompt         *string
 	CompactionPrompt     *string
 	Theme                string
+	DefaultProviderID    *int64
+	TitleProviderID      *int64
+	SummaryProviderID    *int64
 }
 
 // TitleGenerationSettings contains the persisted chat-title generation choice.
 type TitleGenerationSettings struct {
 	Enabled         bool
 	Model           string
+	ProviderID      int64
 	ReasoningEffort string
 }
 
@@ -245,6 +249,21 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 			return err
 		}
 	}
+	for _, reference := range []struct {
+		column     string
+		providerID *int64
+	}{
+		{"default_provider_id", update.DefaultProviderID},
+		{"title_provider_id", update.TitleProviderID},
+		{"tool_result_elision_summary_provider_id", update.SummaryProviderID},
+	} {
+		if reference.providerID == nil {
+			continue
+		}
+		if err := setProviderReference(ctx, tx, reference.column, *reference.providerID); err != nil {
+			return err
+		}
+	}
 	if update.SystemPrompt != nil {
 		if err := setSystemPrompt(ctx, tx, *update.SystemPrompt); err != nil {
 			return err
@@ -348,17 +367,19 @@ func GetTitleGenerationSettings(ctx context.Context, db *sql.DB) (TitleGeneratio
 	}
 	var enabled bool
 	var model sql.NullString
+	var providerID sql.NullInt64
 	var effort string
 	if err := db.QueryRowContext(ctx, `
-		SELECT title_generation_enabled, title_generation_model, title_reasoning_effort
+		SELECT title_generation_enabled, title_generation_model, title_provider_id, title_reasoning_effort
 		FROM settings
 		WHERE id = ?
-	`, userID).Scan(&enabled, &model, &effort); err != nil {
+	`, userID).Scan(&enabled, &model, &providerID, &effort); err != nil {
 		return TitleGenerationSettings{}, fmt.Errorf("get title generation settings: %w", err)
 	}
 	return TitleGenerationSettings{
 		Enabled:         enabled,
 		Model:           nullSettingString(model),
+		ProviderID:      nullSettingInt64(providerID),
 		ReasoningEffort: effort,
 	}, nil
 }
@@ -635,6 +656,73 @@ func nullSettingString(value sql.NullString) string {
 		return ""
 	}
 	return strings.TrimSpace(value.String)
+}
+
+func nullSettingInt64(value sql.NullInt64) int64 {
+	if !value.Valid {
+		return 0
+	}
+	return value.Int64
+}
+
+// setProviderReference stores one settings provider reference. A zero ID clears
+// the column; a positive ID must name a provider owned by the current account.
+// The synthetic environment provider is never stored.
+func setProviderReference(ctx context.Context, db settingWriter, column string, providerID int64) error {
+	if providerID < 0 {
+		return fmt.Errorf("set provider reference: provider %d cannot be stored", providerID)
+	}
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return fmt.Errorf("set provider reference: %w", err)
+	}
+	var value any
+	if providerID > 0 {
+		value = providerID
+	}
+	result, err := db.ExecContext(ctx, `
+		UPDATE settings
+		SET `+column+` = ?
+		WHERE id = ?
+			AND (? = 0 OR EXISTS (
+				SELECT 1 FROM providers WHERE id = ? AND user_id = ?
+			))
+	`, value, userID, providerID, providerID, userID)
+	if err != nil {
+		return fmt.Errorf("set provider reference: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set provider reference rows affected: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("set provider reference: provider %d is not owned by this account", providerID)
+	}
+	return nil
+}
+
+func getSettingsProviderID(ctx context.Context, db *sql.DB, column string) (int64, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("get provider reference: %w", err)
+	}
+	var providerID sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT `+column+` FROM settings WHERE id = ?`, userID).Scan(&providerID); err != nil {
+		return 0, fmt.Errorf("get provider reference: %w", err)
+	}
+	return nullSettingInt64(providerID), nil
+}
+
+// GetDefaultProviderID returns the configured default provider, or 0 when the
+// account has not selected one.
+func GetDefaultProviderID(ctx context.Context, db *sql.DB) (int64, error) {
+	return getSettingsProviderID(ctx, db, "default_provider_id")
+}
+
+// GetToolResultElisionSummaryProviderID returns the provider used for
+// tool-result summaries, or 0 when unset.
+func GetToolResultElisionSummaryProviderID(ctx context.Context, db *sql.DB) (int64, error) {
+	return getSettingsProviderID(ctx, db, "tool_result_elision_summary_provider_id")
 }
 
 // SaveNtfySettings atomically updates notification destination and secret.

@@ -123,7 +123,7 @@ func TestNonOwnerAsyncCompletionLifetimeIsolation(t *testing.T) {
 	`, ownerProvider.URL+"/chat/completions", ownerNtfy.URL); err != nil {
 		t.Fatalf("seed owner settings: %v", err)
 	}
-	if err := kritui_db.SetModelEndpointType(ownerContext, database, "shared-model", llm.EndpointMessages); err != nil {
+	if err := kritui_db.SetModelEndpointType(ownerContext, database, 0, "shared-model", llm.EndpointMessages); err != nil {
 		t.Fatalf("seed owner endpoint preference: %v", err)
 	}
 	ownerChatID, err := kritui_db.AllocateChat(ownerContext, database, nil, nil)
@@ -313,14 +313,14 @@ func TestNonOwnerAsyncCompletionLifetimeIsolation(t *testing.T) {
 			ownerDefaultModel, ownerEndpoint, ownerKey, ownerTopic, ownerToken)
 	}
 
-	ownerPreference, err := kritui_db.GetModelEndpointType(ownerContext, database, "shared-model")
+	ownerPreference, err := kritui_db.GetModelEndpointType(ownerContext, database, 0, "shared-model")
 	if err != nil {
 		t.Fatalf("load owner endpoint preference: %v", err)
 	}
 	if ownerPreference != llm.EndpointMessages {
 		t.Errorf("owner endpoint preference = %q, want %q", ownerPreference, llm.EndpointMessages)
 	}
-	user2Preference, err := kritui_db.GetModelEndpointType(user2Context, database, "shared-model")
+	user2Preference, err := kritui_db.GetModelEndpointType(user2Context, database, 0, "shared-model")
 	if err != nil {
 		t.Fatalf("load user2 endpoint preference: %v", err)
 	}

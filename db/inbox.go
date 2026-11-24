@@ -51,6 +51,7 @@ type InboxItem struct {
 	SubmissionID    string
 	Delivery        string
 	Model           string
+	ProviderID      int64
 	ReasoningEffort string
 	Tools           []string
 	AppendIDs       []string
@@ -72,6 +73,7 @@ type CheckpointResult struct {
 type CompletionState struct {
 	Pending         bool
 	Model           string
+	ProviderID      int64
 	ReasoningEffort string
 	Tools           []string
 }
@@ -121,6 +123,17 @@ func EnqueuePrompt(ctx context.Context, db databaseExecutor, chatID int64, item 
 		if err != nil {
 			return err
 		}
+		if prepared.ProviderID > 0 {
+			var providerExists int
+			if err := executor.QueryRowContext(ctx, `
+				SELECT 1 FROM providers WHERE id = ? AND user_id = ?
+			`, prepared.ProviderID, UserID(ctx)).Scan(&providerExists); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return fmt.Errorf("provider %d is not owned by this account", prepared.ProviderID)
+				}
+				return fmt.Errorf("check inbox provider ownership: %w", err)
+			}
+		}
 		var pending int
 		if err := executor.QueryRowContext(ctx, `
 			SELECT COUNT(*)
@@ -134,9 +147,9 @@ func EnqueuePrompt(ctx context.Context, db databaseExecutor, chatID int64, item 
 		}
 
 		inserted, err := executor.ExecContext(ctx, `
-			INSERT INTO inbox_items (chat_id, submission_id, delivery, model, reasoning_effort, status, content)
-			VALUES (?, ?, ?, ?, ?, 'pending', '')
-		`, chatID, prepared.SubmissionID, prepared.Delivery, prepared.Model, prepared.ReasoningEffort)
+			INSERT INTO inbox_items (chat_id, submission_id, delivery, model, provider_id, reasoning_effort, status, content)
+			VALUES (?, ?, ?, ?, ?, ?, 'pending', '')
+		`, chatID, prepared.SubmissionID, prepared.Delivery, prepared.Model, nullableProviderID(prepared.ProviderID), prepared.ReasoningEffort)
 		if err != nil {
 			return fmt.Errorf("insert inbox item: %w", err)
 		}
@@ -390,7 +403,7 @@ func checkpointCompletion(ctx context.Context, db *sql.DB, chatID int64, expecte
 			// The queued prompt owns the next busy period. Persist its captured
 			// selection atomically so a restart cannot resume it with the
 			// previous turn's model or tools.
-			queuedState := CompletionState{Pending: true, Model: queueDelivery.Model, Tools: queueDelivery.Tools, ReasoningEffort: queueDelivery.ReasoningEffort}
+			queuedState := CompletionState{Pending: true, Model: queueDelivery.Model, ProviderID: queueDelivery.ProviderID, Tools: queueDelivery.Tools, ReasoningEffort: queueDelivery.ReasoningEffort}
 			if err := writeCompletionState(ctx, tx, chatID, queuedState); err != nil {
 				return CheckpointResult{}, err
 			}
@@ -492,6 +505,9 @@ func normalizeCompletionState(state CompletionState) (CompletionState, error) {
 	if len([]byte(state.Model)) > maxInboxModelBytes {
 		return CompletionState{}, fmt.Errorf("model exceeds %d bytes", maxInboxModelBytes)
 	}
+	if state.ProviderID < 0 {
+		state.ProviderID = 0
+	}
 	tools, err := normalizeCompletionTools(state.Tools)
 	if err != nil {
 		return CompletionState{}, err
@@ -506,15 +522,27 @@ func writeCompletionState(ctx context.Context, db databaseExecutor, chatID int64
 	if state.Pending {
 		pending = 1
 	}
+	if state.ProviderID > 0 {
+		var providerExists int
+		if err := db.QueryRowContext(ctx, `
+			SELECT 1 FROM providers WHERE id = ? AND user_id = ?
+		`, state.ProviderID, UserID(ctx)).Scan(&providerExists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("completion provider %d is not owned by this account", state.ProviderID)
+			}
+			return fmt.Errorf("check completion provider ownership: %w", err)
+		}
+	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO completion_state (chat_id, pending, model, reasoning_effort)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO completion_state (chat_id, pending, model, provider_id, reasoning_effort)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (chat_id) DO UPDATE SET
 			pending = excluded.pending,
 			model = excluded.model,
+			provider_id = excluded.provider_id,
 			reasoning_effort = excluded.reasoning_effort,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-	`, chatID, pending, state.Model, state.ReasoningEffort); err != nil {
+	`, chatID, pending, state.Model, nullableProviderID(state.ProviderID), state.ReasoningEffort); err != nil {
 		return fmt.Errorf("store completion state: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM completion_state_tools WHERE chat_id = ?`, chatID); err != nil {
@@ -543,15 +571,16 @@ func GetCompletionState(ctx context.Context, db databaseExecutor, chatID int64) 
 	}
 
 	var (
-		pending int
-		state   CompletionState
+		pending    int
+		providerID sql.NullInt64
+		state      CompletionState
 	)
 	err = queryer.QueryRowContext(ctx, `
-		SELECT pending, model, completion_state.reasoning_effort
+		SELECT completion_state.pending, completion_state.model, completion_state.provider_id, completion_state.reasoning_effort
 		FROM completion_state
 		JOIN chats ON chats.id = completion_state.chat_id
 		WHERE completion_state.chat_id = ? AND chats.user_id = ?
-	`, chatID, UserID(ctx)).Scan(&pending, &state.Model, &state.ReasoningEffort)
+	`, chatID, UserID(ctx)).Scan(&pending, &state.Model, &providerID, &state.ReasoningEffort)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CompletionState{}, nil
 	}
@@ -559,6 +588,7 @@ func GetCompletionState(ctx context.Context, db databaseExecutor, chatID int64) 
 		return CompletionState{}, fmt.Errorf("get completion state: %w", err)
 	}
 	state.Pending = pending == 1
+	state.ProviderID = nullSettingInt64(providerID)
 	state.Tools = []string{}
 
 	rows, err := queryer.QueryContext(ctx, `
@@ -604,6 +634,9 @@ func prepareInboxItem(item InboxItem) (InboxItem, error) {
 	item.Model = strings.TrimSpace(item.Model)
 	if len([]byte(item.Model)) > maxInboxModelBytes {
 		return InboxItem{}, fmt.Errorf("model exceeds %d bytes", maxInboxModelBytes)
+	}
+	if item.ProviderID < 0 {
+		item.ProviderID = 0
 	}
 	switch item.Status {
 	case "", "pending":
@@ -652,6 +685,15 @@ func prepareInboxItem(item InboxItem) (InboxItem, error) {
 	}
 	item.AppendIDs = appendIDs
 	return item, nil
+}
+
+// nullableProviderID stores zero and negative provider IDs as NULL so the
+// synthetic environment provider never reaches durable rows.
+func nullableProviderID(providerID int64) any {
+	if providerID <= 0 {
+		return nil
+	}
+	return providerID
 }
 
 func normalizeInboxTools(names []string) ([]string, error) {
@@ -720,15 +762,16 @@ func inboxItemBySubmission(ctx context.Context, db messageQueryer, chatID int64,
 	item := InboxItem{}
 	var (
 		messageID     sql.NullInt64
+		providerID    sql.NullInt64
 		sealedContent string
 	)
 	err = db.QueryRowContext(ctx, `
-		SELECT items.id, items.submission_id, items.delivery, items.model, items.reasoning_effort, items.status, items.content, items.message_id
+		SELECT items.id, items.submission_id, items.delivery, items.model, items.provider_id, items.reasoning_effort, items.status, items.content, items.message_id
 		FROM inbox_items AS items
 		JOIN chats ON chats.id = items.chat_id
 		WHERE chats.user_id = ? AND items.chat_id = ? AND items.submission_id = ?
 	`, userID, chatID, submissionID).Scan(
-		&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.ReasoningEffort, &item.Status, &sealedContent, &messageID,
+		&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &providerID, &item.ReasoningEffort, &item.Status, &sealedContent, &messageID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return InboxItem{}, false, nil
@@ -736,6 +779,7 @@ func inboxItemBySubmission(ctx context.Context, db messageQueryer, chatID int64,
 	if err != nil {
 		return InboxItem{}, false, fmt.Errorf("get inbox submission receipt: %w", err)
 	}
+	item.ProviderID = nullSettingInt64(providerID)
 	content, err := DecryptStorageText(ctx, inboxContentScope, inboxStorageRowID(item.ID), sealedContent)
 	if err != nil {
 		return InboxItem{}, false, fmt.Errorf("decrypt inbox submission receipt content: %w", err)
@@ -760,7 +804,7 @@ func queryInboxItems(ctx context.Context, db messageQueryer, chatID int64, statu
 		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT items.id, items.submission_id, items.delivery, items.model, items.reasoning_effort, items.status, items.content, items.message_id
+		SELECT items.id, items.submission_id, items.delivery, items.model, items.provider_id, items.reasoning_effort, items.status, items.content, items.message_id
 		FROM inbox_items AS items
 		JOIN chats ON chats.id = items.chat_id
 		WHERE chats.user_id = ?
@@ -778,11 +822,13 @@ func queryInboxItems(ctx context.Context, db messageQueryer, chatID int64, statu
 		var (
 			item          InboxItem
 			messageID     sql.NullInt64
+			providerID    sql.NullInt64
 			sealedContent string
 		)
-		if err := rows.Scan(&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &item.ReasoningEffort, &item.Status, &sealedContent, &messageID); err != nil {
+		if err := rows.Scan(&item.ID, &item.SubmissionID, &item.Delivery, &item.Model, &providerID, &item.ReasoningEffort, &item.Status, &sealedContent, &messageID); err != nil {
 			return nil, fmt.Errorf("scan inbox item: %w", err)
 		}
+		item.ProviderID = nullSettingInt64(providerID)
 		content, err := DecryptStorageText(ctx, inboxContentScope, inboxStorageRowID(item.ID), sealedContent)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt inbox item %d content: %w", item.ID, err)

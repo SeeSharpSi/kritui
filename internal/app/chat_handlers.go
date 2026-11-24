@@ -143,7 +143,12 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load settings.")
 			return
 		}
-		selectedModel := renderSettings.defaultModel
+		selectedProviderID, selectedModel, err := kritui_db.GetChatModelSelection(r.Context(), database, chatID)
+		if err != nil {
+			log.Printf("get chat model selection: %v", err)
+			renderPageError(w, r, http.StatusInternalServerError, "Failed to load model settings.")
+			return
+		}
 		selectedEffort, err := kritui_db.GetChatReasoningEffort(r.Context(), database, chatID)
 		if err != nil {
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load thinking level.")
@@ -152,10 +157,12 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 		if completionState.Pending {
 			selectedEffort = completionState.ReasoningEffort
 		}
-		for index := len(messages) - 1; index >= 0; index-- {
-			if messages[index].Role == "assistant" && strings.TrimSpace(messages[index].Model) != "" {
-				selectedModel = messages[index].Model
-				break
+		if selectedModel == "" {
+			for index := len(messages) - 1; index >= 0; index-- {
+				if messages[index].Role == "assistant" && strings.TrimSpace(messages[index].Model) != "" {
+					selectedModel = messages[index].Model
+					break
+				}
 			}
 		}
 		if completionActive {
@@ -166,16 +173,39 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 		} else if completionState.Pending {
 			if completionState.Model != "" {
 				selectedModel = completionState.Model
+				selectedProviderID = completionState.ProviderID
 			}
 			enabledTools = completionState.Tools
 		}
-		models, selectedModel, modelsFallback := availableModels(r, database, selectedModel)
-		if renderSettings.defaultModel != "" && !slices.Contains(models, renderSettings.defaultModel) {
-			models = append([]string{renderSettings.defaultModel}, models...)
+		if selectedModel == "" {
+			selectedModel = renderSettings.defaultModel
 		}
-		if model := renderSettings.titleGeneration.Model; model != "" && !slices.Contains(models, model) {
-			models = append(models, model)
+		catalog, catalogErr := buildModelCatalog(r.Context(), database, chat, selectedProviderID, selectedModel)
+		if catalogErr != nil {
+			log.Printf("build model catalog: %v", catalogErr)
+			catalog = modelCatalog{}
 		}
+		defaultID := defaultProviderID(r.Context(), database, catalog.Entries)
+		selectedProviderID = selectionProviderID(catalog.Entries, selectedProviderID, defaultID)
+		models, modelNames, modelProviders, modelDetails, _ := modelCatalogData(catalog, selectedProviderID, selectedModel)
+		defaultProviderSetting, err := kritui_db.GetDefaultProviderID(r.Context(), database)
+		if err != nil {
+			log.Printf("get default provider: %v", err)
+		}
+		defaultSelectedProvider := selectionProviderID(catalog.Entries, defaultProviderSetting, defaultID)
+		summaryProviderID, err := kritui_db.GetToolResultElisionSummaryProviderID(r.Context(), database)
+		if err != nil {
+			log.Printf("get summary provider: %v", err)
+		}
+		ensureCatalogOption(&catalog, catalog.Entries, defaultSelectedProvider, defaultID, renderSettings.defaultModel)
+		titleProviderSetting := renderSettings.titleGeneration.ProviderID
+		if renderSettings.titleGeneration.Model == "" {
+			titleProviderSetting = 0
+		} else {
+			titleProviderSetting = selectionProviderID(catalog.Entries, titleProviderSetting, defaultID)
+		}
+		ensureCatalogOption(&catalog, catalog.Entries, titleProviderSetting, defaultID, renderSettings.titleGeneration.Model)
+		models, modelNames, modelProviders, modelDetails, _ = modelCatalogData(catalog, selectedProviderID, selectedModel)
 		chatTitle, err := kritui_db.GetChatTitle(r.Context(), database, chatID)
 		if err != nil {
 			log.Printf("get chat title: %v", err)
@@ -185,40 +215,50 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 
 		var page bytes.Buffer
 		home := templates.HomeData{
-			ChatID:                   chat,
-			ChatTitle:                chatTitle,
-			ChatURL:                  chatURL,
-			Messages:                 messages,
-			Models:                   models,
-			ModelListFallback:        modelsFallback,
-			ModelDetails:             availableModelDetails(r.Context(), database, models),
-			SelectedModel:            selectedModel,
-			SelectedReasoningEffort:  selectedEffort,
-			DefaultReasoningEffort:   renderSettings.reasoningEffort,
-			TitleReasoningEffort:     renderSettings.titleGeneration.ReasoningEffort,
-			DefaultModel:             renderSettings.defaultModel,
-			MaxToolRounds:            renderSettings.maxToolRounds,
-			SystemPrompt:             renderSettings.systemPrompt,
-			CompactionPrompt:         renderSettings.compactionPrompt,
-			TitleGenerationEnabled:   renderSettings.titleGeneration.Enabled,
-			TitleGenerationModel:     renderSettings.titleGeneration.Model,
-			ToolResultElision:        renderSettings.toolResultElision,
-			Tools:                    toolRegistry.Names(),
-			EnabledTools:             enabledTools,
-			DefaultTools:             renderSettings.defaultTools,
-			MCPServers:               renderSettings.mcpServers,
-			GitHosts:                 renderSettings.gitHosts,
-			PromptAppends:            renderSettings.promptAppends,
-			NtfySettings:             renderSettings.ntfySettings,
-			LLMSettings:              renderSettings.llmSettings,
-			LLMEnvironmentConfigured: renderSettings.llmEnvManaged,
-			EnabledAppendIDs:         enabledAppendIDs,
-			CompletionRequestID:      completion.requestID,
-			CompletionStarted:        completion.started,
-			CompletionInterrupted:    completionState.Pending && !completionActive,
-			Inbox:                    inbox,
-			CommandDefinitions:       commandRegistry.Definitions(),
-			Theme:                    renderSettings.theme,
+			ChatID:                    chat,
+			ChatTitle:                 chatTitle,
+			ChatURL:                   chatURL,
+			Messages:                  messages,
+			Models:                    models,
+			ModelListFallback:         catalog.Fallback,
+			ModelDetails:              modelDetails,
+			ModelNames:                modelNames,
+			ModelProviders:            modelProviders,
+			SelectedModel:             selectedModel,
+			SelectedModelValue:        modelSelectionValue(selectedProviderID, selectedModel),
+			SelectedProviderID:        selectedProviderID,
+			SelectedReasoningEffort:   selectedEffort,
+			DefaultReasoningEffort:    renderSettings.reasoningEffort,
+			TitleReasoningEffort:      renderSettings.titleGeneration.ReasoningEffort,
+			DefaultModel:              renderSettings.defaultModel,
+			DefaultModelValue:         modelSelectionValue(defaultSelectedProvider, renderSettings.defaultModel),
+			DefaultProviderID:         defaultSelectedProvider,
+			TitleGenerationModel:      renderSettings.titleGeneration.Model,
+			TitleGenerationModelValue: modelSelectionValue(titleProviderSetting, renderSettings.titleGeneration.Model),
+			TitleGenerationProviderID: titleProviderSetting,
+			Providers:                 catalog.Providers,
+			SummaryProviderID:         summaryProviderID,
+			MaxToolRounds:             renderSettings.maxToolRounds,
+			SystemPrompt:              renderSettings.systemPrompt,
+			CompactionPrompt:          renderSettings.compactionPrompt,
+			TitleGenerationEnabled:    renderSettings.titleGeneration.Enabled,
+			ToolResultElision:         renderSettings.toolResultElision,
+			Tools:                     toolRegistry.Names(),
+			EnabledTools:              enabledTools,
+			DefaultTools:              renderSettings.defaultTools,
+			MCPServers:                renderSettings.mcpServers,
+			GitHosts:                  renderSettings.gitHosts,
+			PromptAppends:             renderSettings.promptAppends,
+			NtfySettings:              renderSettings.ntfySettings,
+			LLMSettings:               renderSettings.llmSettings,
+			LLMEnvironmentConfigured:  renderSettings.llmEnvManaged,
+			EnabledAppendIDs:          enabledAppendIDs,
+			CompletionRequestID:       completion.requestID,
+			CompletionStarted:         completion.started,
+			CompletionInterrupted:     completionState.Pending && !completionActive,
+			Inbox:                     inbox,
+			CommandDefinitions:        commandRegistry.Definitions(),
+			Theme:                     renderSettings.theme,
 		}
 		if err := templates.Home(home).Render(r.Context(), &page); err != nil {
 			log.Printf("render page: %v", err)
@@ -562,6 +602,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.SelectedModel = selectedModel
+		page.SelectedProviderID, err = kritui_db.GetDefaultProviderID(r.Context(), database)
+		if err != nil {
+			log.Printf("get default provider: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.SelectedModelValue = modelSelectionValue(page.SelectedProviderID, page.SelectedModel)
 		page.ReasoningEffort, err = kritui_db.GetDefaultReasoningEffort(r.Context(), database)
 		if err != nil {
 			render(http.StatusInternalServerError, "Failed to load thinking level.")
@@ -581,6 +628,12 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			return
 		}
 		page.ToolResultElision = toolResultElision
+		page.SummaryProviderID, err = kritui_db.GetToolResultElisionSummaryProviderID(r.Context(), database)
+		if err != nil {
+			log.Printf("get summary provider: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
 		titleGeneration, err := kritui_db.GetTitleGenerationSettings(r.Context(), database)
 		if err != nil {
 			log.Printf("get title generation settings: %v", err)
@@ -589,6 +642,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		}
 		page.TitleGenerationEnabled = titleGeneration.Enabled
 		page.TitleGenerationModel = titleGeneration.Model
+		page.TitleGenerationProviderID = titleGeneration.ProviderID
 		page.TitleReasoningEffort = titleGeneration.ReasoningEffort
 		defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 		if err != nil {
@@ -633,6 +687,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		}
 		page.LLMSettings = llmSettings
 		page.LLMEnvironmentConfigured = llmEnvironmentConfigured()
+		entries, err := loadProviderEntries(r.Context(), database)
+		if err != nil {
+			log.Printf("load providers: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
+		page.Providers = providerCards(entries)
 		systemPrompt, err := kritui_db.GetSystemPrompt(r.Context(), database)
 		if err != nil {
 			log.Printf("get system prompt: %v", err)
@@ -665,6 +726,29 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				return
 			}
 
+			providersSubmitted := r.FormValue("providers_form") == "1" || len(r.Form["provider_name"]) > 0
+			if providersSubmitted {
+				drafts, draftErr := providerDraftsFromForm(r, entries)
+				if draftErr != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("Provider settings are invalid: %v.", draftErr))
+					return
+				}
+				if _, saveErr := kritui_db.SaveProviders(r.Context(), database, drafts); saveErr != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("Provider settings are invalid: %v.", saveErr))
+					return
+				}
+				entries, err = loadProviderEntries(r.Context(), database)
+				if err != nil {
+					log.Printf("reload providers: %v", err)
+					render(http.StatusInternalServerError, "Failed to load settings.")
+					return
+				}
+				page.Providers = providerCards(entries)
+			}
+			defaultProvider := defaultProviderID(r.Context(), database, entries)
+			if page.SummaryProviderID != 0 {
+				page.SummaryProviderID = selectionProviderID(entries, page.SummaryProviderID, defaultProvider)
+			}
 			systemPromptSubmitted := r.FormValue("system_prompt_form") == "1"
 			if _, ok := r.Form["system_prompt"]; ok {
 				systemPromptSubmitted = true
@@ -706,9 +790,41 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			}
 			if toolResultElisionSubmitted {
 				page.ToolResultElision = toolResultElisionFromForm(r)
+				summaryValue := page.ToolResultElision.SummaryModel
+				summaryProviderID, summaryModel := parseModelSelection(summaryValue)
+				if summaryValue != "" && summaryProviderID == 0 {
+					if submitted := strings.TrimSpace(r.FormValue("tool_result_elision_summary_provider")); submitted != "" {
+						if id, parseErr := strconv.ParseInt(submitted, 10, 64); parseErr == nil {
+							summaryProviderID = id
+						}
+					}
+				}
+				if summaryModel == "" {
+					summaryProviderID = 0
+				} else {
+					summaryProviderID = selectionProviderID(entries, summaryProviderID, defaultProvider)
+				}
+				page.ToolResultElision.SummaryModel = summaryModel
+				page.SummaryProviderID = summaryProviderID
 			}
 			page.TitleGenerationEnabled = r.FormValue("title_generation_enabled") == "1"
-			page.TitleGenerationModel = strings.TrimSpace(r.FormValue("title_generation_model"))
+			titleValue := strings.TrimSpace(r.FormValue("title_generation_model"))
+			titleProviderID, titleModel := parseModelSelection(titleValue)
+			if titleValue != "" && titleProviderID == 0 {
+				if submitted := strings.TrimSpace(r.FormValue("title_model_provider")); submitted != "" {
+					if id, parseErr := strconv.ParseInt(submitted, 10, 64); parseErr == nil {
+						titleProviderID = id
+					}
+				}
+			}
+			if titleModel == "" {
+				titleProviderID = 0
+			} else {
+				titleProviderID = selectionProviderID(entries, titleProviderID, defaultProvider)
+			}
+			page.TitleGenerationModel = titleModel
+			page.TitleGenerationProviderID = titleProviderID
+			page.TitleGenerationModelValue = modelSelectionValue(titleProviderID, titleModel)
 			var submittedEffort, submittedTitleEffort *string
 			if _, present := r.Form["default_reasoning_effort"]; present {
 				page.ReasoningEffort = strings.ToLower(strings.TrimSpace(r.FormValue("default_reasoning_effort")))
@@ -719,7 +835,23 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				submittedTitleEffort = &page.TitleReasoningEffort
 			}
 
-			submittedModel := strings.TrimSpace(r.FormValue("model"))
+			submittedModelValue := strings.TrimSpace(r.FormValue("model"))
+			submittedProviderID, submittedModel := parseModelSelection(submittedModelValue)
+			if submittedModelValue != "" && submittedProviderID == 0 {
+				if submitted := strings.TrimSpace(r.FormValue("model_provider")); submitted != "" {
+					if id, parseErr := strconv.ParseInt(submitted, 10, 64); parseErr == nil {
+						submittedProviderID = id
+					}
+				}
+			}
+			if submittedModel == "" {
+				submittedProviderID = 0
+			} else {
+				submittedProviderID = selectionProviderID(entries, submittedProviderID, defaultProvider)
+			}
+			page.SelectedModel = submittedModel
+			page.SelectedProviderID = submittedProviderID
+			page.SelectedModelValue = modelSelectionValue(submittedProviderID, submittedModel)
 			submittedRounds, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("max_tool_rounds")))
 			submittedTheme := strings.TrimSpace(r.FormValue("theme"))
 			actionTheme := page.SelectedTheme
@@ -1037,31 +1169,41 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				llmUpdate = &value
 			}
 
-			config, configErr := effectiveLLMConfig(r.Context(), database)
-			if configErr != nil {
-				render(http.StatusInternalServerError, "Failed to load model settings.")
-				return
-			}
-			if llmUpdate != nil && strings.TrimSpace(os.Getenv("LLM_ENDPOINT")) == "" {
-				config.Endpoint = llmUpdate.Endpoint
-			}
 			for _, choice := range []struct {
-				model  string
-				effort *string
+				model      string
+				providerID int64
+				effort     *string
 			}{
-				{page.SelectedModel, submittedEffort}, {page.TitleGenerationModel, submittedTitleEffort},
+				{page.SelectedModel, page.SelectedProviderID, submittedEffort},
+				{page.TitleGenerationModel, page.TitleGenerationProviderID, submittedTitleEffort},
 			} {
 				if choice.effort != nil {
-					if err := validateModelReasoning(config.Endpoint, choice.model, *choice.effort); err != nil {
+					endpoint := providerEndpoint(entries, choice.providerID, defaultProvider)
+					if err := validateModelReasoning(endpoint, choice.model, *choice.effort); err != nil {
 						render(http.StatusBadRequest, fmt.Sprintf("Thinking selection is invalid: %v.", err))
 						return
 					}
 				}
 			}
+			defaultProviderValue := page.SelectedProviderID
+			if defaultProviderValue < 0 {
+				defaultProviderValue = 0
+			}
+			titleProviderValue := page.TitleGenerationProviderID
+			if titleProviderValue < 0 || page.TitleGenerationModel == "" {
+				titleProviderValue = 0
+			}
+			summaryProviderValue := page.SummaryProviderID
+			if summaryProviderValue < 0 || page.ToolResultElision.SummaryModel == "" {
+				summaryProviderValue = 0
+			}
 			update := kritui_db.SettingsUpdate{
 				ReasoningEffort:      submittedEffort,
 				TitleReasoningEffort: submittedTitleEffort,
 				Model:                page.SelectedModel,
+				DefaultProviderID:    &defaultProviderValue,
+				TitleProviderID:      &titleProviderValue,
+				SummaryProviderID:    &summaryProviderValue,
 				MaxToolRounds:        page.MaxToolRounds,
 				DefaultTools:         page.DefaultTools,
 				Ntfy:                 ntfyUpdate,
@@ -1097,6 +1239,9 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			if llmSubmitted {
 				page.ClearLLMAPIKey = false
 				page.LLMEnvironmentConfigured = llmEnvironmentConfigured()
+			}
+			if providersSubmitted {
+				page.Providers = providerCards(entries)
 			}
 			if submittedSystemPrompt != nil {
 				if trimmed := strings.TrimSpace(*submittedSystemPrompt); trimmed == "" || trimmed == llm.DefaultSystemPrompt() {
@@ -1724,11 +1869,37 @@ func renderGitHostEditor(w http.ResponseWriter, r *http.Request, status int, hos
 
 func renderSettingsPage(w http.ResponseWriter, r *http.Request, status int, data templates.SettingsPanelData, database *sql.DB) {
 	data.Visible = true
-	data.Models, data.SelectedModel, data.ModelListFallback = availableModels(r, database, data.SelectedModel)
-	if model := data.TitleGenerationModel; model != "" && !slices.Contains(data.Models, model) {
-		data.Models = append(data.Models, model)
+	entries, err := loadProviderEntries(r.Context(), database)
+	if err != nil {
+		log.Printf("load providers for settings: %v", err)
 	}
-	data.ModelDetails = availableModelDetails(r.Context(), database, data.Models)
+	defaultID := int64(0)
+	if err == nil {
+		defaultID = defaultProviderID(r.Context(), database, entries)
+		data.SelectedProviderID = selectionProviderID(entries, data.SelectedProviderID, defaultID)
+		data.TitleGenerationProviderID = selectionProviderID(entries, data.TitleGenerationProviderID, defaultID)
+		if data.TitleGenerationModel == "" {
+			data.TitleGenerationProviderID = 0
+		}
+		catalog, catalogErr := buildModelCatalog(r.Context(), database, data.ChatID, data.SelectedProviderID, data.SelectedModel)
+		if catalogErr != nil {
+			log.Printf("build model catalog for settings: %v", catalogErr)
+		} else {
+			ensureCatalogOption(&catalog, catalog.Entries, data.TitleGenerationProviderID, defaultID, data.TitleGenerationModel)
+			data.Providers = catalog.Providers
+			models, names, providers, details, _ := modelCatalogData(catalog, data.SelectedProviderID, data.SelectedModel)
+			data.Models = models
+			data.ModelNames = names
+			data.ModelProviders = providers
+			data.ModelDetails = details
+			data.ModelListFallback = catalog.Fallback
+		}
+	}
+	if data.Models == nil {
+		data.Models = []string{}
+	}
+	data.SelectedModelValue = modelSelectionValue(data.SelectedProviderID, data.SelectedModel)
+	data.TitleGenerationModelValue = modelSelectionValue(data.TitleGenerationProviderID, data.TitleGenerationModel)
 	var page bytes.Buffer
 	if err := templates.SettingsPage(data).Render(r.Context(), &page); err != nil {
 		log.Printf("render settings: %v", err)

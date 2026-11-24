@@ -81,6 +81,9 @@ func Run(files fs.FS, schemaSQL string) error {
 		kritui_db.WithUser(startupContext, kritui_db.LegacyOwnerID),
 		storage,
 	)
+	if err := kritui_db.MigrateLegacyProviderConfig(ownerContext, database); err != nil {
+		return fmt.Errorf("migrate legacy provider config: %w", err)
+	}
 	if err := kritui_db.EnsureDefaultModel(ownerContext, database, os.Getenv("LLM_MODEL")); err != nil {
 		return fmt.Errorf("initialize settings: %w", err)
 	}
@@ -538,6 +541,110 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateMessageUsageAndModelsDevCache,
 	migrateGitHosts,
 	migrateReasoningEffort,
+	migrateProviders,
+}
+
+// migrateProviders adds custom LLM providers, provider references on settings,
+// chats, inbox items, and completion state, and provider-scoped model endpoint
+// preferences. Existing endpoint preferences keep provider_id 0.
+func migrateProviders(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS providers (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		position INTEGER NOT NULL CHECK (position >= 0),
+		name TEXT NOT NULL COLLATE NOCASE CHECK (trim(name) <> '' AND length(CAST(name AS BLOB)) <= 100),
+		endpoint TEXT NOT NULL CHECK (endpoint <> ''),
+		api_key TEXT,
+		UNIQUE (user_id, position),
+		UNIQUE (user_id, name)
+	) STRICT`); err != nil {
+		return fmt.Errorf("create providers table: %w", err)
+	}
+
+	columns := []struct {
+		table      string
+		column     string
+		definition string
+	}{
+		{"settings", "default_provider_id", `INTEGER REFERENCES providers(id) ON DELETE SET NULL`},
+		{"settings", "title_provider_id", `INTEGER REFERENCES providers(id) ON DELETE SET NULL`},
+		{"settings", "tool_result_elision_summary_provider_id", `INTEGER REFERENCES providers(id) ON DELETE SET NULL`},
+		{"chats", "model", `TEXT CHECK (model IS NULL OR (trim(model) <> '' AND length(CAST(model AS BLOB)) <= 512))`},
+		{"chats", "provider_id", `INTEGER REFERENCES providers(id) ON DELETE SET NULL`},
+		{"inbox_items", "provider_id", `INTEGER REFERENCES providers(id) ON DELETE SET NULL`},
+		{"completion_state", "provider_id", `INTEGER REFERENCES providers(id) ON DELETE SET NULL`},
+	}
+	for _, column := range columns {
+		exists, err := tableExists(ctx, tx, column.table)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if err := addColumnIfMissing(ctx, tx, column.table, column.column, column.definition); err != nil {
+			return err
+		}
+	}
+	return rebuildModelEndpointPreferenceProviders(ctx, tx)
+}
+
+// rebuildModelEndpointPreferenceProviders widens the endpoint preference
+// primary key to include provider_id. Existing rows belong to provider 0.
+func rebuildModelEndpointPreferenceProviders(ctx context.Context, tx *sql.Tx) error {
+	exists, err := tableExists(ctx, tx, "model_endpoint_preferences")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE model_endpoint_preferences (
+			user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+			provider_id INTEGER NOT NULL DEFAULT 0,
+			model TEXT NOT NULL CHECK (trim(model) <> ''),
+			endpoint_type TEXT NOT NULL CHECK (endpoint_type IN ('responses', 'messages', 'chat_completions')),
+			PRIMARY KEY (user_id, provider_id, model)
+		) STRICT`)
+		return err
+	}
+
+	columns, err := tableColumns(ctx, tx, "model_endpoint_preferences")
+	if err != nil {
+		return err
+	}
+	if columns["provider_id"] {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS model_endpoint_preferences_v38`); err != nil {
+		return fmt.Errorf("remove stale provider preference table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE model_endpoint_preferences_v38 (
+		user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+		provider_id INTEGER NOT NULL DEFAULT 0,
+		model TEXT NOT NULL CHECK (trim(model) <> ''),
+		endpoint_type TEXT NOT NULL CHECK (endpoint_type IN ('responses', 'messages', 'chat_completions')),
+		PRIMARY KEY (user_id, provider_id, model)
+	) STRICT`); err != nil {
+		return fmt.Errorf("create provider preference table: %w", err)
+	}
+	userExpression := "1"
+	if columns["user_id"] {
+		userExpression = "user_id"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO model_endpoint_preferences_v38 (user_id, provider_id, model, endpoint_type)
+		SELECT `+userExpression+`, 0, model, endpoint_type
+		FROM model_endpoint_preferences
+	`); err != nil {
+		return fmt.Errorf("copy provider preferences: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE model_endpoint_preferences`); err != nil {
+		return fmt.Errorf("remove legacy provider preferences: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE model_endpoint_preferences_v38 RENAME TO model_endpoint_preferences`); err != nil {
+		return fmt.Errorf("rename provider preference table: %w", err)
+	}
+	return nil
 }
 
 func migrateReasoningEffort(ctx context.Context, tx *sql.Tx) error {

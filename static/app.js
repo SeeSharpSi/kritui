@@ -2248,6 +2248,22 @@ document.addEventListener('click', (event) => {
         return;
     }
 
+    const providerAdd = event.target.closest('[data-provider-add]');
+    if (providerAdd) {
+        const section = providerAdd.closest('#llm-settings');
+        const template = section?.querySelector('#provider-row-template');
+        const list = section?.querySelector('[data-provider-list]');
+        if (template && list) {
+            list.append(template.content.cloneNode(true));
+            list.querySelector('[data-provider-row]:last-child input[name="provider_name"]')?.focus();
+        }
+    }
+
+    const providerRemove = event.target.closest('[data-provider-remove]');
+    if (providerRemove) {
+        providerRemove.closest('[data-provider-row]')?.remove();
+    }
+
     const clearOpen = event.target.closest('[data-settings-clear-open]');
     if (clearOpen) {
         clearOpen.closest('.settings-section')?.querySelector('[data-settings-clear-dialog]')?.showModal();
