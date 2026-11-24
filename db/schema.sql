@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS settings (
             (trim(tool_result_elision_summary_model) <> '' AND length(CAST(tool_result_elision_summary_model AS BLOB)) <= 512)),
     title_generation_enabled INTEGER NOT NULL DEFAULT 0
         CHECK (title_generation_enabled IN (0, 1)),
+    compaction_auto INTEGER NOT NULL DEFAULT 1 CHECK (compaction_auto IN (0, 1)),
     title_generation_model TEXT
         CHECK (title_generation_model IS NULL OR
             (trim(title_generation_model) <> '' AND length(CAST(title_generation_model AS BLOB)) <= 512)),
@@ -122,6 +123,20 @@ CREATE TABLE IF NOT EXISTS model_endpoint_preferences (
     endpoint_type TEXT NOT NULL CHECK (endpoint_type IN ('responses', 'messages', 'chat_completions')),
     PRIMARY KEY (user_id, provider_id, model)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS chat_compactions (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
+    model TEXT CHECK (model IS NULL OR length(CAST(model AS BLOB)) <= 512),
+    keep_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    last_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    summary TEXT NOT NULL CHECK (summary <> ''),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS chat_compactions_chat_id_idx
+    ON chat_compactions (chat_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS chats (
     reasoning_effort TEXT,
@@ -366,4 +381,4 @@ CREATE TABLE IF NOT EXISTS models_dev_cache (
     payload BLOB NOT NULL
 ) STRICT;
 
-PRAGMA user_version = 38;
+PRAGMA user_version = 39;

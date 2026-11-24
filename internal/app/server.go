@@ -199,6 +199,30 @@ func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 	if err != nil {
 		return nil, err
 	}
+	compact, err := commands.NewMessageHistoryCommand("compact", "Summarize older context", func(ctx context.Context, chatID int64) (templ.Component, error) {
+		outcome, err := manualCompaction(ctx, database, chatID)
+		switch {
+		case errors.Is(err, ErrCompactionInProgress):
+			return nil, &commands.UserError{Status: http.StatusConflict, Message: "Wait for the current response to finish before compacting."}
+		case errors.Is(err, ErrNothingToCompact):
+			return nil, &commands.UserError{Status: http.StatusConflict, Message: "Nothing to compact yet."}
+		case errors.Is(err, ErrCompactionUnavailable):
+			return nil, &commands.UserError{Status: http.StatusBadRequest, Message: "Configure a model provider before compacting."}
+		case errors.Is(err, kritui_db.ErrChatNotFound):
+			return nil, &commands.UserError{Status: http.StatusNotFound, Message: "Chat not found."}
+		case err != nil:
+			return nil, fmt.Errorf("compact current chat: %w", err)
+		}
+		messages, err := kritui_db.GetMessages(ctx, database, chatID)
+		if err != nil {
+			return nil, fmt.Errorf("load compacted chat: %w", err)
+		}
+		notice := fmt.Sprintf("Compacted %d messages into a checkpoint; kept %d recent messages.", outcome.summarized, outcome.kept)
+		return templates.CompactionResult(strconv.FormatInt(chatID, 10), messages, notice), nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	history, err := commands.NewPanelCommand("history", "Open chat history", "history-page")
 	if err != nil {
 		return nil, err
@@ -224,7 +248,7 @@ func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return commands.NewRegistry(newCommand, undo, redo, history, settings, rename)
+	return commands.NewRegistry(newCommand, undo, redo, compact, history, settings, rename)
 }
 
 func openDatabase(path string) (*sql.DB, error) {
@@ -542,6 +566,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateGitHosts,
 	migrateReasoningEffort,
 	migrateProviders,
+	migrateChatCompactions,
 }
 
 // migrateProviders adds custom LLM providers, provider references on settings,
@@ -645,6 +670,37 @@ func rebuildModelEndpointPreferenceProviders(ctx context.Context, tx *sql.Tx) er
 		return fmt.Errorf("rename provider preference table: %w", err)
 	}
 	return nil
+}
+
+// migrateChatCompactions adds durable conversation-summary checkpoints and the
+// default-on automatic compaction toggle. A compaction stores only the summary
+// and the first message kept beside it; original messages stay intact.
+func migrateChatCompactions(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS chat_compactions (
+		id INTEGER PRIMARY KEY,
+		chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+		provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
+		model TEXT CHECK (model IS NULL OR length(CAST(model AS BLOB)) <= 512),
+		keep_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+		last_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+		summary TEXT NOT NULL CHECK (summary <> ''),
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	) STRICT`); err != nil {
+		return fmt.Errorf("create chat compactions table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS chat_compactions_chat_id_idx
+		ON chat_compactions (chat_id, id DESC)`); err != nil {
+		return fmt.Errorf("create chat compactions index: %w", err)
+	}
+	exists, err := tableExists(ctx, tx, "settings")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	return addColumnIfMissing(ctx, tx, "settings", "compaction_auto",
+		`INTEGER NOT NULL DEFAULT 1 CHECK (compaction_auto IN (0, 1))`)
 }
 
 func migrateReasoningEffort(ctx context.Context, tx *sql.Tx) error {

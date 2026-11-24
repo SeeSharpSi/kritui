@@ -520,6 +520,16 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure model.", request.model, selectedTools))
 		return
 	}
+	compaction, err := maybeCompactChat(ctx, database, request.chatID, provider, request.model, messages, false, estimatePromptOverhead(systemPrompt, request.selected))
+	if err != nil {
+		log.Printf("compact context: %v", err)
+		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to compact the conversation.", request.model, selectedTools))
+		return
+	}
+	if compaction.created {
+		logCompaction(request.chatID, compaction)
+	}
+	messages = compaction.messages
 	var modelInfo llm.ModelInfo
 	modelInfoKnown := false
 	if messagesHaveImageAttachments(messages) || messagesHavePDFAttachments(messages) {

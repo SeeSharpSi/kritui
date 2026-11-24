@@ -610,3 +610,11 @@ templ MessageInput(value string, outOfBand bool) {
 		<textarea id="message" name="message" rows="1" placeholder="Write a message..." enterkeyhint="enter" required autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="command-autocomplete" aria-expanded="false">{ value }</textarea>
 	}
 }
+
+// CompactionResult returns the full stored history plus a transient notice
+// after a manual /compact command.
+templ CompactionResult(chatID string, messages []llm.Message, notice string) {
+	@MessageList(chatID, messages, false)
+	<p class="compaction-notice" role="status" aria-live="polite">{ notice }</p>
+	@MessageInput("", true)
+}

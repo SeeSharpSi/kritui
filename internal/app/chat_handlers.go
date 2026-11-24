@@ -212,11 +212,18 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat title.")
 			return
 		}
+		compactionNotice := ""
+		if _, found, err := kritui_db.GetLatestChatCompaction(r.Context(), database, chatID); err != nil {
+			log.Printf("get chat compaction: %v", err)
+		} else if found {
+			compactionNotice = "Context compacted. Older messages are represented by a summary."
+		}
 
 		var page bytes.Buffer
 		home := templates.HomeData{
 			ChatID:                    chat,
 			ChatTitle:                 chatTitle,
+			CompactionNotice:          compactionNotice,
 			ChatURL:                   chatURL,
 			Messages:                  messages,
 			Models:                    models,
@@ -242,6 +249,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			SystemPrompt:              renderSettings.systemPrompt,
 			CompactionPrompt:          renderSettings.compactionPrompt,
 			TitleGenerationEnabled:    renderSettings.titleGeneration.Enabled,
+			CompactionAuto:            renderSettings.compactionAuto,
 			ToolResultElision:         renderSettings.toolResultElision,
 			Tools:                     toolRegistry.Names(),
 			EnabledTools:              enabledTools,
@@ -280,6 +288,7 @@ type homeRenderSettings struct {
 	systemPrompt      string
 	compactionPrompt  string
 	titleGeneration   kritui_db.TitleGenerationSettings
+	compactionAuto    bool
 	toolResultElision llm.ToolResultElisionConfig
 	defaultTools      []string
 	mcpServers        []kritui_db.MCPServer
@@ -324,6 +333,10 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 	if settings.compactionPrompt, err = kritui_db.GetCompactionPrompt(ctx, database); err != nil {
 		log.Printf("get compaction prompt: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load compaction prompt: %w", err)
+	}
+	if settings.compactionAuto, err = kritui_db.GetCompactionAuto(ctx, database); err != nil {
+		log.Printf("get automatic compaction: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load automatic compaction: %w", err)
 	}
 	if settings.toolResultElision, err = kritui_db.GetToolResultElision(ctx, database); err != nil {
 		log.Printf("get tool result elision: %v", err)
@@ -564,6 +577,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		page := templates.SettingsPanelData{
 			ChatID:           r.URL.Query().Get("chat"),
 			SelectedModel:    os.Getenv("LLM_MODEL"),
+			CompactionAuto:   true,
 			MaxToolRounds:    llm.DefaultMaxToolCallRounds,
 			SystemPrompt:     llm.DefaultSystemPrompt(),
 			CompactionPrompt: llm.DefaultCompactionPrompt(),
@@ -644,6 +658,12 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		page.TitleGenerationModel = titleGeneration.Model
 		page.TitleGenerationProviderID = titleGeneration.ProviderID
 		page.TitleReasoningEffort = titleGeneration.ReasoningEffort
+		page.CompactionAuto, err = kritui_db.GetCompactionAuto(r.Context(), database)
+		if err != nil {
+			log.Printf("get automatic compaction: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
 		defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 		if err != nil {
 			log.Printf("get default tools: %v", err)
@@ -825,6 +845,13 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			page.TitleGenerationModel = titleModel
 			page.TitleGenerationProviderID = titleProviderID
 			page.TitleGenerationModelValue = modelSelectionValue(titleProviderID, titleModel)
+			compactionSubmitted := r.FormValue("compaction_form") == "1"
+			var compactionAuto *bool
+			if compactionSubmitted {
+				value := r.FormValue("compaction_auto") == "1"
+				page.CompactionAuto = value
+				compactionAuto = &value
+			}
 			var submittedEffort, submittedTitleEffort *string
 			if _, present := r.Form["default_reasoning_effort"]; present {
 				page.ReasoningEffort = strings.ToLower(strings.TrimSpace(r.FormValue("default_reasoning_effort")))
@@ -1210,6 +1237,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				LLM:                  llmUpdate,
 				ToolResultElision:    toolResultElisionUpdate,
 				TitleGeneration:      &titleGenerationUpdate,
+				CompactionAuto:       compactionAuto,
 				SystemPrompt:         submittedSystemPrompt,
 				CompactionPrompt:     submittedCompactionPrompt,
 				Theme:                submittedTheme,

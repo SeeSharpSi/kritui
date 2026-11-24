@@ -30,6 +30,7 @@ type SettingsPanelData struct {
 	MaxToolRounds               int
 	TitleGenerationEnabled      bool
 	TitleGenerationModel        string
+	CompactionAuto              bool
 	SystemPrompt                string
 	CompactionPrompt            string
 	ToolResultElision           llm.ToolResultElisionConfig
@@ -370,6 +371,19 @@ templ SettingsPage(data SettingsPanelData) {
 						</div>
 						<div class="settings-control">
 							@ThinkingPicker("title", data.ModelDetails[data.TitleGenerationModel], data.TitleReasoningEffort)
+						</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="compaction-auto">Auto-compact context</label>
+							<p class="settings-help">When the conversation approaches the model's context limit, summarize older messages and keep the recent tail. /compact always works.</p>
+						</div>
+						<div class="settings-control">
+							<label class="settings-tool-option">
+								<input id="compaction-auto" type="checkbox" role="switch" name="compaction_auto" value="1" if data.CompactionAuto { checked }/>
+								<span>Enabled</span>
+							</label>
+							<input type="hidden" name="compaction_form" value="1"/>
 						</div>
 					</div>
 					<div class="settings-field settings-system-prompt-field">

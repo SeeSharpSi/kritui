@@ -85,6 +85,7 @@ type SettingsUpdate struct {
 	LLM                  *LLMSettingsUpdate
 	ToolResultElision    *llm.ToolResultElisionConfig
 	TitleGeneration      *TitleGenerationSettingsUpdate
+	CompactionAuto       *bool
 	SystemPrompt         *string
 	CompactionPrompt     *string
 	Theme                string
@@ -249,6 +250,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 			return err
 		}
 	}
+	if update.CompactionAuto != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET compaction_auto = ? WHERE id = ?`, *update.CompactionAuto, UserID(ctx)); err != nil {
+			return fmt.Errorf("save automatic compaction: %w", err)
+		}
+	}
 	for _, reference := range []struct {
 		column     string
 		providerID *int64
@@ -357,6 +363,20 @@ func setToolResultElision(ctx context.Context, db settingWriter, config llm.Tool
 		return fmt.Errorf("set tool result elision: %w", err)
 	}
 	return nil
+}
+
+// GetCompactionAuto reports whether automatic context compaction is enabled.
+// New accounts default to enabled.
+func GetCompactionAuto(ctx context.Context, db *sql.DB) (bool, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return false, fmt.Errorf("get automatic compaction: %w", err)
+	}
+	var enabled bool
+	if err := db.QueryRowContext(ctx, `SELECT compaction_auto FROM settings WHERE id = ?`, userID).Scan(&enabled); err != nil {
+		return false, fmt.Errorf("get automatic compaction: %w", err)
+	}
+	return enabled, nil
 }
 
 // GetTitleGenerationSettings returns the stored chat-title generation choice.
