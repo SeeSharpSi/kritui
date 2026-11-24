@@ -2520,7 +2520,7 @@ main {
             .thinking-picker,
             .tool-picker,
             .append-picker {
-                position: static;
+                position: relative;
                 flex: 0 0 auto;
                 min-width: 0;
                 max-width: 100%;
@@ -2576,8 +2576,8 @@ main {
                 z-index: 1;
                 bottom: calc(100% + .5rem);
                 left: 0;
-                min-width: min(100%, 14rem);
-                max-width: min(28rem, calc(100vw - 1rem), 100%);
+                min-width: 14rem;
+                max-width: min(28rem, calc(100vw - 1rem));
                 max-height: min(24rem, 50dvh, var(--chat-picker-max-height, 50dvh));
                 overflow-y: auto;
                 overscroll-behavior: contain;
@@ -2613,8 +2613,6 @@ main {
                 }
             }
 
-            .thinking-picker .model-options,
-            .tool-picker .tool-options,
             .append-picker .append-options {
                 right: 0;
                 left: auto;
