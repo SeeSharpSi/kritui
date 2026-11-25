@@ -58,6 +58,8 @@ type Conversation struct {
 	summarizer        *Client
 	summaryPrompt     string
 	summaryCache      map[int]string
+	requestShaper     func(context.Context, []Message, []tools.Definition) ([]Message, error)
+	overflowHandler   func(context.Context) error
 }
 
 // SetToolCallLogger configures logging for tool names, arguments, and results.
@@ -157,6 +159,23 @@ func (c *Conversation) SetToolResultElisionObserver(observer func(context.Contex
 	}
 }
 
+// SetRequestShaper transforms messages for provider requests only. Canonical
+// conversation history and checkpoint digests remain unchanged.
+func (c *Conversation) SetRequestShaper(shaper func(context.Context, []Message, []tools.Definition) ([]Message, error)) {
+	if c != nil {
+		c.requestShaper = shaper
+	}
+}
+
+// SetOverflowHandler installs a one-shot recovery callback for provider
+// requests rejected as too long. Returning nil retries once with a reshaped
+// request; any error aborts the completion.
+func (c *Conversation) SetOverflowHandler(handler func(context.Context) error) {
+	if c != nil {
+		c.overflowHandler = handler
+	}
+}
+
 // SetToolResultSummaryPrompt configures the system instruction sent with each
 // tool-result summarization request. Blank text keeps the built-in default.
 // Changing the prompt discards summaries cached under the previous prompt.
@@ -224,8 +243,26 @@ func (c *Conversation) Complete(ctx context.Context) error {
 				return err
 			}
 		}
+		if c.requestShaper != nil {
+			shaped, shapeErr := c.requestShaper(ctx, requestMessages, definitions)
+			if shapeErr != nil {
+				return shapeErr
+			}
+			if len(shaped) == 0 {
+				return errors.New("llm: request shaper returned no messages")
+			}
+			requestMessages = shaped
+		}
 		completion, err := c.client.complete(ctx, requestMessages, definitions)
 		if err != nil {
+			if c.overflowHandler != nil && IsContextOverflowError(err) {
+				handler := c.overflowHandler
+				c.overflowHandler = nil
+				if handlerErr := handler(ctx); handlerErr != nil {
+					return fmt.Errorf("llm: context overflow recovery: %w", handlerErr)
+				}
+				continue
+			}
 			return err
 		}
 		if err := validateAssistantMessage(completion); err != nil {

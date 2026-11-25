@@ -73,25 +73,28 @@ type settingWriter interface {
 // TitleGeneration, ReasoningEffort, TitleReasoningEffort, SystemPrompt, or
 // CompactionPrompt values, and an empty Theme, leave those settings untouched.
 type SettingsUpdate struct {
-	Model                string
-	ReasoningEffort      *string
-	TitleReasoningEffort *string
-	MaxToolRounds        int
-	DefaultTools         []string
-	PromptAppends        []PromptAppend
-	MCPServers           []MCPServerUpdate
-	GitHosts             []GitHostUpdate
-	Ntfy                 *NtfySettingsUpdate
-	LLM                  *LLMSettingsUpdate
-	ToolResultElision    *llm.ToolResultElisionConfig
-	TitleGeneration      *TitleGenerationSettingsUpdate
-	CompactionAuto       *bool
-	SystemPrompt         *string
-	CompactionPrompt     *string
-	Theme                string
-	DefaultProviderID    *int64
-	TitleProviderID      *int64
-	SummaryProviderID    *int64
+	Model                   string
+	ReasoningEffort         *string
+	TitleReasoningEffort    *string
+	MaxToolRounds           int
+	DefaultTools            []string
+	PromptAppends           []PromptAppend
+	MCPServers              []MCPServerUpdate
+	GitHosts                []GitHostUpdate
+	Ntfy                    *NtfySettingsUpdate
+	LLM                     *LLMSettingsUpdate
+	ToolResultElision       *llm.ToolResultElisionConfig
+	TitleGeneration         *TitleGenerationSettingsUpdate
+	CompactionAuto          *bool
+	CompactionKeepTokens    *int
+	CompactionBufferPercent *int
+	CompactionModel         *string
+	SystemPrompt            *string
+	CompactionPrompt        *string
+	Theme                   string
+	DefaultProviderID       *int64
+	TitleProviderID         *int64
+	SummaryProviderID       *int64
 }
 
 // TitleGenerationSettings contains the persisted chat-title generation choice.
@@ -255,6 +258,35 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 			return fmt.Errorf("save automatic compaction: %w", err)
 		}
 	}
+	if update.CompactionKeepTokens != nil {
+		if err := ValidateCompactionSettings(*update.CompactionKeepTokens, 15); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET compaction_keep_tokens = ? WHERE id = ?`, *update.CompactionKeepTokens, UserID(ctx)); err != nil {
+			return fmt.Errorf("save compaction keep tokens: %w", err)
+		}
+	}
+	if update.CompactionBufferPercent != nil {
+		if err := ValidateCompactionSettings(15000, *update.CompactionBufferPercent); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET compaction_buffer_percent = ? WHERE id = ?`, *update.CompactionBufferPercent, UserID(ctx)); err != nil {
+			return fmt.Errorf("save compaction buffer: %w", err)
+		}
+	}
+	if update.CompactionModel != nil {
+		model := strings.TrimSpace(*update.CompactionModel)
+		if len([]byte(model)) > 512 {
+			return fmt.Errorf("compaction model must not exceed 512 bytes")
+		}
+		var value any
+		if model != "" {
+			value = model
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET compaction_model = ? WHERE id = ?`, value, UserID(ctx)); err != nil {
+			return fmt.Errorf("save compaction model: %w", err)
+		}
+	}
 	for _, reference := range []struct {
 		column     string
 		providerID *int64
@@ -365,18 +397,48 @@ func setToolResultElision(ctx context.Context, db settingWriter, config llm.Tool
 	return nil
 }
 
-// GetCompactionAuto reports whether automatic context compaction is enabled.
-// New accounts default to enabled.
-func GetCompactionAuto(ctx context.Context, db *sql.DB) (bool, error) {
+// CompactionConfig contains the account's conversation-compaction choices.
+type CompactionConfig struct {
+	Auto          bool
+	KeepTokens    int
+	BufferPercent int
+	Model         string
+}
+
+// ValidateCompactionSettings checks adjustable compaction values.
+func ValidateCompactionSettings(keepTokens, bufferPercent int) error {
+	if keepTokens < 1 || keepTokens > 100000 {
+		return fmt.Errorf("compaction keep tokens must be between 1 and 100000")
+	}
+	if bufferPercent < 1 || bufferPercent > 99 {
+		return fmt.Errorf("compaction buffer must be between 1 and 99 percent")
+	}
+	return nil
+}
+
+// GetCompactionConfig returns the account's compaction settings. New accounts
+// default to automatic compaction, a 15k tail, and 15% headroom.
+func GetCompactionConfig(ctx context.Context, db *sql.DB) (CompactionConfig, error) {
 	userID, err := requireUserID(ctx)
 	if err != nil {
-		return false, fmt.Errorf("get automatic compaction: %w", err)
+		return CompactionConfig{}, fmt.Errorf("get compaction config: %w", err)
 	}
-	var enabled bool
-	if err := db.QueryRowContext(ctx, `SELECT compaction_auto FROM settings WHERE id = ?`, userID).Scan(&enabled); err != nil {
-		return false, fmt.Errorf("get automatic compaction: %w", err)
+	var config CompactionConfig
+	var model sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT compaction_auto, compaction_keep_tokens, compaction_buffer_percent, compaction_model
+		FROM settings WHERE id = ?
+	`, userID).Scan(&config.Auto, &config.KeepTokens, &config.BufferPercent, &model); err != nil {
+		return CompactionConfig{}, fmt.Errorf("get compaction config: %w", err)
 	}
-	return enabled, nil
+	config.Model = nullSettingString(model)
+	return config, nil
+}
+
+// GetCompactionAuto reports whether automatic context compaction is enabled.
+func GetCompactionAuto(ctx context.Context, db *sql.DB) (bool, error) {
+	config, err := GetCompactionConfig(ctx, db)
+	return config.Auto, err
 }
 
 // GetTitleGenerationSettings returns the stored chat-title generation choice.

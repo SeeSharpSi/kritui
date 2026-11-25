@@ -559,6 +559,9 @@ func UndoLatestTurn(ctx context.Context, db *sql.DB, chatID int64) (UndoResult, 
 	`, sequence, chatID, position); err != nil {
 		return UndoResult{}, fmt.Errorf("undo latest turn: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM chat_compactions WHERE chat_id = ?`, chatID); err != nil {
+		return UndoResult{}, fmt.Errorf("invalidate compaction after undo: %w", err)
+	}
 
 	snapshot, err := getMessageSnapshot(ctx, tx, chatID)
 	if err != nil {

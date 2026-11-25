@@ -1358,3 +1358,21 @@ func TestAnthropicImageOnlyHasNoEmptyTextBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestModelInfosParsesContextWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"a","context_length":65536},{"id":"b","context_window":131072},{"id":"c","max_model_len":32768}]}`))
+	}))
+	defer server.Close()
+	client, err := New("key", "model", server.URL+"/v1/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	infos, err := client.ModelInfos(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 3 || infos[0].ContextWindow != 65536 || infos[1].ContextWindow != 131072 || infos[2].ContextWindow != 32768 {
+		t.Fatalf("context windows = %#v", infos)
+	}
+}

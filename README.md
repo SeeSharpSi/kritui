@@ -35,11 +35,13 @@ The optional `git` capability clones HTTPS repositories into a persistent local 
 
 ## Context compaction
 
-Long chats can be compacted into a structured summary. Run `/compact` in the message box at any time. Automatic compaction is on by default and triggers before the next model request when the estimated prompt reaches roughly 85% of the model's window: it keeps about 15% (at least 16k tokens) free for the reply and summary. Auto-compaction can be turned off under **Settings → Auto-compact context**.
+Long chats can be compacted into a structured summary. Run `/compact` in the message box at any time. Automatic compaction is on by default and checks before each model request, including between tool rounds, when the estimated prompt reaches the configured headroom below the model's window. A provider rejection for excessive context triggers one forced compaction and retry.
 
-Compaction keeps the newest 15k tokens of conversation verbatim and replaces older messages in outbound requests with a summary checkpoint. Stored messages are never deleted or rewritten; the UI still shows the full history, with a notice that the context was compacted. A later compaction updates the previous summary instead of starting over.
+Compaction keeps the newest messages within **Recent tokens to keep** (15k by default) and replaces older messages in outbound requests with a summary checkpoint. Stored messages are never deleted or rewritten; the full history remains visible, with a collapsible **Context compacted** divider. A later compaction updates the previous summary instead of starting over.
 
-Model windows come from models.dev. A provider or model that the catalog cannot match has no automatic threshold and must be compacted manually. Summaries use the chat's current provider and model.
+Settings under **Auto-compact context** control the recent tail, headroom percentage, and an optional separate compaction model. Summaries never use the chat model's thinking effort. When a completion ends near the threshold, Kritui writes a summary ahead of time and uses it for the next compaction instead of making the user wait.
+
+Context windows are read from provider `/models` metadata when available, then from models.dev. A provider or model with an unknown window has no automatic threshold and must be compacted manually. Summaries otherwise use the chat's provider and model.
 
 Kritui shows models.dev input-modality icons beside model names in the chat model picker and the Settings default-model and title-model pickers: text, image, PDF, audio, and video. Icons are right-aligned and gray, with accessible labels and tooltips. Provider `/models` metadata is always checked first; models.dev fills image/PDF fields the provider did not declare. If the provider model list fails or is empty, the pickers use models.dev provider models and show "Using models.dev fallback" beneath the list. Provider-reported usage cost and OpenCode list cost are authoritative; when a provider omits cost, Kritui estimates it from the catalog and shows the amount with a leading `~`. The public catalog is cached in `data.db` and refreshed in the background at most once per 6 hours. Set `MODELS_DEV=off` to disable catalog lookups, or `MODELS_DEV_URL` to use a mirror. Estimated costs are list prices, not negotiated prices or subscription charges.
 

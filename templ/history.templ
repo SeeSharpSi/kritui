@@ -50,7 +50,14 @@ templ CompactionEvent(compaction kritui_db.ChatCompaction) {
 	<details class="compaction-event" id="compaction-event" data-compaction-keep={ strconv.FormatInt(compaction.KeepMessageID, 10) }>
 		<summary>
 			<span class="compaction-rule" aria-hidden="true"></span>
-			<span class="compaction-label">Context compacted</span>
+			<span class="compaction-label">Context compacted
+				if compaction.InputTokens > 0 || compaction.OutputTokens > 0 {
+					{ " · " }
+					{ formatCompactionTokens(compaction.InputTokens) } in
+					{ " · " }
+					{ formatCompactionTokens(compaction.OutputTokens) } out
+				}
+			</span>
 			<span class="compaction-caret" aria-hidden="true"></span>
 			<span class="compaction-rule" aria-hidden="true"></span>
 		</summary>
@@ -58,6 +65,21 @@ templ CompactionEvent(compaction kritui_db.ChatCompaction) {
 			@markdown.Render(compaction.Summary)
 		</div>
 	</details>
+}
+
+func formatCompactionTokens(value int) string {
+	digits := strconv.Itoa(value)
+	if len(digits) <= 3 {
+		return digits
+	}
+	var out []byte
+	for index, digit := range []byte(digits) {
+		if index > 0 && (len(digits)-index)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, digit)
+	}
+	return string(out)
 }
 
 // ChatStateSnapshot is fetched outside htmx's request lifecycle, then processed

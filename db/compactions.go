@@ -25,11 +25,23 @@ type ChatCompaction struct {
 	KeepMessageID int64
 	LastMessageID int64
 	Summary       string
+	InputTokens   int
+	OutputTokens  int
+	Cost          *float64
+	CostEstimated bool
+}
+
+// ChatCompactionUsage describes the summary request's billed usage.
+type ChatCompactionUsage struct {
+	InputTokens   int
+	OutputTokens  int
+	Cost          *float64
+	CostEstimated bool
 }
 
 // CreateChatCompaction stores a summary checkpoint after verifying that the
 // chat, kept message, and provider all belong to the current account.
-func CreateChatCompaction(ctx context.Context, database *sql.DB, chatID, providerID int64, model, summary string, keepMessageID int64) (ChatCompaction, error) {
+func CreateChatCompaction(ctx context.Context, database *sql.DB, chatID, providerID int64, model, summary string, keepMessageID int64, usage ChatCompactionUsage) (ChatCompaction, error) {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		return ChatCompaction{}, fmt.Errorf("create chat compaction: summary is required")
@@ -83,10 +95,16 @@ func CreateChatCompaction(ctx context.Context, database *sql.DB, chatID, provide
 		modelValue = model
 	}
 
+	var costValue any
+	if usage.Cost != nil {
+		costValue = *usage.Cost
+	}
 	result, err := tx.ExecContext(ctx, `
-		INSERT INTO chat_compactions (chat_id, provider_id, model, keep_message_id, last_message_id, summary)
-		VALUES (?, ?, ?, ?, ?, 'pending')
-	`, chatID, providerValue, modelValue, keepMessageID, lastMessageID)
+		INSERT INTO chat_compactions (chat_id, provider_id, model, keep_message_id, last_message_id, summary,
+			input_tokens, output_tokens, cost, cost_estimated)
+		VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+	`, chatID, providerValue, modelValue, keepMessageID, lastMessageID,
+		usage.InputTokens, usage.OutputTokens, costValue, usage.CostEstimated)
 	if err != nil {
 		return ChatCompaction{}, fmt.Errorf("insert chat compaction: %w", err)
 	}
@@ -111,6 +129,10 @@ func CreateChatCompaction(ctx context.Context, database *sql.DB, chatID, provide
 		KeepMessageID: keepMessageID,
 		LastMessageID: lastMessageID,
 		Summary:       summary,
+		InputTokens:   usage.InputTokens,
+		OutputTokens:  usage.OutputTokens,
+		Cost:          usage.Cost,
+		CostEstimated: usage.CostEstimated,
 	}
 	if providerValue != nil {
 		compaction.ProviderID = providerID
@@ -127,11 +149,13 @@ func GetLatestChatCompaction(ctx context.Context, database *sql.DB, chatID int64
 		return ChatCompaction{}, false, fmt.Errorf("get chat compaction: %w", err)
 	}
 	var compaction ChatCompaction
-	var providerID sql.NullInt64
+	var providerID, inputTokens, outputTokens sql.NullInt64
 	var model, sealed sql.NullString
+	var cost sql.NullFloat64
 	err = database.QueryRowContext(ctx, `
 		SELECT compactions.id, compactions.chat_id, compactions.provider_id,
-			compactions.model, compactions.keep_message_id, compactions.last_message_id, compactions.summary
+			compactions.model, compactions.keep_message_id, compactions.last_message_id, compactions.summary,
+			compactions.input_tokens, compactions.output_tokens, compactions.cost, compactions.cost_estimated
 		FROM chat_compactions AS compactions
 		JOIN chats ON chats.id = compactions.chat_id
 		WHERE compactions.chat_id = ?
@@ -142,6 +166,7 @@ func GetLatestChatCompaction(ctx context.Context, database *sql.DB, chatID int64
 	`, chatID, userID).Scan(
 		&compaction.ID, &compaction.ChatID, &providerID,
 		&model, &compaction.KeepMessageID, &compaction.LastMessageID, &sealed,
+		&inputTokens, &outputTokens, &cost, &compaction.CostEstimated,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		var exists int
@@ -157,6 +182,12 @@ func GetLatestChatCompaction(ctx context.Context, database *sql.DB, chatID int64
 		return ChatCompaction{}, false, fmt.Errorf("get chat compaction: %w", err)
 	}
 	compaction.ProviderID = nullSettingInt64(providerID)
+	compaction.InputTokens = int(nullSettingInt64(inputTokens))
+	compaction.OutputTokens = int(nullSettingInt64(outputTokens))
+	if cost.Valid {
+		value := cost.Float64
+		compaction.Cost = &value
+	}
 	compaction.Model = nullSettingString(model)
 	compaction.Summary, err = DecryptStorageText(ctx, chatCompactionSummaryScope,
 		strconv.FormatInt(compaction.ID, 10), sealed.String)
@@ -164,4 +195,16 @@ func GetLatestChatCompaction(ctx context.Context, database *sql.DB, chatID int64
 		return ChatCompaction{}, false, fmt.Errorf("decrypt chat compaction summary: %w", err)
 	}
 	return compaction, true, nil
+}
+
+// DeleteChatCompactions invalidates summaries for one owned chat. Edits and
+// undo make the previous summary stale, so the next compaction starts fresh.
+func DeleteChatCompactions(ctx context.Context, database databaseExecutor, chatID int64) error {
+	if err := requireChatOwned(ctx, database, chatID); err != nil {
+		return err
+	}
+	if _, err := database.ExecContext(ctx, `DELETE FROM chat_compactions WHERE chat_id = ?`, chatID); err != nil {
+		return fmt.Errorf("delete chat compactions: %w", err)
+	}
+	return nil
 }

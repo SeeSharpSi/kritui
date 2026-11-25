@@ -24,6 +24,8 @@ const (
 const (
 	elidedToolResultMarker     = "[Tool result elided]"
 	summarizedToolResultMarker = "[Tool result summarized]\n"
+	minToolResultSummaryBytes  = 64
+	maxToolResultSummaryBytes  = 32_000
 )
 
 // ToolResultElisionConfig controls request-only reduction of tool-result
@@ -97,6 +99,9 @@ func (c *Conversation) shapeToolResults(ctx context.Context) ([]Message, error) 
 			c.summaryCache = make(map[int]string)
 		}
 		for _, index := range eligible {
+			if len(canonical[index].Content) <= minToolResultSummaryBytes {
+				continue
+			}
 			summary, ok := c.summaryCache[index]
 			if !ok {
 				var err error
@@ -261,11 +266,11 @@ func (c *Conversation) summarizeToolResult(ctx context.Context, messages []Messa
 		fmt.Fprintf(&prompt, "Tool arguments: %s\n", arguments)
 	}
 	prompt.WriteString("Tool result:\n")
-	prompt.WriteString(messages[index].Content)
+	prompt.WriteString(clipToolResultForSummary(messages[index].Content))
 
 	summaryPrompt := c.summaryPrompt
 	if strings.TrimSpace(summaryPrompt) == "" {
-		summaryPrompt = DefaultCompactionPrompt()
+		summaryPrompt = toolResultSummaryPrompt(functionName)
 	}
 	completion, err := c.summarizer.complete(ctx, []Message{
 		{Role: "system", Content: summaryPrompt},
@@ -284,6 +289,29 @@ func (c *Conversation) summarizeToolResult(ctx context.Context, messages []Messa
 		return "", errors.New("llm: tool-result summarizer must return nonempty assistant text without tool calls")
 	}
 	return summarizedToolResultMarker + strings.TrimSpace(completion.Content), nil
+}
+
+func toolResultSummaryPrompt(functionName string) string {
+	switch {
+	case functionName == "webfetch":
+		return "Summarize the fetched page. Preserve the URL, title, dates, names, numbers, and key claims. Do not invent information. Return summary text only."
+	case functionName == "websearch":
+		return "Summarize the search results. Preserve result titles, URLs, dates, and the facts they establish. Do not invent information. Return summary text only."
+	case strings.HasPrefix(functionName, "git_"):
+		return "Summarize the Git output. Preserve repository names, refs, commit IDs, paths, filenames, errors, and relevant diff hunks. Do not invent information. Return summary text only."
+	default:
+		return DefaultCompactionPrompt()
+	}
+}
+
+func clipToolResultForSummary(value string) string {
+	runes := []rune(value)
+	if len(runes) <= maxToolResultSummaryBytes {
+		return value
+	}
+	half := maxToolResultSummaryBytes / 2
+	omitted := len(runes) - maxToolResultSummaryBytes
+	return string(runes[:half]) + fmt.Sprintf("\n[... %d characters omitted for summarization ...]\n", omitted) + string(runes[len(runes)-half:])
 }
 
 func toolCallContext(messages []Message, toolIndex int) (string, string) {

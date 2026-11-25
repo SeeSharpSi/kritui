@@ -245,6 +245,9 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			CompactionPrompt:          renderSettings.compactionPrompt,
 			TitleGenerationEnabled:    renderSettings.titleGeneration.Enabled,
 			CompactionAuto:            renderSettings.compactionAuto,
+			CompactionKeepTokens:      renderSettings.compactionKeepTokens,
+			CompactionBufferPercent:   renderSettings.compactionBufferPercent,
+			CompactionModel:           renderSettings.compactionModel,
 			ToolResultElision:         renderSettings.toolResultElision,
 			Tools:                     toolRegistry.Names(),
 			EnabledTools:              enabledTools,
@@ -276,22 +279,25 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 // homeRenderSettings gathers the configuration values the chat page renders.
 // Prompt appends and default tools may arrive preloaded from chat allocation.
 type homeRenderSettings struct {
-	reasoningEffort   string
-	promptAppends     []kritui_db.PromptAppend
-	defaultModel      string
-	maxToolRounds     int
-	systemPrompt      string
-	compactionPrompt  string
-	titleGeneration   kritui_db.TitleGenerationSettings
-	compactionAuto    bool
-	toolResultElision llm.ToolResultElisionConfig
-	defaultTools      []string
-	mcpServers        []kritui_db.MCPServer
-	gitHosts          []kritui_db.GitHost
-	ntfySettings      kritui_db.NtfySettings
-	llmSettings       kritui_db.LLMSettings
-	llmEnvManaged     bool
-	theme             themes.Theme
+	reasoningEffort         string
+	promptAppends           []kritui_db.PromptAppend
+	defaultModel            string
+	maxToolRounds           int
+	systemPrompt            string
+	compactionPrompt        string
+	titleGeneration         kritui_db.TitleGenerationSettings
+	compactionAuto          bool
+	compactionKeepTokens    int
+	compactionBufferPercent int
+	compactionModel         string
+	toolResultElision       llm.ToolResultElisionConfig
+	defaultTools            []string
+	mcpServers              []kritui_db.MCPServer
+	gitHosts                []kritui_db.GitHost
+	ntfySettings            kritui_db.NtfySettings
+	llmSettings             kritui_db.LLMSettings
+	llmEnvManaged           bool
+	theme                   themes.Theme
 }
 
 // loadHomeRenderSettings fetches every not-yet-loaded settings value in the
@@ -329,10 +335,15 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 		log.Printf("get compaction prompt: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load compaction prompt: %w", err)
 	}
-	if settings.compactionAuto, err = kritui_db.GetCompactionAuto(ctx, database); err != nil {
-		log.Printf("get automatic compaction: %v", err)
-		return homeRenderSettings{}, fmt.Errorf("load automatic compaction: %w", err)
+	compactionSettings, err := kritui_db.GetCompactionConfig(ctx, database)
+	if err != nil {
+		log.Printf("get compaction config: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load compaction config: %w", err)
 	}
+	settings.compactionAuto = compactionSettings.Auto
+	settings.compactionKeepTokens = compactionSettings.KeepTokens
+	settings.compactionBufferPercent = compactionSettings.BufferPercent
+	settings.compactionModel = compactionSettings.Model
 	if settings.toolResultElision, err = kritui_db.GetToolResultElision(ctx, database); err != nil {
 		log.Printf("get tool result elision: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load tool result elision: %w", err)
@@ -570,15 +581,18 @@ func historyHandler(database *sql.DB) http.HandlerFunc {
 func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		page := templates.SettingsPanelData{
-			ChatID:           r.URL.Query().Get("chat"),
-			SelectedModel:    os.Getenv("LLM_MODEL"),
-			CompactionAuto:   true,
-			MaxToolRounds:    llm.DefaultMaxToolCallRounds,
-			SystemPrompt:     llm.DefaultSystemPrompt(),
-			CompactionPrompt: llm.DefaultCompactionPrompt(),
-			ToolNames:        registry.Names(),
-			PromptAppends:    kritui_db.DefaultPromptAppends(),
-			Themes:           themes.Options(),
+			ChatID:                  r.URL.Query().Get("chat"),
+			SelectedModel:           os.Getenv("LLM_MODEL"),
+			CompactionAuto:          true,
+			CompactionKeepTokens:    15000,
+			CompactionBufferPercent: 15,
+			CompactionModel:         "",
+			MaxToolRounds:           llm.DefaultMaxToolCallRounds,
+			SystemPrompt:            llm.DefaultSystemPrompt(),
+			CompactionPrompt:        llm.DefaultCompactionPrompt(),
+			ToolNames:               registry.Names(),
+			PromptAppends:           kritui_db.DefaultPromptAppends(),
+			Themes:                  themes.Options(),
 		}
 		render := func(status int, message string) {
 			page.ErrorMessage = message
@@ -653,12 +667,16 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		page.TitleGenerationModel = titleGeneration.Model
 		page.TitleGenerationProviderID = titleGeneration.ProviderID
 		page.TitleReasoningEffort = titleGeneration.ReasoningEffort
-		page.CompactionAuto, err = kritui_db.GetCompactionAuto(r.Context(), database)
+		compactionSettings, err := kritui_db.GetCompactionConfig(r.Context(), database)
 		if err != nil {
-			log.Printf("get automatic compaction: %v", err)
+			log.Printf("get compaction config: %v", err)
 			render(http.StatusInternalServerError, "Failed to load settings.")
 			return
 		}
+		page.CompactionAuto = compactionSettings.Auto
+		page.CompactionKeepTokens = compactionSettings.KeepTokens
+		page.CompactionBufferPercent = compactionSettings.BufferPercent
+		page.CompactionModel = compactionSettings.Model
 		defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 		if err != nil {
 			log.Printf("get default tools: %v", err)
@@ -842,10 +860,40 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 			page.TitleGenerationModelValue = modelSelectionValue(titleProviderID, titleModel)
 			compactionSubmitted := r.FormValue("compaction_form") == "1"
 			var compactionAuto *bool
+			var compactionKeep, compactionBuffer *int
+			var compactionModel *string
 			if compactionSubmitted {
 				value := r.FormValue("compaction_auto") == "1"
 				page.CompactionAuto = value
 				compactionAuto = &value
+				keep := page.CompactionKeepTokens
+				buffer := page.CompactionBufferPercent
+				if value := strings.TrimSpace(r.FormValue("compaction_keep_tokens")); value != "" {
+					parsed, parseErr := strconv.Atoi(value)
+					if parseErr != nil {
+						render(http.StatusBadRequest, "Compaction settings are invalid.")
+						return
+					}
+					keep = parsed
+				}
+				if value := strings.TrimSpace(r.FormValue("compaction_buffer_percent")); value != "" {
+					parsed, parseErr := strconv.Atoi(value)
+					if parseErr != nil {
+						render(http.StatusBadRequest, "Compaction settings are invalid.")
+						return
+					}
+					buffer = parsed
+				}
+				if err := kritui_db.ValidateCompactionSettings(keep, buffer); err != nil {
+					render(http.StatusBadRequest, fmt.Sprintf("Compaction settings are invalid: %v.", err))
+					return
+				}
+				page.CompactionKeepTokens = keep
+				page.CompactionBufferPercent = buffer
+				compactionKeep, compactionBuffer = &keep, &buffer
+				compactionModelValue := strings.TrimSpace(r.FormValue("compaction_model"))
+				page.CompactionModel = compactionModelValue
+				compactionModel = &compactionModelValue
 			}
 			var submittedEffort, submittedTitleEffort *string
 			if _, present := r.Form["default_reasoning_effort"]; present {
@@ -1220,22 +1268,25 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				summaryProviderValue = 0
 			}
 			update := kritui_db.SettingsUpdate{
-				ReasoningEffort:      submittedEffort,
-				TitleReasoningEffort: submittedTitleEffort,
-				Model:                page.SelectedModel,
-				DefaultProviderID:    &defaultProviderValue,
-				TitleProviderID:      &titleProviderValue,
-				SummaryProviderID:    &summaryProviderValue,
-				MaxToolRounds:        page.MaxToolRounds,
-				DefaultTools:         page.DefaultTools,
-				Ntfy:                 ntfyUpdate,
-				LLM:                  llmUpdate,
-				ToolResultElision:    toolResultElisionUpdate,
-				TitleGeneration:      &titleGenerationUpdate,
-				CompactionAuto:       compactionAuto,
-				SystemPrompt:         submittedSystemPrompt,
-				CompactionPrompt:     submittedCompactionPrompt,
-				Theme:                submittedTheme,
+				ReasoningEffort:         submittedEffort,
+				TitleReasoningEffort:    submittedTitleEffort,
+				Model:                   page.SelectedModel,
+				DefaultProviderID:       &defaultProviderValue,
+				TitleProviderID:         &titleProviderValue,
+				SummaryProviderID:       &summaryProviderValue,
+				MaxToolRounds:           page.MaxToolRounds,
+				DefaultTools:            page.DefaultTools,
+				Ntfy:                    ntfyUpdate,
+				LLM:                     llmUpdate,
+				ToolResultElision:       toolResultElisionUpdate,
+				TitleGeneration:         &titleGenerationUpdate,
+				CompactionAuto:          compactionAuto,
+				CompactionKeepTokens:    compactionKeep,
+				CompactionBufferPercent: compactionBuffer,
+				CompactionModel:         compactionModel,
+				SystemPrompt:            submittedSystemPrompt,
+				CompactionPrompt:        submittedCompactionPrompt,
+				Theme:                   submittedTheme,
 			}
 			if r.FormValue("append_form") == "1" {
 				update.PromptAppends = submittedAppends

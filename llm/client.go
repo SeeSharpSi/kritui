@@ -130,15 +130,21 @@ const (
 
 // ModelInfo contains model identity and discovered input capabilities.
 type ModelInfo struct {
-	ID           string
-	ImageSupport InputSupport
-	PDFSupport   InputSupport
+	ID            string
+	ImageSupport  InputSupport
+	PDFSupport    InputSupport
+	ContextWindow int
 }
 
 type modelListResponse struct {
 	Data []struct {
-		ID         string `json:"id"`
-		Modalities struct {
+		ID               string `json:"id"`
+		ContextLength    int    `json:"context_length"`
+		ContextWindow    int    `json:"context_window"`
+		MaxContextLength int    `json:"max_context_length"`
+		MaxModelLen      int    `json:"max_model_len"`
+		ContextSize      int    `json:"context_size"`
+		Modalities       struct {
 			Input []string `json:"input"`
 		} `json:"modalities"`
 		Architecture struct {
@@ -158,6 +164,15 @@ type modelListResponse struct {
 	} `json:"data"`
 	HasMore bool   `json:"has_more"`
 	LastID  string `json:"last_id"`
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 // ProviderMetadata retains provider-specific state needed for later requests.
@@ -292,6 +307,32 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("llm: endpoint returned HTTP %d: %s", e.StatusCode, e.Message)
+}
+
+// IsContextOverflowError reports provider rejections caused by a request that
+// exceeds the model's context window.
+func IsContextOverflowError(err error) bool {
+	var apiError *APIError
+	if !errors.As(err, &apiError) {
+		return false
+	}
+	switch apiError.StatusCode {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+	default:
+		return false
+	}
+	text := strings.ToLower(apiError.Message + " " + apiError.Body)
+	for _, marker := range []string{
+		"context length", "context_length", "context window", "maximum context",
+		"too many tokens", "too long", "prompt is too long", "input is too long",
+		"reduce the length", "maximum number of tokens", "token limit exceeded",
+		"request too large", "string too long",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Client sends requests to OpenAI-compatible Responses, Anthropic Messages,
@@ -474,6 +515,26 @@ func (c *Client) CompleteText(ctx context.Context, systemPrompt, userContent str
 	return completion.Content, nil
 }
 
+// CompleteMessages performs one provider request with the supplied message
+// history and no tools. It returns the assistant message, including usage, and
+// rejects tool-call responses.
+func (c *Client) CompleteMessages(ctx context.Context, messages []Message) (Message, error) {
+	if c == nil {
+		return Message{}, errors.New("llm: client is required")
+	}
+	completion, err := c.complete(ctx, messages, nil)
+	if err != nil {
+		return Message{}, err
+	}
+	if err := validateAssistantMessage(completion); err != nil {
+		return Message{}, err
+	}
+	if len(completion.ToolCalls) > 0 {
+		return Message{}, errors.New("llm: message completion returned tool calls")
+	}
+	return completion, nil
+}
+
 func (c *Client) complete(ctx context.Context, messages []Message, definitions []tools.Definition) (Message, error) {
 	if len(messages) == 0 {
 		return Message{}, errors.New("llm: at least one message is required")
@@ -600,7 +661,14 @@ func (c *Client) ModelInfos(ctx context.Context) ([]ModelInfo, error) {
 			} else if model.Capabilities.FileInput.Supported != nil {
 				pdfSupport = boolSupport(*model.Capabilities.FileInput.Supported)
 			}
-			models = append(models, ModelInfo{ID: model.ID, ImageSupport: imageSupport, PDFSupport: pdfSupport})
+			contextWindow := firstPositiveInt(
+				model.ContextWindow, model.ContextLength, model.MaxContextLength,
+				model.MaxModelLen, model.ContextSize,
+			)
+			models = append(models, ModelInfo{
+				ID: model.ID, ImageSupport: imageSupport, PDFSupport: pdfSupport,
+				ContextWindow: contextWindow,
+			})
 		}
 
 		if c.configuredEndpoint != EndpointMessages || !response.HasMore {

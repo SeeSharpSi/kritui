@@ -179,6 +179,7 @@ func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 		case err != nil:
 			return nil, fmt.Errorf("undo current chat: %w", err)
 		}
+		invalidatePrecomputed(database, chatID)
 		return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), result.Messages, result.Message.Content, latestCompactionForDisplay(ctx, database, chatID)), nil
 	})
 	if err != nil {
@@ -194,6 +195,7 @@ func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 		case err != nil:
 			return nil, fmt.Errorf("redo current chat: %w", err)
 		}
+		invalidatePrecomputed(database, chatID)
 		return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), messages, "", latestCompactionForDisplay(ctx, database, chatID)), nil
 	})
 	if err != nil {
@@ -566,6 +568,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateReasoningEffort,
 	migrateProviders,
 	migrateChatCompactions,
+	migrateCompactionSettings,
 }
 
 // migrateProviders adds custom LLM providers, provider references on settings,
@@ -700,6 +703,41 @@ func migrateChatCompactions(ctx context.Context, tx *sql.Tx) error {
 	}
 	return addColumnIfMissing(ctx, tx, "settings", "compaction_auto",
 		`INTEGER NOT NULL DEFAULT 1 CHECK (compaction_auto IN (0, 1))`)
+}
+
+// migrateCompactionSettings adds adjustable recent-tail and headroom values
+// for conversation compaction. Defaults preserve the original behavior.
+func migrateCompactionSettings(ctx context.Context, tx *sql.Tx) error {
+	exists, err := tableExists(ctx, tx, "settings")
+	if err != nil || !exists {
+		return err
+	}
+	if err := addColumnIfMissing(ctx, tx, "settings", "compaction_keep_tokens",
+		`INTEGER NOT NULL DEFAULT 15000 CHECK (compaction_keep_tokens BETWEEN 1 AND 100000)`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(ctx, tx, "settings", "compaction_buffer_percent",
+		`INTEGER NOT NULL DEFAULT 15 CHECK (compaction_buffer_percent BETWEEN 1 AND 99)`); err != nil {
+		return err
+	}
+	exists, err = tableExists(ctx, tx, "chat_compactions")
+	if err != nil || !exists {
+		return err
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{"input_tokens", `INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0)`},
+		{"output_tokens", `INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0)`},
+		{"cost", `REAL`},
+		{"cost_estimated", `INTEGER NOT NULL DEFAULT 0 CHECK (cost_estimated IN (0, 1))`},
+	} {
+		if err := addColumnIfMissing(ctx, tx, "chat_compactions", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateReasoningEffort(ctx context.Context, tx *sql.Tx) error {

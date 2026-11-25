@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS settings (
     title_generation_enabled INTEGER NOT NULL DEFAULT 0
         CHECK (title_generation_enabled IN (0, 1)),
     compaction_auto INTEGER NOT NULL DEFAULT 1 CHECK (compaction_auto IN (0, 1)),
+    compaction_keep_tokens INTEGER NOT NULL DEFAULT 15000 CHECK (compaction_keep_tokens BETWEEN 1 AND 100000),
+    compaction_buffer_percent INTEGER NOT NULL DEFAULT 15 CHECK (compaction_buffer_percent BETWEEN 1 AND 99),
+    compaction_model TEXT CHECK (compaction_model IS NULL OR length(CAST(compaction_model AS BLOB)) <= 512),
     title_generation_model TEXT
         CHECK (title_generation_model IS NULL OR
             (trim(title_generation_model) <> '' AND length(CAST(title_generation_model AS BLOB)) <= 512)),
@@ -132,6 +135,10 @@ CREATE TABLE IF NOT EXISTS chat_compactions (
     keep_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     last_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     summary TEXT NOT NULL CHECK (summary <> ''),
+    input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
+    output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+    cost REAL,
+    cost_estimated INTEGER NOT NULL DEFAULT 0 CHECK (cost_estimated IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 ) STRICT;
 
@@ -381,4 +388,4 @@ CREATE TABLE IF NOT EXISTS models_dev_cache (
     payload BLOB NOT NULL
 ) STRICT;
 
-PRAGMA user_version = 39;
+PRAGMA user_version = 40;

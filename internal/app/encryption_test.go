@@ -172,10 +172,10 @@ func TestStorageEncryptionFreshDatabase(t *testing.T) {
 	if err := database.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatalf("read user version: %v", err)
 	}
-	if len(databaseMigrations) != 39 {
-		t.Fatalf("databaseMigrations length = %d, want 39 chat compactions version", len(databaseMigrations))
+	if len(databaseMigrations) != 40 {
+		t.Fatalf("databaseMigrations length = %d, want 40 compaction settings version", len(databaseMigrations))
 	}
-	if version != 39 {
+	if version != 40 {
 		t.Errorf("user_version = %d, want 39", version)
 	}
 	var secureDelete int

@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	kritui_db "seesharpsi/kritui/db"
@@ -22,6 +23,9 @@ const (
 	compactionSummaryTimeout  = 90 * time.Second
 	compactionTranscriptClip  = 2_000
 	compactionSummaryFallback = 100_000
+	compactionPrecomputeLead  = 60_000
+	compactionPrecomputeTTL   = 10 * time.Minute
+	compactionPrecomputedTail = 2
 )
 
 var (
@@ -50,6 +54,27 @@ Use these headings, omitting a section only when it does not apply:
 ## Important Context
 
 Keep bullets short. Preserve exact paths, symbols, commands, errors, URLs, and identifiers. Carry forward unresolved user requests verbatim. Record whether changes are uncommitted, committed, pushed, under review, or merged. Do not mention the summary process or that context was compacted.`
+
+type precomputedCompaction struct {
+	summary          string
+	firstMessageID   int64
+	keepMessageID    int64
+	lastMessageID    int64
+	baseCompactionID int64
+	usage            kritui_db.ChatCompactionUsage
+	created          time.Time
+}
+
+type compactionCacheKey struct {
+	database *sql.DB
+	chatID   int64
+}
+
+var (
+	precomputedMu         sync.Mutex
+	precomputedByChat     = make(map[compactionCacheKey]precomputedCompaction)
+	precomputedGeneration = make(map[compactionCacheKey]uint64)
+)
 
 type compactionOutcome struct {
 	messages      []llm.Message
@@ -109,21 +134,21 @@ func maybeCompactChat(ctx context.Context, database *sql.DB, chatID int64, provi
 			outcome.messages, _ = compactedHistory(messages, compaction)
 		}
 	}
+	settings, err := kritui_db.GetCompactionConfig(ctx, database)
+	if err != nil {
+		return outcome, err
+	}
 	if !force {
-		enabled, err := kritui_db.GetCompactionAuto(ctx, database)
-		if err != nil {
-			return outcome, err
-		}
-		if !enabled {
+		if !settings.Auto {
 			return outcome, nil
 		}
-		window := modelContextWindow(provider.Endpoint, model)
+		window := modelContextWindow(ctx, provider, model)
 		if window <= 0 {
 			return outcome, nil
 		}
 		measured, estimated := estimatePromptUsage(outcome.messages, compaction.LastMessageID, model)
 		outcome.estimatedSize = measured + estimated + overheadTokens
-		if outcome.estimatedSize < compactionThreshold(window) {
+		if outcome.estimatedSize < compactionThreshold(window, settings.BufferPercent) {
 			return outcome, nil
 		}
 	}
@@ -131,7 +156,27 @@ func maybeCompactChat(ctx context.Context, database *sql.DB, chatID int64, provi
 		return outcome, ErrNothingToCompact
 	}
 
-	summary, keepMessageID, summarized, kept, previous, size, err := summarizeConversation(ctx, provider, model, messages, compaction, found, overheadTokens)
+	summaryModel := strings.TrimSpace(settings.Model)
+	if summaryModel == "" {
+		summaryModel = model
+	}
+	summaryProvider := provider
+	if held, ok := takePrecomputed(database, chatID, messages, compaction, settings); ok {
+		created, createErr := kritui_db.CreateChatCompaction(ctx, database, chatID, summaryProvider.ID, summaryModel, held.summary, held.keepMessageID, held.usage)
+		if createErr == nil {
+			outcome.compaction = created
+			outcome.summarized = 0
+			outcome.kept = len(messages)
+			outcome.previous = held.baseCompactionID > 0
+			outcome.created = true
+			outcome.estimatedSize = estimateTextTokens(held.summary) + estimateMessagesTokens(messages)
+			outcome.messages, _ = compactedHistory(messages, created)
+			return outcome, nil
+		}
+		log.Printf("use precomputed compaction for chat %d: %v", chatID, createErr)
+	}
+
+	summary, keepMessageID, summarized, kept, previous, size, usage, err := summarizeConversation(ctx, provider, model, summaryModel, messages, outcome.messages, compaction, found, overheadTokens, settings)
 	if err != nil {
 		if !force && errors.Is(err, ErrNothingToCompact) {
 			log.Printf("automatic compaction skipped for chat %d: %v", chatID, err)
@@ -139,7 +184,7 @@ func maybeCompactChat(ctx context.Context, database *sql.DB, chatID int64, provi
 		}
 		return outcome, err
 	}
-	created, err := kritui_db.CreateChatCompaction(ctx, database, chatID, provider.ID, model, summary, keepMessageID)
+	created, err := kritui_db.CreateChatCompaction(ctx, database, chatID, summaryProvider.ID, summaryModel, summary, keepMessageID, usage)
 	if err != nil {
 		return outcome, err
 	}
@@ -163,29 +208,66 @@ func latestValidCompaction(compaction kritui_db.ChatCompaction, messages []llm.M
 	return compaction, true, nil
 }
 
-func compactionThreshold(window int) int {
+func compactionThreshold(window, bufferPercent int) int {
 	if window <= 0 {
 		return 0
 	}
-	reserve := int(math.Floor(float64(window) * compactionReserveShare))
+	return window - compactionReserve(window, bufferPercent)
+}
+
+func compactionReserve(window, bufferPercent int) int {
+	if bufferPercent <= 0 {
+		bufferPercent = 15
+	}
+	reserve := int(math.Floor(float64(window) * float64(bufferPercent) / 100))
 	if window >= 2*compactionReserveMin && reserve < compactionReserveMin {
 		reserve = compactionReserveMin
 	}
-	return window - reserve
+	return reserve
 }
 
-// modelContextWindow resolves the model's usable input window from models.dev.
-// Unknown windows disable automatic compaction; a provider rejection still
-// remains a hard error.
-func modelContextWindow(endpoint, model string) int {
-	providerModel, ok := catalogProviderModel(endpoint, model)
-	if !ok {
+type contextWindowCacheEntry struct {
+	window  int
+	expires time.Time
+}
+
+var contextWindowCache sync.Map
+
+func rememberContextWindow(provider providerEntry, model string, window int) {
+	if window <= 0 || strings.TrimSpace(model) == "" {
+		return
+	}
+	key := fmt.Sprintf("%d\x00%s\x00%s", provider.ID, provider.Endpoint, model)
+	contextWindowCache.Store(key, contextWindowCacheEntry{window: window, expires: time.Now().Add(10 * time.Minute)})
+}
+
+// modelContextWindow resolves a cached provider-reported context window, then
+// falls back to models.dev. Unknown windows disable automatic compaction; a
+// provider rejection still remains a hard error.
+func modelContextWindow(ctx context.Context, provider providerEntry, model string) int {
+	model = strings.TrimSpace(model)
+	if model == "" {
 		return 0
 	}
-	window := providerModel.Model.Limit.Context
-	if input := providerModel.Model.Limit.Input; input > 0 && (window <= 0 || input < window) {
-		window = input
+	key := fmt.Sprintf("%d\x00%s\x00%s", provider.ID, provider.Endpoint, model)
+	if cached, ok := contextWindowCache.Load(key); ok {
+		entry := cached.(contextWindowCacheEntry)
+		if time.Now().Before(entry.expires) {
+			return entry.window
+		}
 	}
+	window := 0
+	if providerModel, ok := catalogProviderModel(provider.Endpoint, model); ok {
+		window = providerModel.Model.Limit.Context
+		if input := providerModel.Model.Limit.Input; input > 0 && (window <= 0 || input < window) {
+			window = input
+		}
+	}
+	ttl := 10 * time.Minute
+	if window <= 0 {
+		ttl = time.Minute
+	}
+	contextWindowCache.Store(key, contextWindowCacheEntry{window: window, expires: time.Now().Add(ttl)})
 	return window
 }
 
@@ -195,16 +277,25 @@ func modelContextWindow(endpoint, model string) int {
 // trusted as anchors.
 func estimatePromptUsage(messages []llm.Message, lastMessageID int64, model string) (measured, estimated int) {
 	anchor := -1
+	fallback := -1
 	for index := len(messages) - 1; index >= 0; index-- {
 		message := messages[index]
 		if message.Role != "assistant" || message.InputTokens == nil || message.ID <= lastMessageID {
 			continue
 		}
-		if strings.TrimSpace(message.Model) != strings.TrimSpace(model) {
-			continue
+		if fallback < 0 {
+			fallback = index
 		}
-		anchor = index
-		break
+		if strings.TrimSpace(message.Model) == strings.TrimSpace(model) {
+			anchor = index
+			break
+		}
+	}
+	// Providers may rewrite an alias (for example llama-swap returns its
+	// underlying model name). Prefer an exact match, then trust the latest
+	// measured response rather than falling back to a pure character estimate.
+	if anchor < 0 {
+		anchor = fallback
 	}
 	if anchor < 0 {
 		return 0, estimateMessagesTokens(messages)
@@ -262,7 +353,7 @@ func estimateTextTokens(value string) int {
 // summarizeConversation writes the structured summary and chooses the first
 // message kept verbatim. When a previous checkpoint exists, only messages from
 // its kept tail onward are replayed into the update prompt.
-func summarizeConversation(ctx context.Context, provider providerEntry, model string, messages []llm.Message, previous kritui_db.ChatCompaction, previousFound bool, overheadTokens int) (string, int64, int, int, bool, int, error) {
+func summarizeConversation(ctx context.Context, provider providerEntry, model, summaryModel string, messages, outbound []llm.Message, previous kritui_db.ChatCompaction, previousFound bool, overheadTokens int, settings kritui_db.CompactionConfig) (string, int64, int, int, bool, int, kritui_db.ChatCompactionUsage, error) {
 	previousStart := 0
 	if previousFound {
 		for index := range messages {
@@ -272,60 +363,120 @@ func summarizeConversation(ctx context.Context, provider providerEntry, model st
 			}
 		}
 	}
-	keepStart := chooseKeepStart(messages)
+	keepStart := chooseKeepStart(messages, settings.KeepTokens)
 	if keepStart <= 0 {
 		keepStart = latestUserIndex(messages)
 	}
 	if keepStart <= 0 {
-		return "", 0, 0, 0, previousFound, 0, ErrNothingToCompact
+		return "", 0, 0, 0, previousFound, 0, kritui_db.ChatCompactionUsage{}, ErrNothingToCompact
 	}
 	if keepStart < previousStart {
 		previousStart = keepStart
 	}
 	if keepStart <= previousStart {
-		return "", 0, 0, 0, previousFound, 0, ErrNothingToCompact
+		return "", 0, 0, 0, previousFound, 0, kritui_db.ChatCompactionUsage{}, ErrNothingToCompact
 	}
 	transcriptMessages := messages[previousStart:keepStart]
-	budget := modelContextWindow(provider.Endpoint, model)
+	budget := modelContextWindow(ctx, provider, summaryModel)
+	if budget <= 0 {
+		budget = modelContextWindow(ctx, provider, model)
+	}
 	if budget <= 0 {
 		budget = compactionSummaryFallback
 	}
-	transcriptBudget := budget - compactionReserveMin - overheadTokens
+	transcriptBudget := budget - compactionReserve(budget, settings.BufferPercent) - overheadTokens
 	if transcriptBudget < 1_000 {
 		transcriptBudget = 1_000
 	}
-	transcript := buildCompactionTranscript(transcriptMessages, transcriptBudget)
-	userPrompt := transcript
-	if previousFound {
-		userPrompt = "Existing checkpoint summary:\n" + previous.Summary + "\n\nNewer conversation:\n" + transcript +
-			"\n\nUpdate the existing checkpoint into one consolidated summary. Newer history takes precedence. Remove resolved work and carry forward unresolved requests."
-	}
-	client, err := llm.New(provider.APIKey, model, provider.Endpoint, llm.ClientOptions{})
+	client, err := llm.New(provider.APIKey, summaryModel, provider.Endpoint, llm.ClientOptions{})
 	if err != nil {
-		return "", 0, 0, 0, previousFound, 0, fmt.Errorf("configure compaction model: %w", err)
+		return "", 0, 0, 0, previousFound, 0, kritui_db.ChatCompactionUsage{}, fmt.Errorf("configure compaction model: %w", err)
 	}
 	summaryContext, cancel := context.WithTimeout(ctx, compactionSummaryTimeout)
 	defer cancel()
-	summary, err := client.CompleteText(summaryContext, conversationCompactionSystemPrompt, userPrompt)
+	instruction := "Summarize the conversation above into the structured checkpoint. Return only the summary."
+	if previousFound {
+		instruction = "Update the existing checkpoint using the newer conversation above. Preserve unresolved requirements and work, remove resolved items, and return only the updated summary."
+	}
+	request := make([]llm.Message, 0, len(outbound)+2)
+	request = append(request, llm.Message{Role: "system", Content: conversationCompactionSystemPrompt})
+	request = append(request, outbound...)
+	request = append(request, llm.Message{Role: "user", Content: instruction})
+	summary, usage, err := completeCompactionSummary(summaryContext, client, request)
 	if err != nil {
-		return "", 0, 0, 0, previousFound, 0, fmt.Errorf("summarize conversation: %w", err)
+		// A full-history request may be too large for the summary model. Fall
+		// back to the clipped text transcript, which drops oldest detail first.
+		transcript := buildCompactionTranscript(transcriptMessages, transcriptBudget)
+		fallbackText := transcript
+		if previousFound {
+			fallbackText = "Existing checkpoint summary:\n" + previous.Summary + "\n\nNewer conversation:\n" + transcript
+		}
+		fallback := []llm.Message{
+			{Role: "system", Content: conversationCompactionSystemPrompt},
+			{Role: "user", Content: fallbackText + "\n\n" + instruction},
+		}
+		summary, usage, err = completeCompactionSummary(summaryContext, client, fallback)
+	}
+	if err != nil {
+		return "", 0, 0, 0, previousFound, 0, kritui_db.ChatCompactionUsage{}, fmt.Errorf("summarize conversation: %w", err)
 	}
 	summary = cleanCompactionSummary(summary)
 	if summary == "" {
-		return "", 0, 0, 0, previousFound, 0, fmt.Errorf("summarize conversation: provider returned an empty summary")
+		return "", 0, 0, 0, previousFound, 0, kritui_db.ChatCompactionUsage{}, fmt.Errorf("summarize conversation: provider returned an empty summary")
 	}
 	keepMessageID := messages[keepStart].ID
-	return summary, keepMessageID, keepStart - previousStart, len(messages) - keepStart, previousFound, estimateTextTokens(summary) + estimateMessagesTokens(messages[keepStart:]) + overheadTokens, nil
+	return summary, keepMessageID, keepStart - previousStart, len(messages) - keepStart, previousFound,
+		estimateTextTokens(summary) + estimateMessagesTokens(messages[keepStart:]) + overheadTokens, usage, nil
+}
+
+func completeCompactionSummary(ctx context.Context, client *llm.Client, messages []llm.Message) (string, kritui_db.ChatCompactionUsage, error) {
+	completion, err := client.CompleteMessages(ctx, messages)
+	if err != nil {
+		return "", kritui_db.ChatCompactionUsage{}, err
+	}
+	usage := compactionUsage(completion)
+	if !hasCompactionHeadings(completion.Content) && strings.TrimSpace(completion.Content) != "" {
+		nudged := append(append([]llm.Message{}, messages...), completion,
+			llm.Message{Role: "user", Content: "The previous response did not use the required headings. Return only the structured summary with the exact headings from the system prompt. Do not call tools."})
+		if retry, retryErr := client.CompleteMessages(ctx, nudged); retryErr == nil {
+			completion = retry
+			usage = compactionUsage(retry)
+		}
+	}
+	return completion.Content, usage, nil
+}
+
+func compactionUsage(message llm.Message) kritui_db.ChatCompactionUsage {
+	usage := kritui_db.ChatCompactionUsage{Cost: message.Cost, CostEstimated: message.CostEstimated}
+	if message.InputTokens != nil {
+		usage.InputTokens = *message.InputTokens
+	}
+	if message.OutputTokens != nil {
+		usage.OutputTokens = *message.OutputTokens
+	}
+	return usage
+}
+
+func hasCompactionHeadings(value string) bool {
+	for _, line := range strings.Split(value, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "## ") {
+			return true
+		}
+	}
+	return false
 }
 
 // chooseKeepStart finds the newest suffix within the verbatim keep budget,
 // then widens it to include the latest user turn.
-func chooseKeepStart(messages []llm.Message) int {
+func chooseKeepStart(messages []llm.Message, keepTokens int) int {
 	start := len(messages)
 	total := 0
 	for index := len(messages) - 1; index >= 0; index-- {
 		size := estimateMessageTokens(messages[index]) + 1
-		if total+size > compactionKeepTokens {
+		if keepTokens < 1 {
+			keepTokens = compactionKeepTokens
+		}
+		if total+size > keepTokens {
 			break
 		}
 		total += size
@@ -463,11 +614,15 @@ func manualCompaction(ctx context.Context, database *sql.DB, chatID int64) (comp
 // estimatePromptOverhead sizes fixed prompt and tool definitions that are not
 // part of stored messages but still consume the model window.
 func estimatePromptOverhead(systemPrompt string, registry *tools.Registry) int {
-	total := estimateTextTokens(systemPrompt)
 	if registry == nil {
-		return total
+		return estimateTextTokens(systemPrompt)
 	}
-	for _, definition := range registry.Definitions() {
+	return estimateTextTokens(systemPrompt) + estimateToolDefinitions(registry.Definitions())
+}
+
+func estimateToolDefinitions(definitions []tools.Definition) int {
+	total := 0
+	for _, definition := range definitions {
 		total += estimateTextTokens(definition.Name)
 		total += estimateTextTokens(definition.Description)
 		total += estimateTextTokens(string(definition.Parameters))
@@ -486,6 +641,127 @@ func latestCompactionForDisplay(ctx context.Context, database *sql.DB, chatID in
 		return nil
 	}
 	return &compaction
+}
+
+func takePrecomputed(database *sql.DB, chatID int64, messages []llm.Message, current kritui_db.ChatCompaction, settings kritui_db.CompactionConfig) (precomputedCompaction, bool) {
+	key := compactionCacheKey{database: database, chatID: chatID}
+	precomputedMu.Lock()
+	defer precomputedMu.Unlock()
+	held, ok := precomputedByChat[key]
+	if !ok {
+		return precomputedCompaction{}, false
+	}
+	delete(precomputedByChat, key)
+	if time.Since(held.created) > compactionPrecomputeTTL || len(messages) == 0 || messages[0].ID != held.firstMessageID {
+		return precomputedCompaction{}, false
+	}
+	if held.baseCompactionID != current.ID {
+		return precomputedCompaction{}, false
+	}
+	keepIndex := -1
+	for index := range messages {
+		if messages[index].ID == held.keepMessageID {
+			keepIndex = index
+			break
+		}
+	}
+	if keepIndex < 0 {
+		return precomputedCompaction{}, false
+	}
+	tailLimit := settings.KeepTokens
+	if tailLimit < 1_000 {
+		tailLimit = 1_000
+	}
+	if estimateMessagesTokens(messages[keepIndex:]) > tailLimit {
+		return precomputedCompaction{}, false
+	}
+	return held, true
+}
+
+func invalidatePrecomputed(database *sql.DB, chatID int64) {
+	key := compactionCacheKey{database: database, chatID: chatID}
+	precomputedMu.Lock()
+	delete(precomputedByChat, key)
+	precomputedGeneration[key]++
+	precomputedMu.Unlock()
+}
+
+// precomputeCompaction writes a summary ahead of the next threshold without
+// applying it. The next compaction can store it without another model call.
+func precomputeCompaction(ctx context.Context, database *sql.DB, chatID int64, provider providerEntry, model string, messages []llm.Message, overhead int) {
+	settings, err := kritui_db.GetCompactionConfig(ctx, database)
+	if err != nil || !settings.Auto {
+		return
+	}
+	if len(messages) < 2 {
+		return
+	}
+	window := modelContextWindow(ctx, provider, model)
+	if window <= 0 {
+		return
+	}
+	compaction, found, err := kritui_db.GetLatestChatCompaction(ctx, database, chatID)
+	if err != nil {
+		return
+	}
+	outbound := messages
+	if found {
+		if compacted, ok := compactedHistory(messages, compaction); ok {
+			outbound = compacted
+		}
+	}
+	measured, estimated := estimatePromptUsage(outbound, compaction.LastMessageID, model)
+	total := measured + estimated + overhead
+	threshold := compactionThreshold(window, settings.BufferPercent)
+	lead := compactionPrecomputeLead
+	if half := (threshold - measured) / 2; half > 0 && half < lead {
+		lead = half
+	}
+	if total < threshold-lead {
+		return
+	}
+	if total >= threshold {
+		return
+	}
+	firstID := messages[0].ID
+	lastID := messages[len(messages)-1].ID
+	key := compactionCacheKey{database: database, chatID: chatID}
+	precomputedMu.Lock()
+	existing, ok := precomputedByChat[key]
+	precomputedMu.Unlock()
+	if ok && existing.firstMessageID == firstID && existing.baseCompactionID == compaction.ID {
+		keepIndex := -1
+		for index := range messages {
+			if messages[index].ID == existing.keepMessageID {
+				keepIndex = index
+				break
+			}
+		}
+		if keepIndex >= 0 && estimateMessagesTokens(messages[keepIndex:]) <= settings.KeepTokens {
+			return
+		}
+	}
+	summaryModel := strings.TrimSpace(settings.Model)
+	if summaryModel == "" {
+		summaryModel = model
+	}
+	precomputedMu.Lock()
+	generation := precomputedGeneration[key]
+	precomputedMu.Unlock()
+	summary, keepID, _, _, _, _, usage, err := summarizeConversation(ctx, provider, model, summaryModel, messages, outbound, compaction, found, overhead, settings)
+	if err != nil {
+		return
+	}
+	precomputedMu.Lock()
+	if precomputedGeneration[key] != generation {
+		precomputedMu.Unlock()
+		return
+	}
+	precomputedByChat[key] = precomputedCompaction{
+		summary: summary, firstMessageID: firstID, keepMessageID: keepID,
+		lastMessageID: lastID, baseCompactionID: compaction.ID, usage: usage, created: time.Now(),
+	}
+	precomputedMu.Unlock()
 }
 
 // logCompaction records a successful automatic compaction for diagnostics.

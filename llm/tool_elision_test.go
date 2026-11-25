@@ -518,7 +518,7 @@ func TestToolResultElisionSummarizesOnlyOlderResultsAndCachesAcrossRoundsAndSend
 }
 
 func TestToolResultElisionOversizedSummaryKeepsOriginal(t *testing.T) {
-	original := "keep this original result"
+	original := strings.Repeat("keep this original result ", 6)
 	main := newElisionProvider(t, elisionTextResponse("chat", "done"))
 	summaryText := strings.Repeat("much longer summary ", 8)
 	summary := newElisionProvider(t, elisionTextResponse("chat", summaryText))
@@ -821,7 +821,7 @@ func TestToolResultElisionObserverMapsDuplicateCallIDsToClosestAssistant(t *test
 
 func TestToolResultElisionObserverReportsOnlyAcceptedSummaries(t *testing.T) {
 	acceptedOriginal := strings.Repeat("accepted detail ", 8)
-	rejectedOriginal := "short original"
+	rejectedOriginal := strings.Repeat("short original ", 6)
 	history := []Message{
 		{Role: "user", Content: "old question"},
 		{Role: "assistant", ToolCalls: []ToolCall{elisionToolCall("summary-ok", "ok"), elisionToolCall("summary-long", "long")}},
@@ -832,7 +832,7 @@ func TestToolResultElisionObserverReportsOnlyAcceptedSummaries(t *testing.T) {
 	main := newElisionProvider(t, elisionTextResponse("chat", "done"))
 	summary := newElisionProvider(t,
 		elisionTextResponse("chat", "brief summary"),
-		elisionTextResponse("chat", strings.Repeat("too long ", 8)),
+		elisionTextResponse("chat", strings.Repeat("too long ", 30)),
 	)
 	conversation := elisionConversation(t, main.client(t, "/v1/chat/completions", "main"), nil, history...)
 	if err := conversation.SetToolResultElision(ToolResultElisionConfig{Mode: ToolResultElisionSummarize, SummaryModel: "summary"}, summary.client(t, "/v1/chat/completions", "summary")); err != nil {
@@ -1126,4 +1126,21 @@ func (elisionValueTool) Execute(_ context.Context, arguments json.RawMessage) (s
 		return "", err
 	}
 	return input.Value, nil
+}
+
+func TestToolResultSummaryPromptsByTool(t *testing.T) {
+	if got := toolResultSummaryPrompt("webfetch"); !strings.Contains(got, "fetched page") || !strings.Contains(got, "URL") {
+		t.Errorf("webfetch prompt = %q", got)
+	}
+	if got := toolResultSummaryPrompt("git_diff"); !strings.Contains(got, "commit IDs") || !strings.Contains(got, "diff hunks") {
+		t.Errorf("git prompt = %q", got)
+	}
+	if got := toolResultSummaryPrompt("lookup"); got != DefaultCompactionPrompt() {
+		t.Errorf("default prompt = %q", got)
+	}
+	long := strings.Repeat("x", maxToolResultSummaryBytes+100)
+	clipped := clipToolResultForSummary(long)
+	if len(clipped) >= len(long) || !strings.Contains(clipped, "characters omitted for summarization") {
+		t.Errorf("clipped length = %d, want marker and fewer bytes", len(clipped))
+	}
 }

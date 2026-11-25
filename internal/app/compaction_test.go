@@ -156,9 +156,12 @@ func TestCompactionThreshold(t *testing.T) {
 		{20_000, 17_000},
 	}
 	for _, test := range cases {
-		if got := compactionThreshold(test.window); got != test.want {
-			t.Errorf("compactionThreshold(%d) = %d, want %d", test.window, got, test.want)
+		if got := compactionThreshold(test.window, 15); got != test.want {
+			t.Errorf("compactionThreshold(%d, 15) = %d, want %d", test.window, got, test.want)
 		}
+	}
+	if got := compactionThreshold(1_000_000, 20); got != 800_000 {
+		t.Errorf("compactionThreshold(1000000, 20) = %d, want 800000", got)
 	}
 }
 
@@ -174,18 +177,23 @@ func TestSettingsCompactionAutoDefaultsOnAndCanBeDisabled(t *testing.T) {
 	if get.Code != http.StatusOK {
 		t.Fatalf("get settings status = %d", get.Code)
 	}
-	requireContains(t, get.Body.String(), `id="compaction-auto"`, `name="compaction_auto" value="1" checked`)
+	requireContains(t, get.Body.String(), `id="compaction-auto"`, `name="compaction_auto" value="1" checked`,
+		`name="compaction_keep_tokens" value="15000"`, `name="compaction_buffer_percent" value="15"`)
 
 	disable := postForm(t, handler, "/settings?chat=8", url.Values{
-		"model":           {"saved-model"},
-		"max_tool_rounds": {"16"},
-		"compaction_form": {"1"},
+		"model":                     {"saved-model"},
+		"max_tool_rounds":           {"16"},
+		"compaction_form":           {"1"},
+		"compaction_keep_tokens":    {"24000"},
+		"compaction_buffer_percent": {"20"},
+		"compaction_model":          {"summary-model"},
 	})
 	if disable.Code != http.StatusOK {
 		t.Fatalf("disable status = %d; body = %q", disable.Code, disable.Body.String())
 	}
-	if enabled, err := kritui_db.GetCompactionAuto(context.Background(), database); err != nil || enabled {
-		t.Fatalf("automatic compaction after disable = %v, %v", enabled, err)
+	config, configErr := kritui_db.GetCompactionConfig(context.Background(), database)
+	if configErr != nil || config.Auto || config.KeepTokens != 24000 || config.BufferPercent != 20 || config.Model != "summary-model" {
+		t.Fatalf("compaction config after disable = %#v, %v", config, configErr)
 	}
 
 	enable := postForm(t, handler, "/settings?chat=8", url.Values{
@@ -261,5 +269,201 @@ func TestCompletionUsesCompactedCheckpointAfterAutoCompaction(t *testing.T) {
 	}
 	if strings.Contains(mainBody, long[:100]) {
 		t.Error("completion request still contained the summarized oldest message")
+	}
+}
+
+func TestProviderModelListCachesContextWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"local-model","context_length":65536}]}`))
+	}))
+	defer server.Close()
+	provider := providerEntry{ID: 991, Endpoint: server.URL + "/v1/chat/completions", APIKey: "local"}
+	models, _ := listProviderModels(context.Background(), provider, "")
+	if len(models) != 1 || models[0] != "local-model" {
+		t.Fatalf("models = %#v", models)
+	}
+	if window := modelContextWindow(context.Background(), provider, "local-model"); window != 65536 {
+		t.Errorf("context window = %d, want 65536", window)
+	}
+}
+
+func TestCompletionRecoversFromContextOverflowOnce(t *testing.T) {
+	database := openTestDatabase(t)
+	useModelsDevService(t, nil)
+	var mainRequests int
+	var summaryRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		text := string(body)
+		if strings.Contains(text, "You summarize an ongoing conversation") {
+			summaryRequests++
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "summary", "model": "main-model",
+				"output": []map[string]any{{"type": "message", "role": "assistant",
+					"content": []map[string]string{{"type": "output_text", "text": "## Objective\nRecover."}}}},
+				"usage": map[string]int{"input_tokens": 120, "output_tokens": 20},
+			})
+			return
+		}
+		mainRequests++
+		if mainRequests == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"This model's maximum context length is 8192 tokens","type":"invalid_request_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "answer", "model": "main-model",
+			"output": []map[string]any{{"type": "message", "role": "assistant",
+				"content": []map[string]string{{"type": "output_text", "text": "Recovered answer"}}}},
+			"usage": map[string]int{"input_tokens": 12, "output_tokens": 4},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("LLM_KEY", "key")
+	t.Setenv("LLM_ENDPOINT", server.URL+"/v1/responses")
+	t.Setenv("LLM_MODEL", "main-model")
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', 'older question'),
+			(1, 1, 'assistant', 'older answer')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	insertAcceptedUser(t, database, 1, "new question")
+	toolCalls := newToolCallStore()
+	response := completeForm(t, messageCompletionHandler(database, newTestToolRegistry(t), toolCalls, nil), toolCalls,
+		"/messages/complete?chat=1", url.Values{
+			"model":   {"main-model"},
+			"request": {newToolCallRequest(t, toolCalls, 1)},
+		})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Recovered answer") {
+		t.Fatalf("completion body = %q", response.Body.String())
+	}
+	if mainRequests != 2 || summaryRequests != 1 {
+		t.Fatalf("requests: main=%d summary=%d, want 2 and 1", mainRequests, summaryRequests)
+	}
+	if compaction, found, err := kritui_db.GetLatestChatCompaction(context.Background(), database, 1); err != nil || !found || compaction.Summary == "" {
+		t.Fatalf("overflow compaction = %#v, %v, %v", compaction, found, err)
+	} else if compaction.InputTokens != 120 || compaction.OutputTokens != 20 {
+		t.Errorf("compaction usage = %d in, %d out", compaction.InputTokens, compaction.OutputTokens)
+	}
+}
+
+func TestProviderContextWindowEnablesAutomaticCompaction(t *testing.T) {
+	useModelsDevService(t, nil)
+	database := openTestDatabase(t)
+	var summaryRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"local-model","context_length":2000}]}`))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "You summarize an ongoing conversation") {
+			summaryRequests++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "resp", "model": "local-model",
+			"output": []map[string]any{{"type": "message", "role": "assistant",
+				"content": []map[string]string{{"type": "output_text", "text": "## Objective\nLocal summary."}}}},
+			"usage": map[string]int{"input_tokens": 9, "output_tokens": 3},
+		})
+	}))
+	defer server.Close()
+	provider := providerEntry{ID: kritui_db.EnvProviderID, Endpoint: server.URL + "/v1/responses", APIKey: "local"}
+	if models, _ := listProviderModels(context.Background(), provider, ""); len(models) != 1 {
+		t.Fatalf("models = %#v", models)
+	}
+	long := strings.Repeat("word ", 2000)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', ?),
+			(1, 1, 'assistant', ?),
+			(1, 2, 'user', 'latest')
+	`, long, long); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := kritui_db.GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := maybeCompactChat(context.Background(), database, 1, provider, "local-model", snapshot.Messages, false, 0)
+	if err != nil {
+		t.Fatalf("automatic compaction: %v", err)
+	}
+	if !outcome.created || summaryRequests != 1 {
+		t.Fatalf("outcome = %#v, summary requests = %d", outcome, summaryRequests)
+	}
+}
+
+func TestPrecomputedCompactionIsUsedInsteadOfSecondSummary(t *testing.T) {
+	useModelsDevService(t, nil)
+	database := openTestDatabase(t)
+	provider := providerEntry{ID: kritui_db.EnvProviderID, Endpoint: "", APIKey: "key"}
+	var summaryRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "You summarize an ongoing conversation") {
+			summaryRequests++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "summary", "model": "main-model",
+			"output": []map[string]any{{"type": "message", "role": "assistant",
+				"content": []map[string]string{{"type": "output_text", "text": "## Objective\nPrecomputed."}}}},
+			"usage": map[string]int{"input_tokens": 50, "output_tokens": 8},
+		})
+	}))
+	defer server.Close()
+	provider.Endpoint = server.URL + "/v1/responses"
+	rememberContextWindow(provider, "main-model", 2000)
+	long := strings.Repeat("word ", 500)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', ?),
+			(1, 1, 'assistant', ?),
+			(1, 2, 'user', 'latest')
+	`, long, long); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := kritui_db.GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	precomputeCompaction(context.Background(), database, 1, provider, "main-model", snapshot.Messages, 0)
+	precomputedMu.Lock()
+	_, held := precomputedByChat[compactionCacheKey{database: database, chatID: 1}]
+	precomputedMu.Unlock()
+	if !held {
+		t.Fatal("precompute did not hold a summary")
+	}
+	if _, err := database.Exec(`INSERT INTO messages (chat_id, position, role, content) VALUES (1, 3, 'user', ?)`, strings.Repeat("more ", 700)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = kritui_db.GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := maybeCompactChat(context.Background(), database, 1, provider, "main-model", snapshot.Messages, false, 0)
+	if err != nil {
+		t.Fatalf("use precomputed compaction: %v", err)
+	}
+	if !outcome.created {
+		t.Fatal("precomputed compaction was not applied")
+	}
+	if summaryRequests != 1 {
+		t.Errorf("summary requests = %d, want only the precompute call", summaryRequests)
 	}
 }

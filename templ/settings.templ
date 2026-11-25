@@ -31,6 +31,9 @@ type SettingsPanelData struct {
 	TitleGenerationEnabled      bool
 	TitleGenerationModel        string
 	CompactionAuto              bool
+	CompactionKeepTokens        int
+	CompactionBufferPercent     int
+	CompactionModel             string
 	SystemPrompt                string
 	CompactionPrompt            string
 	ToolResultElision           llm.ToolResultElisionConfig
@@ -384,6 +387,38 @@ templ SettingsPage(data SettingsPanelData) {
 								<span>Enabled</span>
 							</label>
 							<input type="hidden" name="compaction_form" value="1"/>
+						</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="compaction-keep">Recent tokens to keep</label>
+							<p class="settings-help">Messages kept verbatim beside the summary. Larger values preserve detail but leave less room for new work.</p>
+						</div>
+						<div class="settings-control">
+							<input id="compaction-keep" type="number" name="compaction_keep_tokens" value={ strconv.Itoa(data.CompactionKeepTokens) } min="1" max="100000" required/>
+						</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="compaction-buffer">Context headroom</label>
+							<p class="settings-help">Percentage of the model window kept free before automatic compaction. Default 15%; at least 16k remains free when the window allows it.</p>
+						</div>
+						<div class="settings-control">
+							<input id="compaction-buffer" type="number" name="compaction_buffer_percent" value={ strconv.Itoa(data.CompactionBufferPercent) } min="1" max="99" required/>
+						</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="compaction-model">Compaction model</label>
+							<p class="settings-help">Optional model from the chat provider for summaries. Blank uses the chat model. Summaries never use thinking effort.</p>
+						</div>
+						<div class="settings-control">
+							<input id="compaction-model" type="text" name="compaction_model" value={ data.CompactionModel } maxlength="512" placeholder="Use chat model" list="compaction-model-options"/>
+							<datalist id="compaction-model-options">
+								for _, modelValue := range data.Models {
+									<option value={ data.ModelNames[modelValue] } label={ data.ModelProviders[modelValue] }></option>
+								}
+							</datalist>
 						</div>
 					</div>
 					<div class="settings-field settings-system-prompt-field">

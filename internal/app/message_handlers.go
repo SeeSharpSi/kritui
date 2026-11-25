@@ -591,6 +591,45 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to configure conversation.", request.model, selectedTools))
 		return
 	}
+	turnOverhead := estimatePromptOverhead(systemPrompt, request.selected)
+	conversation.SetRequestShaper(func(shapeContext context.Context, shapeMessages []llm.Message, definitions []tools.Definition) ([]llm.Message, error) {
+		system := ""
+		history := shapeMessages
+		if len(history) > 0 && history[0].Role == "system" {
+			system = history[0].Content
+			history = history[1:]
+		}
+		shaped, shapeErr := maybeCompactChat(shapeContext, database, request.chatID, provider, request.model, history, false,
+			estimateTextTokens(system)+estimateToolDefinitions(definitions))
+		if shapeErr != nil {
+			return nil, shapeErr
+		}
+		if shaped.created {
+			logCompaction(request.chatID, shaped)
+		}
+		out := make([]llm.Message, 0, len(shaped.messages)+1)
+		if system != "" {
+			out = append(out, llm.Message{Role: "system", Content: system})
+		}
+		out = append(out, shaped.messages...)
+		return out, nil
+	})
+	conversation.SetOverflowHandler(func(handlerContext context.Context) error {
+		snapshot, snapshotErr := kritui_db.GetMessageSnapshot(handlerContext, database, request.chatID)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		forced, forceErr := maybeCompactChat(handlerContext, database, request.chatID, provider, request.model,
+			snapshot.Messages, true, turnOverhead)
+		if forceErr != nil {
+			return forceErr
+		}
+		if !forced.created {
+			return ErrNothingToCompact
+		}
+		logCompaction(request.chatID, forced)
+		return nil
+	})
 	maxToolRounds, err := kritui_db.GetMaxToolRounds(ctx, database, llm.DefaultMaxToolCallRounds)
 	if err != nil {
 		log.Printf("get max tool rounds: %v", err)
@@ -740,6 +779,9 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		}
 		terminal = renderCompletionFragment(ctx, templates.CompletionErrorWithReference(request.chat, message, requestID, request.model, selectedTools))
 		return
+	}
+	if snapshot, snapshotErr := kritui_db.GetMessageSnapshot(ctx, database, request.chatID); snapshotErr == nil {
+		go precomputeCompaction(context.WithoutCancel(ctx), database, request.chatID, provider, request.model, snapshot.Messages, turnOverhead)
 	}
 	scheduleNtfyCompletion(ctx, database, request.chatID)
 	terminal = ""
@@ -1168,9 +1210,13 @@ func editUserMessage(ctx context.Context, database *sql.DB, chatID, messageID in
 	if err := kritui_db.SetCompletionState(ctx, tx, chatID, completion); err != nil {
 		return err
 	}
+	if err := kritui_db.DeleteChatCompactions(ctx, tx, chatID); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit message edit: %w", err)
 	}
+	invalidatePrecomputed(database, chatID)
 	return nil
 }
 

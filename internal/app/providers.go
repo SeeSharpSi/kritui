@@ -294,8 +294,13 @@ func listProviderModels(ctx context.Context, entry providerEntry, sessionID stri
 		ModelsTimeout: providerListTimeout,
 	})
 	if err == nil {
-		models, listErr := client.Models(listContext)
-		if listErr == nil && len(models) > 0 {
+		infos, listErr := client.ModelInfos(listContext)
+		if listErr == nil && len(infos) > 0 {
+			models := make([]string, 0, len(infos))
+			for _, info := range infos {
+				models = append(models, info.ID)
+				rememberContextWindow(entry, info.ID, info.ContextWindow)
+			}
 			return models, false
 		}
 		if listErr != nil {

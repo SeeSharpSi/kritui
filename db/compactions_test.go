@@ -28,23 +28,31 @@ func TestChatCompactionRoundTripAndDefaultAutoSetting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	enabled, err := GetCompactionAuto(context.Background(), database)
+	config, err := GetCompactionConfig(context.Background(), database)
 	if err != nil {
-		t.Fatalf("get default automatic compaction: %v", err)
+		t.Fatalf("get default compaction config: %v", err)
 	}
-	if !enabled {
-		t.Fatal("automatic compaction default = false, want true")
+	if !config.Auto || config.KeepTokens != 15000 || config.BufferPercent != 15 {
+		t.Fatalf("default compaction config = %#v", config)
 	}
 	disabled := false
-	if err := SaveSettings(context.Background(), database, SettingsUpdate{Model: "test-model", MaxToolRounds: 16, CompactionAuto: &disabled}); err != nil {
+	keep, buffer := 24000, 20
+	summaryModel := "summary-model"
+	if err := SaveSettings(context.Background(), database, SettingsUpdate{
+		Model: "test-model", MaxToolRounds: 16,
+		CompactionAuto: &disabled, CompactionKeepTokens: &keep,
+		CompactionBufferPercent: &buffer, CompactionModel: &summaryModel,
+	}); err != nil {
 		t.Fatalf("disable automatic compaction: %v", err)
 	}
-	enabled, err = GetCompactionAuto(context.Background(), database)
-	if err != nil || enabled {
-		t.Fatalf("automatic compaction after disable = %v, %v", enabled, err)
+	config, err = GetCompactionConfig(context.Background(), database)
+	if err != nil || config.Auto || config.KeepTokens != keep || config.BufferPercent != buffer || config.Model != summaryModel {
+		t.Fatalf("compaction config after update = %#v, %v", config, err)
 	}
 
-	created, err := CreateChatCompaction(context.Background(), database, 1, 0, "test-model", "## Objective\nKeep going.", keepID)
+	cost := 0.25
+	created, err := CreateChatCompaction(context.Background(), database, 1, 0, "test-model", "## Objective\nKeep going.", keepID,
+		ChatCompactionUsage{InputTokens: 120, OutputTokens: 20, Cost: &cost})
 	if err != nil {
 		t.Fatalf("create compaction: %v", err)
 	}
@@ -57,6 +65,9 @@ func TestChatCompactionRoundTripAndDefaultAutoSetting(t *testing.T) {
 	}
 	if latest.Summary != "## Objective\nKeep going." || latest.KeepMessageID != keepID || latest.Model != "test-model" {
 		t.Errorf("latest compaction = %#v", latest)
+	}
+	if latest.InputTokens != 120 || latest.OutputTokens != 20 || latest.Cost == nil || *latest.Cost != cost {
+		t.Errorf("latest compaction usage = %#v", latest)
 	}
 }
 
@@ -75,7 +86,7 @@ func TestChatCompactionRejectsForeignRows(t *testing.T) {
 	if err := database.QueryRow(`SELECT id FROM messages WHERE chat_id = 2`).Scan(&messageID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CreateChatCompaction(context.Background(), database, 1, 0, "", "summary", messageID); err == nil {
+	if _, err := CreateChatCompaction(context.Background(), database, 1, 0, "", "summary", messageID, ChatCompactionUsage{}); err == nil {
 		t.Fatal("CreateChatCompaction accepted a message from another chat")
 	}
 }
