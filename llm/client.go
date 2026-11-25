@@ -1093,11 +1093,11 @@ func isGoBillingSource(source string) bool {
 	}
 }
 
-func (c *Client) completionModel(model string) string {
-	if strings.TrimSpace(model) == "" {
-		return c.model
-	}
-	return model
+// completionModel returns the model the user requested. Providers often
+// rewrite aliases to canonical IDs or local file paths in their responses;
+// the visible label should stay the model the user selected.
+func (c *Client) completionModel(string) string {
+	return c.model
 }
 
 func cloneRawMessages(messages []json.RawMessage) []json.RawMessage {

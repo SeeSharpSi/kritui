@@ -5151,8 +5151,8 @@ func TestMessageCompletionHandlerIncludesEarlierMessages(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d; body = %q", response.Code, http.StatusOK, response.Body.String())
 		}
-		requireContains(t, response.Body.String(), "<strong>response-model</strong>")
-		requireNotContains(t, response.Body.String(), "<strong>test-model</strong>", "<strong>assistant</strong>")
+		requireContains(t, response.Body.String(), "<strong>selected-model</strong>")
+		requireNotContains(t, response.Body.String(), "<strong>response-model</strong>", "<strong>test-model</strong>", "<strong>assistant</strong>")
 	}
 
 	firstRequest := <-requests

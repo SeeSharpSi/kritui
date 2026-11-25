@@ -664,21 +664,31 @@ func TestConversationIgnoresNonPositiveToolRoundLimit(t *testing.T) {
 	}
 }
 
-func TestCompleteUsesRequestedModelWhenResponseOmitsModel(t *testing.T) {
+func TestCompleteUsesRequestedModel(t *testing.T) {
 	tests := []struct {
 		name     string
 		path     string
 		response string
 	}{
 		{
-			name:     "Chat Completions",
+			name:     "Chat Completions omits model",
 			path:     "/v1/chat/completions",
 			response: `{"id":"completion-1","choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}]}`,
 		},
 		{
-			name:     "Responses",
+			name:     "Chat Completions rewrites model",
+			path:     "/v1/chat/completions",
+			response: `{"id":"completion-1","model":"/models/rewritten.gguf","choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}]}`,
+		},
+		{
+			name:     "Responses omits model",
 			path:     "/v1/responses",
 			response: `{"id":"response-1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}]}`,
+		},
+		{
+			name:     "Responses rewrites model",
+			path:     "/v1/responses",
+			response: `{"id":"response-1","status":"completed","model":"/models/rewritten.gguf","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}]}`,
 		},
 	}
 
