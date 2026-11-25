@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -566,5 +567,60 @@ func TestForcedCompactionHandlesOneLongToolTurn(t *testing.T) {
 	}
 	if len(outcome.messages) >= len(snapshot.Messages) {
 		t.Fatalf("outbound messages = %d, stored = %d; compaction did not shorten context", len(outcome.messages), len(snapshot.Messages))
+	}
+}
+
+func TestCompactionFallsBackToChatModelWhenSummaryModelUnavailable(t *testing.T) {
+	database := openTestDatabase(t)
+	var requestedModels []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var request struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &request)
+		requestedModels = append(requestedModels, request.Model)
+		w.Header().Set("Content-Type", "application/json")
+		if request.Model != "main-model" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not found"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "summary", "model": "main-model",
+			"output": []map[string]any{{"type": "message", "role": "assistant",
+				"content": []map[string]string{{"type": "output_text", "text": "## Objective\nFallback summary."}}}},
+		})
+	}))
+	defer server.Close()
+	provider := providerEntry{ID: kritui_db.EnvProviderID, Endpoint: server.URL + "/v1/responses", APIKey: "test-key"}
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES (1, 0, 'user', 'question');
+		UPDATE settings SET compaction_model = 'missing-model' WHERE id = 1;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 6; index++ {
+		if _, err := database.Exec(`
+			INSERT INTO messages (chat_id, position, role, content, tool_call_id)
+			VALUES (1, ?, 'assistant', 'working', NULL), (1, ?, 'tool', ?, ?)
+		`, index*2+1, index*2+2, strings.Repeat("tool ", 2500), "call-"+strconv.Itoa(index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := kritui_db.GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := maybeCompactChat(context.Background(), database, 1, provider, "main-model", snapshot.Messages, true, 0)
+	if err != nil {
+		t.Fatalf("compaction fallback: %v", err)
+	}
+	if !outcome.created {
+		t.Fatal("compaction did not create a checkpoint")
+	}
+	if !slices.Contains(requestedModels, "missing-model") || !slices.Contains(requestedModels, "main-model") {
+		t.Fatalf("requested models = %v, want summary model then chat model", requestedModels)
 	}
 }

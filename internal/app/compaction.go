@@ -402,20 +402,29 @@ func summarizeConversation(ctx context.Context, provider providerEntry, model, s
 	request = append(request, llm.Message{Role: "system", Content: conversationCompactionSystemPrompt})
 	request = append(request, outbound...)
 	request = append(request, llm.Message{Role: "user", Content: instruction})
+	transcript := buildCompactionTranscript(transcriptMessages, transcriptBudget)
+	fallbackText := transcript
+	if previousFound {
+		fallbackText = "Existing checkpoint summary:\n" + previous.Summary + "\n\nNewer conversation:\n" + transcript
+	}
+	fallback := []llm.Message{
+		{Role: "system", Content: conversationCompactionSystemPrompt},
+		{Role: "user", Content: fallbackText + "\n\n" + instruction},
+	}
 	summary, usage, err := completeCompactionSummary(summaryContext, client, request)
 	if err != nil {
 		// A full-history request may be too large for the summary model. Fall
 		// back to the clipped text transcript, which drops oldest detail first.
-		transcript := buildCompactionTranscript(transcriptMessages, transcriptBudget)
-		fallbackText := transcript
-		if previousFound {
-			fallbackText = "Existing checkpoint summary:\n" + previous.Summary + "\n\nNewer conversation:\n" + transcript
-		}
-		fallback := []llm.Message{
-			{Role: "system", Content: conversationCompactionSystemPrompt},
-			{Role: "user", Content: fallbackText + "\n\n" + instruction},
-		}
 		summary, usage, err = completeCompactionSummary(summaryContext, client, fallback)
+	}
+	if err != nil && summaryModel != model {
+		// The configured summary model may not exist on the chat's provider,
+		// especially after switching providers. Use the chat model instead.
+		fallbackClient, clientErr := llm.New(provider.APIKey, model, provider.Endpoint, llm.ClientOptions{})
+		if clientErr == nil {
+			log.Printf("compaction summary model %q failed, retrying with chat model %q: %v", summaryModel, model, err)
+			summary, usage, err = completeCompactionSummary(summaryContext, fallbackClient, fallback)
+		}
 	}
 	if err != nil {
 		return "", 0, 0, 0, previousFound, 0, kritui_db.ChatCompactionUsage{}, fmt.Errorf("summarize conversation: %w", err)
