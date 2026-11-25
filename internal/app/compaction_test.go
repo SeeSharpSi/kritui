@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -465,5 +466,105 @@ func TestPrecomputedCompactionIsUsedInsteadOfSecondSummary(t *testing.T) {
 	}
 	if summaryRequests != 1 {
 		t.Errorf("summary requests = %d, want only the precompute call", summaryRequests)
+	}
+}
+
+func TestChooseKeepStartHandlesOneLongToolTurn(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES (1, 0, 'user', 'question');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 4; index++ {
+		if _, err := database.Exec(`
+			INSERT INTO messages (chat_id, position, role, content, tool_call_id)
+			VALUES (1, ?, 'assistant', 'working', NULL), (1, ?, 'tool', ?, ?)
+		`, index*2+1, index*2+2, strings.Repeat("tool ", 5000), "call-"+strconv.Itoa(index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := kritui_db.GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := chooseKeepStart(snapshot.Messages, 15000, 0)
+	if start <= 0 || start >= len(snapshot.Messages) {
+		t.Fatalf("keep start = %d for %d messages, want a later boundary", start, len(snapshot.Messages))
+	}
+	if snapshot.Messages[start].Role == "tool" {
+		t.Fatalf("keep start %d begins with a tool result", start)
+	}
+}
+
+func TestChooseKeepStartAdvancesPastPreviousCheckpoint(t *testing.T) {
+	database := openTestDatabase(t)
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', 'first question'),
+			(1, 1, 'assistant', 'first answer'),
+			(1, 2, 'user', 'second question');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 4; index++ {
+		if _, err := database.Exec(`
+			INSERT INTO messages (chat_id, position, role, content, tool_call_id)
+			VALUES (1, ?, 'assistant', 'working', NULL), (1, ?, 'tool', ?, ?)
+		`, index*2+3, index*2+4, strings.Repeat("tool ", 5000), "call-"+strconv.Itoa(index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := kritui_db.GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousStart := 2
+	start := chooseKeepStart(snapshot.Messages, 15000, previousStart)
+	if start <= previousStart {
+		t.Fatalf("keep start = %d, previous = %d; compaction would not advance", start, previousStart)
+	}
+}
+
+func TestForcedCompactionHandlesOneLongToolTurn(t *testing.T) {
+	database := openTestDatabase(t)
+	server := compactionProviderServer(t, "## Objective\nContinue after the tool work.")
+	provider := providerEntry{ID: kritui_db.EnvProviderID, Endpoint: server.URL + "/v1/responses", APIKey: "test-key"}
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES (1, 0, 'user', 'question');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 4; index++ {
+		if _, err := database.Exec(`
+			INSERT INTO messages (chat_id, position, role, content, tool_call_id)
+			VALUES (1, ?, 'assistant', 'working', NULL), (1, ?, 'tool', ?, ?)
+		`, index*2+1, index*2+2, strings.Repeat("tool ", 5000), "call-"+strconv.Itoa(index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := kritui_db.GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := maybeCompactChat(context.Background(), database, 1, provider, "main-model", snapshot.Messages, true, 0)
+	if err != nil {
+		t.Fatalf("force compaction: %v", err)
+	}
+	if !outcome.created {
+		t.Fatal("forced compaction did not create a checkpoint")
+	}
+	var keepRole string
+	if err := database.QueryRow(`SELECT role FROM messages WHERE id = ?`, outcome.compaction.KeepMessageID).Scan(&keepRole); err != nil {
+		t.Fatal(err)
+	}
+	if keepRole == "tool" {
+		t.Fatalf("checkpoint keeps tool message %d without its assistant call", outcome.compaction.KeepMessageID)
+	}
+	if len(outcome.messages) >= len(snapshot.Messages) {
+		t.Fatalf("outbound messages = %d, stored = %d; compaction did not shorten context", len(outcome.messages), len(snapshot.Messages))
 	}
 }

@@ -363,7 +363,7 @@ func summarizeConversation(ctx context.Context, provider providerEntry, model, s
 			}
 		}
 	}
-	keepStart := chooseKeepStart(messages, settings.KeepTokens)
+	keepStart := chooseKeepStart(messages, settings.KeepTokens, previousStart)
 	if keepStart <= 0 {
 		keepStart = latestUserIndex(messages)
 	}
@@ -466,9 +466,11 @@ func hasCompactionHeadings(value string) bool {
 	return false
 }
 
-// chooseKeepStart finds the newest suffix within the verbatim keep budget,
-// then widens it to include the latest user turn.
-func chooseKeepStart(messages []llm.Message, keepTokens int) int {
+// chooseKeepStart finds the newest suffix within the verbatim keep budget.
+// It includes the latest user turn only when that turn is newer than the
+// previous checkpoint, and never leaves a tool result without the assistant
+// message that requested it.
+func chooseKeepStart(messages []llm.Message, keepTokens, previousStart int) int {
 	start := len(messages)
 	total := 0
 	for index := len(messages) - 1; index >= 0; index-- {
@@ -482,11 +484,17 @@ func chooseKeepStart(messages []llm.Message, keepTokens int) int {
 		total += size
 		start = index
 	}
-	for index := len(messages) - 1; index >= 0; index-- {
-		if messages[index].Role == "user" && index < start {
+	if start == len(messages) && start > 0 {
+		start--
+	}
+	for index := start - 1; index > previousStart; index-- {
+		if messages[index].Role == "user" {
 			start = index
 			break
 		}
+	}
+	for start > 0 && messages[start].Role == "tool" {
+		start--
 	}
 	if start < 0 {
 		return 0
