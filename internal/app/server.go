@@ -569,6 +569,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateProviders,
 	migrateChatCompactions,
 	migrateCompactionSettings,
+	migrateCompactionModel,
 }
 
 // migrateProviders adds custom LLM providers, provider references on settings,
@@ -738,6 +739,18 @@ func migrateCompactionSettings(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+// migrateCompactionModel adds the optional summary model override. It is
+// separate from migrateCompactionSettings because schema version 40 shipped
+// without this column.
+func migrateCompactionModel(ctx context.Context, tx *sql.Tx) error {
+	exists, err := tableExists(ctx, tx, "settings")
+	if err != nil || !exists {
+		return err
+	}
+	return addColumnIfMissing(ctx, tx, "settings", "compaction_model",
+		`TEXT CHECK (compaction_model IS NULL OR length(CAST(compaction_model AS BLOB)) <= 512)`)
 }
 
 func migrateReasoningEffort(ctx context.Context, tx *sql.Tx) error {

@@ -150,7 +150,7 @@ func TestReasoningMigrationFromVersion36(t *testing.T) {
 	}
 	defer database.Close()
 	database.SetMaxOpenConns(1)
-	previous := strings.Replace(schema, "PRAGMA user_version = 40;", "PRAGMA user_version = 36;", 1)
+	previous := strings.Replace(schema, "PRAGMA user_version = 41;", "PRAGMA user_version = 36;", 1)
 	for _, column := range []string{"    default_reasoning_effort TEXT NOT NULL DEFAULT '',\n", "    title_reasoning_effort TEXT NOT NULL DEFAULT '',\n", "    reasoning_effort TEXT,\n", "    reasoning_effort TEXT NOT NULL DEFAULT '',\n"} {
 		previous = strings.ReplaceAll(previous, column, "")
 	}

@@ -388,4 +388,4 @@ CREATE TABLE IF NOT EXISTS models_dev_cache (
     payload BLOB NOT NULL
 ) STRICT;
 
-PRAGMA user_version = 40;
+PRAGMA user_version = 41;
