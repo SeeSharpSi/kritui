@@ -68,8 +68,8 @@ func TestManualCompactionStoresCheckpointAndCommandReportsIt(t *testing.T) {
 	if err := result.Body.Render(context.Background(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body.String(), "Compacted") || !strings.Contains(body.String(), "checkpoint") {
-		t.Errorf("compact body missing notice: %s", body.String())
+	if !strings.Contains(body.String(), "Context compacted") || !strings.Contains(body.String(), "Continue the work.") {
+		t.Errorf("compact body missing checkpoint: %s", body.String())
 	}
 	compaction, found, err := kritui_db.GetLatestChatCompaction(context.Background(), database, 1)
 	if err != nil || !found {

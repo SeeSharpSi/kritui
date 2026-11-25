@@ -16,7 +16,7 @@ import (
 type HomeData struct {
 	ChatID                   string
 	ChatTitle                string
-	CompactionNotice         string
+	Compaction               *kritui_db.ChatCompaction
 	ChatURL                  string
 	Messages                 []llm.Message
 	Models                   []string
@@ -69,10 +69,7 @@ templ Home(data HomeData) {
 				<div class="shell-viewport">
 					<section class="chat" data-chat-title={ data.ChatTitle }>
 						<div class="message-panel">
-							if data.CompactionNotice != "" {
-								<p class="compaction-notice" role="status">{ data.CompactionNotice }</p>
-							}
-							@MessageList(data.ChatID, homeHistory(data), false) {
+							@MessageList(data.ChatID, homeHistory(data), false, data.Compaction) {
 								if data.CompletionRequestID != "" {
 									@CompletionWithHistory(data.ChatID, data.CompletionRequestID, data.SelectedModel, data.EnabledTools, !data.CompletionStarted, data.Messages)
 								} else if data.CompletionInterrupted || len(data.Messages) > 0 && data.Messages[len(data.Messages)-1].Role == "user" {

@@ -8,9 +8,10 @@ import (
 
 	kritui_db "seesharpsi/kritui/db"
 	"seesharpsi/kritui/llm"
+	"seesharpsi/kritui/markdown"
 )
 
-templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
+templ MessageList(chatID string, messages []llm.Message, outOfBand bool, compaction *kritui_db.ChatCompaction) {
 	<div
 		id="message-list"
 		class="message-list"
@@ -19,6 +20,10 @@ templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
 			hx-swap-oob="outerHTML"
 		}
 	>
+		if compaction != nil {
+			@CompactionEvent(*compaction)
+			<template id="compaction-event-template">@CompactionEvent(*compaction)</template>
+		}
 		<div id="messages" class="message-thread">
 			<div id="message-history">
 				@Messages(chatID, messages...)
@@ -37,6 +42,22 @@ templ MessageList(chatID string, messages []llm.Message, outOfBand bool) {
 			</div>
 		}
 	</div>
+}
+
+// CompactionEvent renders the OpenCode-style divider that replaces older
+// history in outbound requests. It is collapsed by default.
+templ CompactionEvent(compaction kritui_db.ChatCompaction) {
+	<details class="compaction-event" id="compaction-event" data-compaction-keep={ strconv.FormatInt(compaction.KeepMessageID, 10) }>
+		<summary>
+			<span class="compaction-rule" aria-hidden="true"></span>
+			<span class="compaction-label">Context compacted</span>
+			<span class="compaction-caret" aria-hidden="true"></span>
+			<span class="compaction-rule" aria-hidden="true"></span>
+		</summary>
+		<div class="compaction-event-body">
+			@markdown.Render(compaction.Summary)
+		</div>
+	</details>
 }
 
 // ChatStateSnapshot is fetched outside htmx's request lifecycle, then processed

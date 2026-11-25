@@ -2456,3 +2456,32 @@ window.addEventListener('resize', syncKeyboardViewport, { passive: true });
 window.addEventListener('orientationchange', handleKeyboardOrientation, { passive: true });
 window.visualViewport?.addEventListener('resize', syncKeyboardViewport, { passive: true });
 window.visualViewport?.addEventListener('scroll', syncKeyboardViewport, { passive: true });
+
+function placeCompactionEvent() {
+    const template = document.getElementById('compaction-event-template');
+    const history = document.getElementById('message-history');
+    if (!template || !history) {
+        return;
+    }
+    let event = document.getElementById('compaction-event');
+    if (!event) {
+        event = template.content.firstElementChild?.cloneNode(true);
+        if (!event) {
+            return;
+        }
+    }
+    const keep = event.getAttribute('data-compaction-keep');
+    const target = keep ? document.getElementById(`message-${keep}`) : null;
+    if (target?.parentElement) {
+        if (event.nextElementSibling !== target) {
+            target.parentElement.insertBefore(event, target);
+        }
+        return;
+    }
+    if (!event.isConnected) {
+        history.prepend(event);
+    }
+}
+
+document.addEventListener('htmx:after:swap', placeCompactionEvent);
+placeCompactionEvent();

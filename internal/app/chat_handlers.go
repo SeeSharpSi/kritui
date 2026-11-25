@@ -212,18 +212,13 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			renderPageError(w, r, http.StatusInternalServerError, "Failed to load chat title.")
 			return
 		}
-		compactionNotice := ""
-		if _, found, err := kritui_db.GetLatestChatCompaction(r.Context(), database, chatID); err != nil {
-			log.Printf("get chat compaction: %v", err)
-		} else if found {
-			compactionNotice = "Context compacted. Older messages are represented by a summary."
-		}
+		compactionView := latestCompactionForDisplay(r.Context(), database, chatID)
 
 		var page bytes.Buffer
 		home := templates.HomeData{
 			ChatID:                    chat,
 			ChatTitle:                 chatTitle,
-			CompactionNotice:          compactionNotice,
+			Compaction:                compactionView,
 			ChatURL:                   chatURL,
 			Messages:                  messages,
 			Models:                    models,
@@ -1535,7 +1530,7 @@ func renderHistoryDeletion(ctx context.Context, w http.ResponseWriter, count int
 		return fmt.Errorf("render history deletion: %w", err)
 	}
 	if clearCurrent {
-		if err := templates.MessageList("", nil, true).Render(ctx, &fragment); err != nil {
+		if err := templates.MessageList("", nil, true, nil).Render(ctx, &fragment); err != nil {
 			return fmt.Errorf("render cleared message list: %w", err)
 		}
 	}

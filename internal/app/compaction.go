@@ -475,6 +475,19 @@ func estimatePromptOverhead(systemPrompt string, registry *tools.Registry) int {
 	return total
 }
 
+// latestCompactionForDisplay loads the checkpoint rendered in chat history.
+func latestCompactionForDisplay(ctx context.Context, database *sql.DB, chatID int64) *kritui_db.ChatCompaction {
+	compaction, found, err := kritui_db.GetLatestChatCompaction(ctx, database, chatID)
+	if err != nil {
+		log.Printf("get chat compaction for display: %v", err)
+		return nil
+	}
+	if !found {
+		return nil
+	}
+	return &compaction
+}
+
 // logCompaction records a successful automatic compaction for diagnostics.
 func logCompaction(chatID int64, outcome compactionOutcome) {
 	if outcome.created {

@@ -179,7 +179,7 @@ func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 		case err != nil:
 			return nil, fmt.Errorf("undo current chat: %w", err)
 		}
-		return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), result.Messages, result.Message.Content), nil
+		return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), result.Messages, result.Message.Content, latestCompactionForDisplay(ctx, database, chatID)), nil
 	})
 	if err != nil {
 		return nil, err
@@ -194,13 +194,13 @@ func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 		case err != nil:
 			return nil, fmt.Errorf("redo current chat: %w", err)
 		}
-		return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), messages, ""), nil
+		return templates.MessageHistoryResult(strconv.FormatInt(chatID, 10), messages, "", latestCompactionForDisplay(ctx, database, chatID)), nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	compact, err := commands.NewMessageHistoryCommand("compact", "Summarize older context", func(ctx context.Context, chatID int64) (templ.Component, error) {
-		outcome, err := manualCompaction(ctx, database, chatID)
+		_, err := manualCompaction(ctx, database, chatID)
 		switch {
 		case errors.Is(err, ErrCompactionInProgress):
 			return nil, &commands.UserError{Status: http.StatusConflict, Message: "Wait for the current response to finish before compacting."}
@@ -217,8 +217,7 @@ func newCommandRegistry(database *sql.DB) (*commands.Registry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load compacted chat: %w", err)
 		}
-		notice := fmt.Sprintf("Compacted %d messages into a checkpoint; kept %d recent messages.", outcome.summarized, outcome.kept)
-		return templates.CompactionResult(strconv.FormatInt(chatID, 10), messages, notice), nil
+		return templates.CompactionResult(strconv.FormatInt(chatID, 10), messages, latestCompactionForDisplay(ctx, database, chatID)), nil
 	})
 	if err != nil {
 		return nil, err

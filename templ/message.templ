@@ -598,8 +598,8 @@ templ CompletionRetry(chatID string, model string, tools []string) {
 	</form>
 }
 
-templ MessageHistoryResult(chatID string, messages []llm.Message, input string) {
-	@MessageList(chatID, messages, false)
+templ MessageHistoryResult(chatID string, messages []llm.Message, input string, compaction *kritui_db.ChatCompaction) {
+	@MessageList(chatID, messages, false, compaction)
 	@MessageInput(input, true)
 }
 
@@ -611,10 +611,9 @@ templ MessageInput(value string, outOfBand bool) {
 	}
 }
 
-// CompactionResult returns the full stored history plus a transient notice
-// after a manual /compact command.
-templ CompactionResult(chatID string, messages []llm.Message, notice string) {
-	@MessageList(chatID, messages, false)
-	<p class="compaction-notice" role="status" aria-live="polite">{ notice }</p>
+// CompactionResult returns the full stored history after a manual /compact
+// command, including the collapsed checkpoint.
+templ CompactionResult(chatID string, messages []llm.Message, compaction *kritui_db.ChatCompaction) {
+	@MessageList(chatID, messages, false, compaction)
 	@MessageInput("", true)
 }
