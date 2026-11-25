@@ -843,6 +843,12 @@ func assertSharedResponseCSP(t *testing.T, response *http.Response) {
 	if !strings.Contains(csp, "script-src 'sha256-") {
 		t.Errorf("Content-Security-Policy = %q, want a hash-authorized inline script", csp)
 	}
+	if !strings.Contains(csp, "frame-src 'self' blob:") || !strings.Contains(csp, "frame-ancestors 'self'") {
+		t.Errorf("Content-Security-Policy = %q, want same-origin blob frames", csp)
+	}
+	if strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Errorf("Content-Security-Policy = %q, frame ancestors must allow the blob iframe", csp)
+	}
 }
 
 func assertSharedResponseHeaders(t *testing.T, response *http.Response) {

@@ -287,7 +287,7 @@ func sharedResponseDecryptScriptTag() templ.Component {
 // header. Only the hash of sharedResponseDecryptScript may execute.
 func SharedResponseCSP() string {
 	sum := sha256.Sum256([]byte(sharedResponseDecryptScript))
-	return "default-src 'none'; script-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'; style-src 'unsafe-inline'; img-src https: http: data:; frame-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	return "default-src 'none'; script-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'; style-src 'unsafe-inline'; img-src https: http: data:; frame-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 }
 
 // EncryptedSharedResponsePage renders the deterministic public bootstrap for an
