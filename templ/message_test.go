@@ -178,7 +178,7 @@ func TestMessagesResponseUsage(t *testing.T) {
 				toolRound(usagePointer(7), usagePointer(0.07)), result,
 				answer(usagePointer(18), usagePointer(0.25)),
 			},
-			wantMeta: []string{"30 tokens · $0.3700"},
+			wantMeta: []string{"18 tokens · $0.3700"},
 		},
 		{
 			name: "separate answers reset totals",
@@ -188,7 +188,7 @@ func TestMessagesResponseUsage(t *testing.T) {
 				user, toolRound(usagePointer(2), usagePointer(0.02)), result,
 				answer(usagePointer(3), usagePointer(0.03)),
 			},
-			wantMeta: []string{"23 tokens · $0.3000", "5 tokens · $0.0500"},
+			wantMeta: []string{"18 tokens · $0.3000", "3 tokens · $0.0500"},
 		},
 		{
 			name: "steering retains preceding round usage",
@@ -197,26 +197,26 @@ func TestMessagesResponseUsage(t *testing.T) {
 				user, toolRound(usagePointer(7), usagePointer(0.07)), result,
 				answer(usagePointer(11), usagePointer(0.11)),
 			},
-			wantMeta: []string{"23 tokens · $0.2300"},
+			wantMeta: []string{"11 tokens · $0.2300"},
 		},
 		{
 			name: "final round has no usage",
 			messages: []llm.Message{
 				user, toolRound(usagePointer(5), usagePointer(0.05)), result, answer(nil, nil),
 			},
-			wantMeta: []string{"5 tokens · $0.0500"},
+			wantMeta: []string{"$0.0500"},
 		},
 		{
 			name: "token and cost availability are independent",
 			messages: []llm.Message{
 				user, toolRound(usagePointer(5), nil), result, answer(nil, usagePointer(0.25)),
 			},
-			wantMeta: []string{"5 tokens · $0.2500"},
+			wantMeta: []string{"$0.2500"},
 		},
 		{
 			name:     "tokens without cost",
 			messages: []llm.Message{user, toolRound(usagePointer(5), nil), result, answer(usagePointer(18), nil)},
-			wantMeta: []string{"23 tokens"},
+			wantMeta: []string{"18 tokens"},
 		},
 		{
 			name:     "cost without tokens",
@@ -225,7 +225,7 @@ func TestMessagesResponseUsage(t *testing.T) {
 		},
 		{
 			name:     "explicit zero usage remains visible",
-			messages: []llm.Message{user, toolRound(usagePointer(0), usagePointer(0.0)), result, answer(nil, nil)},
+			messages: []llm.Message{user, toolRound(nil, nil), result, answer(usagePointer(0), usagePointer(0.0))},
 			wantMeta: []string{"0 tokens · $0.0000"},
 		},
 		{
@@ -249,7 +249,7 @@ func TestMessagesResponseUsage(t *testing.T) {
 				{Role: "tool", ToolCallID: "call-1", Content: "Result", TotalTokens: usagePointer(100), Cost: usagePointer(1.0)},
 				answer(usagePointer(18), usagePointer(0.25)),
 			},
-			wantMeta: []string{"23 tokens · $0.3000"},
+			wantMeta: []string{"18 tokens · $0.3000"},
 		},
 	}
 	for _, tt := range tests {

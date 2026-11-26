@@ -263,6 +263,18 @@ func modelContextWindow(ctx context.Context, provider providerEntry, model strin
 			window = input
 		}
 	}
+	if window <= 0 && provider.ID > 0 && strings.TrimSpace(provider.Name) != "" &&
+		strings.TrimSpace(provider.Endpoint) != "" && strings.TrimSpace(provider.APIKey) != "" {
+		// A long-lived PWA may not have reloaded the model catalog since the
+		// server restarted. Stored providers expose context metadata through
+		// /models, so discover it before disabling automatic compaction.
+		_, _ = listProviderModels(ctx, provider, "")
+		if cached, ok := contextWindowCache.Load(key); ok {
+			if entry := cached.(contextWindowCacheEntry); time.Now().Before(entry.expires) {
+				window = entry.window
+			}
+		}
+	}
 	ttl := 10 * time.Minute
 	if window <= 0 {
 		ttl = time.Minute

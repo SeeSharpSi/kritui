@@ -624,3 +624,68 @@ func TestCompactionFallsBackToChatModelWhenSummaryModelUnavailable(t *testing.T)
 		t.Fatalf("requested models = %v, want summary model then chat model", requestedModels)
 	}
 }
+
+func TestModelContextWindowFetchesProviderModelsOnDemand(t *testing.T) {
+	useModelsDevService(t, nil)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"main-model","context_length":32768}]}`))
+	}))
+	defer server.Close()
+	provider := providerEntry{ID: 4242, Name: "Test", Endpoint: server.URL + "/v1/chat/completions", APIKey: "test-key"}
+	if got := modelContextWindow(context.Background(), provider, "main-model"); got != 32768 {
+		t.Fatalf("context window = %d, want 32768", got)
+	}
+}
+
+func TestAutomaticCompactionDiscoversProviderWindowOnDemand(t *testing.T) {
+	database := openTestDatabase(t)
+	useModelsDevService(t, nil)
+	var modelsRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			modelsRequests++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"main-model","context_length":2000}]}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "summary", "model": "main-model",
+			"output": []map[string]any{{"type": "message", "role": "assistant",
+				"content": []map[string]string{{"type": "output_text", "text": "## Objective\nDiscovered window."}}}},
+		})
+	}))
+	defer server.Close()
+	provider := providerEntry{ID: 777, Name: "Test", Endpoint: server.URL + "/v1/responses", APIKey: "test-key"}
+	long := strings.Repeat("word ", 2000)
+	if _, err := database.Exec(`
+		INSERT INTO providers (id, user_id, position, name, endpoint) VALUES (777, 1, 0, 'Test', 'https://example.invalid/v1/responses');
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', ?),
+			(1, 1, 'assistant', ?),
+			(1, 2, 'user', 'latest'),
+			(1, 3, 'assistant', 'answer')
+	`, long, long); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := kritui_db.GetMessageSnapshot(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := maybeCompactChat(context.Background(), database, 1, provider, "main-model", snapshot.Messages, false, 0)
+	if err != nil {
+		t.Fatalf("automatic compaction: %v", err)
+	}
+	if !outcome.created {
+		t.Fatal("automatic compaction did not use the discovered window")
+	}
+	if modelsRequests == 0 {
+		t.Fatal("provider /models was not queried")
+	}
+}
