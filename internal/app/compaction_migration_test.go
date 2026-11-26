@@ -22,7 +22,7 @@ func TestMigrateDatabaseAddsCompactionModelFromVersion40(t *testing.T) {
 		t.Fatal("schema does not contain compaction_model column")
 	}
 	previous := strings.Replace(schema, column, "", 1)
-	previous = strings.Replace(previous, "PRAGMA user_version = 41;", "PRAGMA user_version = 40;", 1)
+	previous = strings.Replace(previous, "PRAGMA user_version = 42;", "PRAGMA user_version = 40;", 1)
 	if !strings.Contains(previous, "PRAGMA user_version = 40;") {
 		t.Fatal("failed to build version 40 fixture")
 	}

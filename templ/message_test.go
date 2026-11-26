@@ -326,3 +326,38 @@ func htmlNodeText(node *html.Node) string {
 	}
 	return text.String()
 }
+
+func TestFormatCompletionDuration(t *testing.T) {
+	cases := []struct {
+		ms   int64
+		want string
+	}{
+		{0, "<1s"},
+		{999, "<1s"},
+		{1000, "1s"},
+		{59000, "59s"},
+		{61000, "1m 01s"},
+		{3661000, "1h 01m"},
+	}
+	for _, test := range cases {
+		if got := formatCompletionDuration(test.ms); got != test.want {
+			t.Errorf("formatCompletionDuration(%d) = %q, want %q", test.ms, got, test.want)
+		}
+	}
+}
+
+func TestMessagesRenderCompletionDuration(t *testing.T) {
+	tokens := 12
+	duration := int64(61000)
+	message := llm.Message{Role: "assistant", Model: "model", TotalTokens: &tokens, DurationMS: &duration}
+	var output bytes.Buffer
+	if err := Messages("42", message).Render(context.Background(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `<span class="message-duration">1m 01s</span>`) {
+		t.Errorf("duration markup missing: %s", output.String())
+	}
+	if got := messageMetaText(t, output.String()); !reflect.DeepEqual(got, []string{"12 tokens · 1m 01s"}) {
+		t.Errorf("visible meta = %v, want [12 tokens · 1m 01s]", got)
+	}
+}

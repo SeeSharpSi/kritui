@@ -53,6 +53,7 @@ type storedMessage struct {
 	cacheWriteTokens        sql.NullInt64
 	reasoningTokens         sql.NullInt64
 	costEstimated           bool
+	durationMS              sql.NullInt64
 	toolCallID              sql.NullString
 	toolCallPositions       []int
 	promptAppendPositions   []int
@@ -430,7 +431,7 @@ func getMessageSnapshot(ctx context.Context, db messageQueryer, chatID int64) (M
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, position, role, content, model, total_tokens, cost,
 			input_tokens, output_tokens, cached_input_tokens, cache_write_tokens,
-			reasoning_tokens, cost_estimated, tool_call_id
+			reasoning_tokens, cost_estimated, duration_ms, tool_call_id
 		FROM messages
 		WHERE chat_id = ? AND undo_sequence IS NULL
 		ORDER BY position, id
@@ -595,6 +596,7 @@ func scanStoredMessage(ctx context.Context, row rowScanner) (storedMessage, erro
 		&stored.cacheWriteTokens,
 		&stored.reasoningTokens,
 		&stored.costEstimated,
+		&stored.durationMS,
 		&stored.toolCallID,
 	); err != nil {
 		return storedMessage{}, fmt.Errorf("scan message: %w", err)
@@ -617,6 +619,10 @@ func scanStoredMessage(ctx context.Context, row rowScanner) (storedMessage, erro
 		stored.message.Cost = &cost
 	}
 	stored.message.CostEstimated = stored.costEstimated
+	if stored.durationMS.Valid {
+		duration := stored.durationMS.Int64
+		stored.message.DurationMS = &duration
+	}
 	if stored.inputTokens.Valid {
 		value := int(stored.inputTokens.Int64)
 		stored.message.InputTokens = &value

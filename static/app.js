@@ -1537,6 +1537,7 @@ document.addEventListener('DOMContentLoaded', () => {
     scheduleRollingNumbers();
     scrollMessages(document);
     initializeShell(document);
+    applyCompletionTimePreference(document);
     syncPanelSendButton();
     syncToolResultElisionControls(document);
     autoresizeAllMessageInputs(document);
@@ -1959,6 +1960,18 @@ document.addEventListener('htmx:after:swap', (event) => {
     syncToolResultElisionControls(event.target);
     autoresizeAllMessageInputs(event.target);
 });
+function applyCompletionTimePreference(root) {
+    const scope = root instanceof Element ? root : document;
+    const preference = scope.matches?.('#completion-time-preference')
+        ? scope
+        : scope.querySelector?.('#completion-time-preference')
+            ?? document.getElementById('completion-time-preference');
+    if (!preference) {
+        return;
+    }
+    document.documentElement.dataset.showCompletionTime = preference.dataset.enabled === 'true' ? 'true' : 'false';
+}
+
 function applySettingsTheme(root) {
     const settingsPage = root?.matches?.('#settings-page')
         ? root
@@ -1985,6 +1998,7 @@ document.addEventListener('htmx:after:settle', (event) => {
     autoCopyShareLinks(event.detail?.task?.target ?? event.target);
     initializeShell(event.detail?.task?.target ?? event.target);
     applySettingsTheme(event.detail?.task?.target);
+    applyCompletionTimePreference(event.detail?.task?.target ?? event.target);
     syncToolResultElisionControls(event.target);
     autoresizeAllMessageInputs(event.target);
     const settingsPage = document.querySelector('#settings-page');

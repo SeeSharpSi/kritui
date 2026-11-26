@@ -570,6 +570,7 @@ var databaseMigrations = []func(context.Context, *sql.Tx) error{
 	migrateChatCompactions,
 	migrateCompactionSettings,
 	migrateCompactionModel,
+	migrateCompletionDuration,
 }
 
 // migrateProviders adds custom LLM providers, provider references on settings,
@@ -751,6 +752,27 @@ func migrateCompactionModel(ctx context.Context, tx *sql.Tx) error {
 	}
 	return addColumnIfMissing(ctx, tx, "settings", "compaction_model",
 		`TEXT CHECK (compaction_model IS NULL OR length(CAST(compaction_model AS BLOB)) <= 512)`)
+}
+
+// migrateCompletionDuration adds the display-only completion time and its
+// account-wide visibility toggle.
+func migrateCompletionDuration(ctx context.Context, tx *sql.Tx) error {
+	exists, err := tableExists(ctx, tx, "messages")
+	if err != nil {
+		return err
+	}
+	if exists {
+		if err := addColumnIfMissing(ctx, tx, "messages", "duration_ms",
+			`INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0)`); err != nil {
+			return err
+		}
+	}
+	exists, err = tableExists(ctx, tx, "settings")
+	if err != nil || !exists {
+		return err
+	}
+	return addColumnIfMissing(ctx, tx, "settings", "show_completion_time",
+		`INTEGER NOT NULL DEFAULT 0 CHECK (show_completion_time IN (0, 1))`)
 }
 
 func migrateReasoningEffort(ctx context.Context, tx *sql.Tx) error {

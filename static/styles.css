@@ -4163,3 +4163,11 @@ body:has(#chat-title-request.htmx-request) #history-entries .history-entry.curre
 .compaction-event-body > :last-child {
     margin-bottom: 0;
 }
+
+.message-duration {
+    display: none;
+}
+
+html[data-show-completion-time="true"] .message-duration {
+    display: inline;
+}

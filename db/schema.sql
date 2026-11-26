@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS settings (
     compaction_keep_tokens INTEGER NOT NULL DEFAULT 15000 CHECK (compaction_keep_tokens BETWEEN 1 AND 100000),
     compaction_buffer_percent INTEGER NOT NULL DEFAULT 15 CHECK (compaction_buffer_percent BETWEEN 1 AND 99),
     compaction_model TEXT CHECK (compaction_model IS NULL OR length(CAST(compaction_model AS BLOB)) <= 512),
+    show_completion_time INTEGER NOT NULL DEFAULT 0 CHECK (show_completion_time IN (0, 1)),
     title_generation_model TEXT
         CHECK (title_generation_model IS NULL OR
             (trim(title_generation_model) <> '' AND length(CAST(title_generation_model AS BLOB)) <= 512)),
@@ -205,6 +206,7 @@ CREATE TABLE IF NOT EXISTS messages (
     cache_write_tokens INTEGER CHECK (cache_write_tokens IS NULL OR cache_write_tokens >= 0),
     reasoning_tokens INTEGER CHECK (reasoning_tokens IS NULL OR reasoning_tokens >= 0),
     cost_estimated INTEGER NOT NULL DEFAULT 0 CHECK (cost_estimated IN (0, 1)),
+    duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
     tool_call_id TEXT,
     undo_sequence INTEGER CHECK (undo_sequence IS NULL OR undo_sequence > 0),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -388,4 +390,4 @@ CREATE TABLE IF NOT EXISTS models_dev_cache (
     payload BLOB NOT NULL
 ) STRICT;
 
-PRAGMA user_version = 41;
+PRAGMA user_version = 42;

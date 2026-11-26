@@ -297,6 +297,10 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 	if message.Cost != nil {
 		cost = *message.Cost
 	}
+	var durationMS any
+	if message.DurationMS != nil {
+		durationMS = *message.DurationMS
+	}
 	var inputTokens any
 	if message.InputTokens != nil {
 		inputTokens = *message.InputTokens
@@ -322,12 +326,12 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 		INSERT INTO messages (
 			chat_id, position, role, content, model, total_tokens, cost,
 			input_tokens, output_tokens, cached_input_tokens, cache_write_tokens,
-			reasoning_tokens, cost_estimated, tool_call_id
+			reasoning_tokens, cost_estimated, duration_ms, tool_call_id
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, chatID, position, message.Role, "", model, totalTokens, cost,
 		inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens,
-		reasoningTokens, message.CostEstimated, toolCallID)
+		reasoningTokens, message.CostEstimated, durationMS, toolCallID)
 	if err != nil {
 		return 0, fmt.Errorf("insert message: %w", err)
 	}
@@ -423,6 +427,39 @@ func insertMessage(ctx context.Context, db databaseExecutor, chatID int64, posit
 		}
 	}
 	return id, nil
+}
+
+// SetLatestAssistantDuration records wall-clock completion time on the newest
+// visible assistant message in one chat. Duration is display metadata and is
+// intentionally excluded from snapshot digests.
+func SetLatestAssistantDuration(ctx context.Context, db databaseExecutor, chatID int64, durationMS int64) error {
+	if durationMS < 0 {
+		return fmt.Errorf("set assistant duration: duration must not be negative")
+	}
+	return executeAtomically(ctx, db, func(executor databaseExecutor) error {
+		if err := requireChatOwned(ctx, executor, chatID); err != nil {
+			return err
+		}
+		result, err := executor.ExecContext(ctx, `
+			UPDATE messages SET duration_ms = ?
+			WHERE id = (
+				SELECT id FROM messages
+				WHERE chat_id = ? AND role = 'assistant' AND undo_sequence IS NULL
+				ORDER BY position DESC, id DESC LIMIT 1
+			)
+		`, durationMS, chatID)
+		if err != nil {
+			return fmt.Errorf("set assistant duration: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("set assistant duration: %w", err)
+		}
+		if affected == 0 {
+			return ErrMessageNotFound
+		}
+		return nil
+	})
 }
 
 // ReplaceUserMessage atomically replaces one user message and deletes every

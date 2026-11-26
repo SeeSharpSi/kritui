@@ -44,6 +44,7 @@ type HomeData struct {
 	CompactionKeepTokens     int
 	CompactionBufferPercent  int
 	CompactionModel          string
+	ShowCompletionTime       bool
 	SystemPrompt             string
 	CompactionPrompt         string
 	ToolResultElision        llm.ToolResultElisionConfig
@@ -103,6 +104,7 @@ templ Home(data HomeData) {
 									CompactionKeepTokens:     data.CompactionKeepTokens,
 									CompactionBufferPercent:  data.CompactionBufferPercent,
 									CompactionModel:          data.CompactionModel,
+									ShowCompletionTime:       data.ShowCompletionTime,
 									SystemPrompt:             data.SystemPrompt,
 									CompactionPrompt:         data.CompactionPrompt,
 									ToolResultElision:        data.ToolResultElision,

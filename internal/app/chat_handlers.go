@@ -248,6 +248,7 @@ func homeHandler(database *sql.DB, toolRegistry *tools.Registry, commandRegistry
 			CompactionKeepTokens:      renderSettings.compactionKeepTokens,
 			CompactionBufferPercent:   renderSettings.compactionBufferPercent,
 			CompactionModel:           renderSettings.compactionModel,
+			ShowCompletionTime:        renderSettings.showCompletionTime,
 			ToolResultElision:         renderSettings.toolResultElision,
 			Tools:                     toolRegistry.Names(),
 			EnabledTools:              enabledTools,
@@ -290,6 +291,7 @@ type homeRenderSettings struct {
 	compactionKeepTokens    int
 	compactionBufferPercent int
 	compactionModel         string
+	showCompletionTime      bool
 	toolResultElision       llm.ToolResultElisionConfig
 	defaultTools            []string
 	mcpServers              []kritui_db.MCPServer
@@ -344,6 +346,10 @@ func loadHomeRenderSettings(ctx context.Context, database *sql.DB, promptAppends
 	settings.compactionKeepTokens = compactionSettings.KeepTokens
 	settings.compactionBufferPercent = compactionSettings.BufferPercent
 	settings.compactionModel = compactionSettings.Model
+	if settings.showCompletionTime, err = kritui_db.GetShowCompletionTime(ctx, database); err != nil {
+		log.Printf("get completion time display: %v", err)
+		return homeRenderSettings{}, fmt.Errorf("load completion time display: %w", err)
+	}
 	if settings.toolResultElision, err = kritui_db.GetToolResultElision(ctx, database); err != nil {
 		log.Printf("get tool result elision: %v", err)
 		return homeRenderSettings{}, fmt.Errorf("load tool result elision: %w", err)
@@ -677,6 +683,12 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 		page.CompactionKeepTokens = compactionSettings.KeepTokens
 		page.CompactionBufferPercent = compactionSettings.BufferPercent
 		page.CompactionModel = compactionSettings.Model
+		page.ShowCompletionTime, err = kritui_db.GetShowCompletionTime(r.Context(), database)
+		if err != nil {
+			log.Printf("get completion time display: %v", err)
+			render(http.StatusInternalServerError, "Failed to load settings.")
+			return
+		}
 		defaultTools, err := kritui_db.GetDefaultEnabledTools(r.Context(), database, nil)
 		if err != nil {
 			log.Printf("get default tools: %v", err)
@@ -895,6 +907,8 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				page.CompactionModel = compactionModelValue
 				compactionModel = &compactionModelValue
 			}
+			showCompletionTime := r.FormValue("show_completion_time") == "1"
+			page.ShowCompletionTime = showCompletionTime
 			var submittedEffort, submittedTitleEffort *string
 			if _, present := r.Form["default_reasoning_effort"]; present {
 				page.ReasoningEffort = strings.ToLower(strings.TrimSpace(r.FormValue("default_reasoning_effort")))
@@ -1284,6 +1298,7 @@ func settingsHandler(database *sql.DB, registry *tools.Registry) http.HandlerFun
 				CompactionKeepTokens:    compactionKeep,
 				CompactionBufferPercent: compactionBuffer,
 				CompactionModel:         compactionModel,
+				ShowCompletionTime:      &showCompletionTime,
 				SystemPrompt:            submittedSystemPrompt,
 				CompactionPrompt:        submittedCompactionPrompt,
 				Theme:                   submittedTheme,

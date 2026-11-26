@@ -89,6 +89,7 @@ type SettingsUpdate struct {
 	CompactionKeepTokens    *int
 	CompactionBufferPercent *int
 	CompactionModel         *string
+	ShowCompletionTime      *bool
 	SystemPrompt            *string
 	CompactionPrompt        *string
 	Theme                   string
@@ -274,6 +275,11 @@ func SaveSettings(ctx context.Context, db *sql.DB, update SettingsUpdate) error 
 			return fmt.Errorf("save compaction buffer: %w", err)
 		}
 	}
+	if update.ShowCompletionTime != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET show_completion_time = ? WHERE id = ?`, *update.ShowCompletionTime, UserID(ctx)); err != nil {
+			return fmt.Errorf("save completion time display: %w", err)
+		}
+	}
 	if update.CompactionModel != nil {
 		model := strings.TrimSpace(*update.CompactionModel)
 		if len([]byte(model)) > 512 {
@@ -433,6 +439,20 @@ func GetCompactionConfig(ctx context.Context, db *sql.DB) (CompactionConfig, err
 	}
 	config.Model = nullSettingString(model)
 	return config, nil
+}
+
+// GetShowCompletionTime reports whether completed turns display their
+// wall-clock duration.
+func GetShowCompletionTime(ctx context.Context, db *sql.DB) (bool, error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return false, fmt.Errorf("get completion time display: %w", err)
+	}
+	var enabled bool
+	if err := db.QueryRowContext(ctx, `SELECT show_completion_time FROM settings WHERE id = ?`, userID).Scan(&enabled); err != nil {
+		return false, fmt.Errorf("get completion time display: %w", err)
+	}
+	return enabled, nil
 }
 
 // GetCompactionAuto reports whether automatic context compaction is enabled.

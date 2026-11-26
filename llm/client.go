@@ -67,12 +67,15 @@ type Message struct {
 	Cost        *float64         `json:"-"`
 	// CostEstimated marks Cost as a catalog-derived estimate rather than a
 	// provider-reported charge.
-	CostEstimated     bool `json:"-"`
-	InputTokens       *int `json:"-"`
-	OutputTokens      *int `json:"-"`
-	CachedInputTokens *int `json:"-"`
-	CacheWriteTokens  *int `json:"-"`
-	ReasoningTokens   *int `json:"-"`
+	CostEstimated bool `json:"-"`
+	// DurationMS is server-measured completion wall time. It is display
+	// metadata and never affects provider payloads.
+	DurationMS        *int64 `json:"-"`
+	InputTokens       *int   `json:"-"`
+	OutputTokens      *int   `json:"-"`
+	CachedInputTokens *int   `json:"-"`
+	CacheWriteTokens  *int   `json:"-"`
+	ReasoningTokens   *int   `json:"-"`
 	// PromptAppendTexts contains snapshotted append text expanded before
 	// provider requests.
 	PromptAppendTexts []string         `json:"-"`

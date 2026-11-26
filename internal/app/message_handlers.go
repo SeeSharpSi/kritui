@@ -466,6 +466,7 @@ func messageCompletionHandler(database *sql.DB, registry *tools.Registry, toolCa
 }
 
 func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request messageRequest, requestID string, tracker *toolCallTracker, toolCalls *toolCallStore, toolCallLogger *log.Logger, clientTimezone string) (terminal string, succeeded bool) {
+	turnStarted := time.Now()
 	selectedTools := request.toolNames
 	terminal = renderCompletionFragment(ctx, templates.CompletionError(request.chat, "Failed to complete message.", request.model, selectedTools))
 
@@ -779,6 +780,9 @@ func runMessageCompletionTurn(ctx context.Context, database *sql.DB, request mes
 		}
 		terminal = renderCompletionFragment(ctx, templates.CompletionErrorWithReference(request.chat, message, requestID, request.model, selectedTools))
 		return
+	}
+	if err := kritui_db.SetLatestAssistantDuration(ctx, database, request.chatID, time.Since(turnStarted).Milliseconds()); err != nil {
+		log.Printf("completion %s: record turn duration: %v", requestID, err)
 	}
 	if snapshot, snapshotErr := kritui_db.GetMessageSnapshot(ctx, database, request.chatID); snapshotErr == nil {
 		go precomputeCompaction(context.WithoutCancel(ctx), database, request.chatID, provider, request.model, snapshot.Messages, turnOverhead)

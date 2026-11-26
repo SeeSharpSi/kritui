@@ -34,6 +34,7 @@ type SettingsPanelData struct {
 	CompactionKeepTokens        int
 	CompactionBufferPercent     int
 	CompactionModel             string
+	ShowCompletionTime          bool
 	SystemPrompt                string
 	CompactionPrompt            string
 	ToolResultElision           llm.ToolResultElisionConfig
@@ -170,6 +171,7 @@ templ SettingsPage(data SettingsPanelData) {
 			hidden
 		}
 	>
+		<span id="completion-time-preference" data-enabled={ strconv.FormatBool(data.ShowCompletionTime) } hidden></span>
 		<form
 			class="settings-main-form"
 			action={ "/settings?chat=" + data.ChatID }
@@ -653,6 +655,18 @@ templ SettingsPage(data SettingsPanelData) {
 									<option value={ theme.ID } if theme.ID == data.SelectedTheme.ID { selected }>{ theme.Label }</option>
 								}
 							</select>
+						</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="show-completion-time">Show completion time</label>
+							<p class="settings-help">Show how long the last response took next to its token count.</p>
+						</div>
+						<div class="settings-control">
+							<label class="settings-tool-option">
+								<input id="show-completion-time" type="checkbox" role="switch" name="show_completion_time" value="1" if data.ShowCompletionTime { checked }/>
+								<span>Enabled</span>
+							</label>
 						</div>
 					</div>
 				</div>

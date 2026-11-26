@@ -29,6 +29,7 @@ func TestDetailedMessageUsageRoundTrip(t *testing.T) {
 	}
 	total, input, output, cached, write, reasoning := 170, 150, 20, 40, 10, 5
 	cost := 0.42
+	duration := int64(61000)
 	message := llm.Message{
 		Role:              "assistant",
 		Content:           "answer",
@@ -41,6 +42,7 @@ func TestDetailedMessageUsageRoundTrip(t *testing.T) {
 		ReasoningTokens:   &reasoning,
 		Cost:              &cost,
 		CostEstimated:     true,
+		DurationMS:        &duration,
 	}
 	if _, err := InsertMessage(context.Background(), database, 1, 0, message); err != nil {
 		t.Fatal(err)
@@ -59,7 +61,8 @@ func TestDetailedMessageUsageRoundTrip(t *testing.T) {
 		got.CachedInputTokens == nil || *got.CachedInputTokens != cached ||
 		got.CacheWriteTokens == nil || *got.CacheWriteTokens != write ||
 		got.ReasoningTokens == nil || *got.ReasoningTokens != reasoning ||
-		got.Cost == nil || *got.Cost != cost || !got.CostEstimated {
+		got.Cost == nil || *got.Cost != cost || !got.CostEstimated ||
+		got.DurationMS == nil || *got.DurationMS != duration {
 		t.Fatalf("stored usage = %#v", got)
 	}
 }
@@ -935,4 +938,34 @@ func insertNamedChat(t *testing.T, database *sql.DB, title string, tools, append
 		t.Fatalf("store options for chat %q: %v", title, err)
 	}
 	return id
+}
+
+func TestSetLatestAssistantDuration(t *testing.T) {
+	database := openMessagesTestDatabase(t, "")
+	if _, err := database.Exec(`
+		INSERT INTO chats (id) VALUES (1);
+		INSERT INTO messages (chat_id, position, role, content) VALUES
+			(1, 0, 'user', 'first'),
+			(1, 1, 'assistant', 'first answer'),
+			(1, 2, 'user', 'second'),
+			(1, 3, 'assistant', 'second answer');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetLatestAssistantDuration(context.Background(), database, 1, 61000); err != nil {
+		t.Fatalf("SetLatestAssistantDuration() error: %v", err)
+	}
+	messages, err := GetMessages(context.Background(), database, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("messages = %d, want 4", len(messages))
+	}
+	if messages[1].DurationMS != nil {
+		t.Errorf("older assistant duration = %v, want nil", *messages[1].DurationMS)
+	}
+	if messages[3].DurationMS == nil || *messages[3].DurationMS != 61000 {
+		t.Errorf("latest assistant duration = %v, want 61000", messages[3].DurationMS)
+	}
 }

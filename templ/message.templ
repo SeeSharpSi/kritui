@@ -60,7 +60,28 @@ func messageModelMeta(message llm.Message) string {
 	if message.Cost != nil {
 		parts = append(parts, formatMessageCost(*message.Cost, message.CostEstimated))
 	}
+	if message.DurationMS != nil {
+		parts = append(parts, formatCompletionDuration(*message.DurationMS))
+	}
 	return strings.Join(parts, " · ")
+}
+
+func formatCompletionDuration(milliseconds int64) string {
+	if milliseconds < 1000 {
+		return "<1s"
+	}
+	seconds := milliseconds / 1000
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	seconds %= 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm %02ds", minutes, seconds)
+	}
+	hours := minutes / 60
+	minutes %= 60
+	return fmt.Sprintf("%dh %02dm", hours, minutes)
 }
 
 func formatMessageCost(cost float64, estimated bool) string {
@@ -102,6 +123,12 @@ templ MessageModelMeta(chatID string, message llm.Message) {
 		} else {
 			{ formatted }
 		}
+	}
+	if message.DurationMS != nil {
+		if message.TotalTokens != nil || message.Cost != nil {
+			{ " · " }
+		}
+		<span class="message-duration">{ formatCompletionDuration(*message.DurationMS) }</span>
 	}
 }
 
