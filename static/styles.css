@@ -1785,7 +1785,7 @@ main {
                     box-sizing: border-box;
                     padding: 12px 14px;
                     border: 1px solid color-mix(in srgb, var(--color-border) 72%, var(--color-surface-muted));
-                    border-radius: 9px;
+                    border-radius: 0;
                     background: var(--color-surface-muted);
                     color: inherit;
                 }
@@ -2864,7 +2864,7 @@ main {
             flex-shrink: 0;
             margin-top: -1px;
             border: 1px solid color-mix(in srgb, var(--color-border) 72%, var(--color-surface-muted));
-            border-radius: 9px;
+            border-radius: 0;
             background: var(--color-surface-muted);
 
             &:focus-within {
@@ -3185,6 +3185,37 @@ main {
     main:not(.auth-main) {
         width: 100%;
         padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+
+    main.app-main {
+        .chat {
+            border-left-color: transparent;
+            border-right-color: transparent;
+        }
+
+        form#message-form:not(:focus-within) {
+            border-inline-color: transparent;
+        }
+
+        .chat-controls {
+            border-left-color: transparent;
+            border-right-color: transparent;
+            background:
+                linear-gradient(var(--color-border), var(--color-border)) top / 100% 1px no-repeat,
+                var(--color-surface-muted);
+
+            > .settings-button:not(.active):not(:hover):not(:focus-visible),
+            > .history-button:not(.active):not(:hover):not(:focus-visible),
+            .chat-options:not([open]) > summary:not(:hover):not(:focus-visible) {
+                border-color: transparent;
+                background: transparent;
+            }
+
+            .chat-options > summary,
+            > .history-button {
+                box-shadow: inset 1px 0 color-mix(in srgb, var(--color-border) 72%, transparent);
+            }
+        }
     }
 }
 
