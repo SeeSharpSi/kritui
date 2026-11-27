@@ -182,40 +182,61 @@ templ Home(data HomeData) {
 										</strong>
 									</summary>
 									<div class="model-options">
-										for _, modelValue := range data.Models {
-											<label>
-												<input
-													hx-get="/thinking?scope=chat"
-													hx-trigger="change"
-													hx-include="this, #chat-thinking"
-													hx-target="#chat-thinking"
-													hx-swap="outerHTML"
-													hx-disable="global #message-form button[type='submit']"
-													hx-sync=".chat-options:replace"
-													type="radio"
-													name="model"
-													value={ modelValue }
-													data-model-label={ data.ModelNames[modelValue] }
-													form="message-form"
-													if modelValue == data.SelectedModelValue {
-														checked
-													}
-													onchange="this.closest('details').querySelector('strong').textContent = this.dataset.modelLabel; this.closest('details').removeAttribute('open')"
-												/>
-												<span class="model-name">{ data.ModelNames[modelValue] }</span>
-												<span class="model-provider">{ data.ModelProviders[modelValue] }</span>
-												if detail, ok := data.ModelDetails[modelValue]; ok && len(detail.Modalities) > 0 {
-													<span class="model-modalities">
-														for _, modality := range detail.Modalities {
-															@ModelModalityIcon(modality)
+										<div class="model-options-scroll">
+											for _, modelValue := range data.Models {
+												<label
+													class="model-option"
+													data-model-search={ strings.ToLower(data.ModelNames[modelValue] + " " + data.ModelProviders[modelValue]) }
+												>
+													<input
+														hx-get="/thinking?scope=chat"
+														hx-trigger="change"
+														hx-include="this, #chat-thinking"
+														hx-target="#chat-thinking"
+														hx-swap="outerHTML"
+														hx-disable="global #message-form button[type='submit']"
+														hx-sync=".chat-options:replace"
+														type="radio"
+														name="model"
+														value={ modelValue }
+														data-model-label={ data.ModelNames[modelValue] }
+														form="message-form"
+														if modelValue == data.SelectedModelValue {
+															checked
 														}
+														onchange="this.closest('details').querySelector('strong').textContent = this.dataset.modelLabel; this.closest('details').removeAttribute('open')"
+													/>
+													<span class="model-option-mark" aria-hidden="true"></span>
+													<span class="model-option-label">
+														<span class="model-name">{ data.ModelNames[modelValue] }</span>
+														<span class="model-provider">{ data.ModelProviders[modelValue] }</span>
 													</span>
+													if detail, ok := data.ModelDetails[modelValue]; ok && len(detail.Modalities) > 0 {
+														<span class="model-modalities">
+															for _, modality := range detail.Modalities {
+																@ModelModalityIcon(modality)
+															}
+														</span>
+													}
+												</label>
+											}
+											if data.ModelListFallback {
+												<p class="model-fallback-note">Using models.dev fallback</p>
+											}
+											<p
+												class="model-search-empty"
+												if len(data.Models) > 0 {
+													hidden
 												}
-											</label>
-										}
-										if data.ModelListFallback {
-											<p class="model-fallback-note">Using models.dev fallback</p>
-										}
+											>
+												if len(data.Models) == 0 {
+													No models available.
+												} else {
+													No models match.
+												}
+											</p>
+										</div>
+										<input class="model-search" type="search" aria-label="Search models" placeholder="Search models"/>
 									</div>
 								</details>
 								@ThinkingPicker("chat", data.ModelDetails[data.SelectedModel], data.SelectedReasoningEffort)

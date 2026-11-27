@@ -197,24 +197,38 @@ templ SettingsPage(data SettingsPanelData) {
 				<p class="settings-status settings-error" role="alert">{ data.ErrorMessage }</p>
 			}
 			{{ emptyProvider := ProviderCard{} }}
-			<section id="llm-settings" class="settings-section" aria-labelledby="llm-settings-heading">
+			<section class="settings-section" aria-labelledby="theme-heading">
 				<header class="settings-section-heading">
-					<h2 id="llm-settings-heading">Model providers</h2>
-					<p>Each provider has its own endpoint and key. Model pickers list every provider's models.</p>
+				<h2 id="theme-heading">Theme</h2>
+					<p>Colors for the whole interface.</p>
 				</header>
-				<input type="hidden" name="providers_form" value="1"/>
-				<div class="settings-provider-list" data-provider-list>
-					for _, provider := range data.Providers {
-						@ProviderEditor(provider)
-					}
+				<div class="settings-fields">
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="theme">Theme</label>
+							<p class="settings-help">Applies everywhere after saving.</p>
+						</div>
+						<div class="settings-control">
+							<select id="theme" name="theme">
+								for _, theme := range data.Themes {
+									<option value={ theme.ID } if theme.ID == data.SelectedTheme.ID { selected }>{ theme.Label }</option>
+								}
+							</select>
+						</div>
+					</div>
+					<div class="settings-field">
+						<div class="settings-field-copy">
+							<label for="show-completion-time">Show completion time</label>
+							<p class="settings-help">Show how long the last response took next to its token count.</p>
+						</div>
+						<div class="settings-control">
+							<label class="settings-tool-option">
+								<input id="show-completion-time" type="checkbox" role="switch" name="show_completion_time" value="1" if data.ShowCompletionTime { checked }/>
+								<span>Enabled</span>
+							</label>
+						</div>
+					</div>
 				</div>
-				<button class="settings-provider-add" type="button" data-provider-add>+ Add provider</button>
-				if data.LLMEnvironmentConfigured {
-					<p class="settings-help">The environment provider is read-only. Remove LLM_ENDPOINT and LLM_KEY from the environment to edit it here.</p>
-				}
-				<template id="provider-row-template">
-					@ProviderEditor(emptyProvider)
-				</template>
 			</section>
 			<section class="settings-section" aria-labelledby="chat-defaults-heading">
 				<header class="settings-section-heading">
@@ -581,6 +595,25 @@ templ SettingsPage(data SettingsPanelData) {
 					<button class="settings-add" type="submit" name="append_action" value="add" formnovalidate>Add append</button>
 				</div>
 			</section>
+			<section id="llm-settings" class="settings-section" aria-labelledby="llm-settings-heading">
+				<header class="settings-section-heading">
+					<h2 id="llm-settings-heading">Model providers</h2>
+					<p>Each provider has its own endpoint and key. Model pickers list every provider's models.</p>
+				</header>
+				<input type="hidden" name="providers_form" value="1"/>
+				<div class="settings-provider-list" data-provider-list>
+					for _, provider := range data.Providers {
+						@ProviderEditor(provider)
+					}
+				</div>
+				<button class="settings-provider-add" type="button" data-provider-add>+ Add provider</button>
+				if data.LLMEnvironmentConfigured {
+					<p class="settings-help">The environment provider is read-only. Remove LLM_ENDPOINT and LLM_KEY from the environment to edit it here.</p>
+				}
+				<template id="provider-row-template">
+					@ProviderEditor(emptyProvider)
+				</template>
+			</section>
 			<section id="ntfy-settings" class="settings-section" aria-labelledby="ntfy-settings-heading">
 				<header class="settings-section-heading">
 				<h2 id="ntfy-settings-heading">Notifications</h2>
@@ -637,39 +670,6 @@ templ SettingsPage(data SettingsPanelData) {
 						<button class="settings-dialog-danger" type="button" data-settings-clear-confirm>Clear key</button>
 					</div>
 				</dialog>
-			</section>
-			<section class="settings-section" aria-labelledby="theme-heading">
-				<header class="settings-section-heading">
-				<h2 id="theme-heading">Theme</h2>
-					<p>Colors for the whole interface.</p>
-				</header>
-				<div class="settings-fields">
-					<div class="settings-field">
-						<div class="settings-field-copy">
-							<label for="theme">Theme</label>
-							<p class="settings-help">Applies everywhere after saving.</p>
-						</div>
-						<div class="settings-control">
-							<select id="theme" name="theme">
-								for _, theme := range data.Themes {
-									<option value={ theme.ID } if theme.ID == data.SelectedTheme.ID { selected }>{ theme.Label }</option>
-								}
-							</select>
-						</div>
-					</div>
-					<div class="settings-field">
-						<div class="settings-field-copy">
-							<label for="show-completion-time">Show completion time</label>
-							<p class="settings-help">Show how long the last response took next to its token count.</p>
-						</div>
-						<div class="settings-control">
-							<label class="settings-tool-option">
-								<input id="show-completion-time" type="checkbox" role="switch" name="show_completion_time" value="1" if data.ShowCompletionTime { checked }/>
-								<span>Enabled</span>
-							</label>
-						</div>
-					</div>
-				</div>
 			</section>
 			<details id="git-settings" class="settings-section settings-expandable" if data.GitHostsOpen { open }>
 				<summary class="settings-section-heading">

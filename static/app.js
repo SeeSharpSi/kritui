@@ -1572,11 +1572,40 @@ document.addEventListener('pointerover', (event) => handleImagePointer(event, tr
 document.addEventListener('pointerout', (event) => handleImagePointer(event, false));
 
 document.addEventListener('input', (event) => {
+    const modelSearch = event.target.closest?.('.model-search');
+    if (modelSearch) {
+        const picker = modelSearch.closest('.model-picker');
+        const terms = modelSearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        let visibleCount = 0;
+        picker?.querySelectorAll('.model-options-scroll .model-option').forEach((option) => {
+            const searchable = (option.dataset.modelSearch ?? '').toLowerCase().replace(/\s+/g, ' ');
+            const matches = terms.every((term) => searchable.includes(term));
+            option.hidden = !matches;
+            visibleCount += Number(matches);
+        });
+        const emptyState = picker?.querySelector('.model-search-empty');
+        if (emptyState) {
+            emptyState.hidden = visibleCount > 0;
+        }
+        return;
+    }
     if (event.target.matches('#message')) {
         autoresizeMessageInput(event.target);
         updateCommandAutocomplete(event.target);
     }
 });
+
+document.addEventListener('toggle', (event) => {
+    const picker = event.target;
+    if (!picker.matches?.('.model-picker') || picker.open) {
+        return;
+    }
+    const search = picker.querySelector('.model-search');
+    if (search) {
+        search.value = '';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+}, true);
 
 document.addEventListener('paste', (event) => {
     const input = event.target;
