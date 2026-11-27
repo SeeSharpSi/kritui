@@ -1570,13 +1570,13 @@ main {
 
             >strong {
                 color: var(--color-accent);
-                font: 500 11px/14px var(--font-mono);
+                font: 500 11px/14px var(--font-sans);
                 text-transform: uppercase;
             }
 
             >.message-meta {
-                color: var(--color-text-muted);
-                font: 400 11px/14px var(--font-mono);
+                color: color-mix(in srgb, var(--color-text-muted) 88%, var(--color-text));
+                font: 400 11px/16px var(--font-mono);
             }
 
             .message-share-actions {
@@ -1784,7 +1784,8 @@ main {
                     margin-left: auto;
                     box-sizing: border-box;
                     padding: 12px 14px;
-                    border: 1px solid var(--color-border);
+                    border: 1px solid color-mix(in srgb, var(--color-border) 72%, var(--color-surface-muted));
+                    border-radius: 9px;
                     background: var(--color-surface-muted);
                     color: inherit;
                 }
@@ -2231,14 +2232,16 @@ main {
         .completed-tool-calls {
             margin: 0 0 20px;
             color: var(--color-text-muted);
-            font: 400 11px/16px var(--font-mono);
 
             >summary {
+                display: inline-flex;
+                align-items: center;
                 width: fit-content;
                 max-width: 100%;
+                color: var(--color-text-muted);
                 cursor: pointer;
                 list-style: none;
-                color: var(--color-text-muted);
+                font: 400 12px/18px var(--font-sans);
                 user-select: none;
 
                 &::-webkit-details-marker {
@@ -2269,6 +2272,13 @@ main {
 
             .tool-call-list {
                 margin: .35rem 0 0;
+
+                .tool-call .tool-call-toggle {
+                    display: inline-flex;
+                    align-items: center;
+                    font: 400 11px/16px var(--font-mono);
+                    text-align: left;
+                }
             }
         }
 
@@ -2375,12 +2385,13 @@ main {
     }
 
     .chat-controls {
+        --chat-control-row-height: 41px;
         position: relative;
         z-index: 3;
         flex: 0 0 auto;
         box-sizing: border-box;
         margin-top: -1px;
-        padding-bottom: 40px;
+        padding-bottom: calc(var(--chat-control-row-height) - 1px);
         border: 1px solid var(--color-border);
         border-top: 0;
 
@@ -2391,7 +2402,7 @@ main {
             z-index: 2;
             bottom: -1px;
             width: calc((100% + 2px) / 3 + 1px);
-            height: 41px;
+            height: var(--chat-control-row-height);
             display: grid;
             box-sizing: border-box;
             padding: 0;
@@ -2401,6 +2412,11 @@ main {
             color: var(--color-text);
             font: 500 13px/16px var(--font-sans);
             cursor: pointer;
+
+            svg {
+                width: 16px;
+                height: 16px;
+            }
 
             &:hover,
             &:focus-visible {
@@ -2847,11 +2863,12 @@ main {
             display: block;
             flex-shrink: 0;
             margin-top: -1px;
-            border: 1px solid var(--color-border);
+            border: 1px solid color-mix(in srgb, var(--color-border) 72%, var(--color-surface-muted));
+            border-radius: 9px;
             background: var(--color-surface-muted);
 
             &:focus-within {
-                border-color: var(--color-text);
+                border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
             }
 
             >.command-autocomplete {
@@ -3104,7 +3121,23 @@ main {
     }
 }
 
+@media (pointer: coarse) {
+    main .chat .completed-tool-calls > summary {
+        min-height: 44px;
+    }
+}
+
 @media (max-width: 42rem) {
+    main .chat .message {
+        margin-bottom: 24px;
+        font-size: 16px;
+        line-height: 1.55;
+
+        .message-content.markdown {
+            line-height: inherit;
+        }
+    }
+
     main .chat-options .chat-options-list {
         flex-wrap: nowrap;
         gap: .35rem;
@@ -3152,6 +3185,12 @@ main {
     main:not(.auth-main) {
         width: 100%;
         padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+}
+
+@media (max-width: 48rem), (pointer: coarse) {
+    main .chat-controls {
+        --chat-control-row-height: 44px;
     }
 }
 
@@ -4102,18 +4141,19 @@ body:has(#chat-title-request.htmx-request) #history-entries .history-entry.curre
 }
 
 .compaction-event {
-    margin: .75rem 1rem .25rem;
+    margin: 1rem 1rem .5rem;
     color: var(--color-text-muted);
 }
 
 .compaction-event > summary {
+    position: relative;
     display: flex;
     align-items: center;
     gap: .75rem;
     list-style: none;
     cursor: pointer;
-    font-size: .78rem;
-    line-height: 1.4;
+    font: 400 .75rem/1.4 var(--font-sans);
+    padding-inline: 1rem;
 }
 
 .compaction-event > summary::-webkit-details-marker {
@@ -4127,26 +4167,31 @@ body:has(#chat-title-request.htmx-request) #history-entries .history-entry.curre
 
 .compaction-rule {
     flex: 1 1 auto;
-    border-top: 1px solid var(--color-border);
+    border-top: 1px solid color-mix(in srgb, var(--color-border-strong) 55%, var(--color-border));
 }
 
 .compaction-label {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    max-width: min(14rem, 60%);
+    padding: 0 .1rem;
+    text-align: center;
+    white-space: normal;
 }
 
 .compaction-caret {
-    flex: 0 0 auto;
+    position: absolute;
+    right: .25rem;
+    top: 50%;
     width: .35rem;
     height: .35rem;
-    margin-left: -.35rem;
     border-right: 1px solid currentColor;
     border-bottom: 1px solid currentColor;
-    transform: translateY(-1px) rotate(45deg);
+    transform: translateY(-50%) rotate(45deg);
     transition: transform 150ms ease;
 }
 
 .compaction-event[open] .compaction-caret {
-    transform: translateY(2px) rotate(225deg);
+    transform: translateY(-50%) rotate(225deg);
 }
 
 .compaction-event-body {
