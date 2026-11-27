@@ -2030,6 +2030,8 @@ document.addEventListener('htmx:after:request', (event) => {
 
 let resumeStateGeneration = 0;
 let resumeStateRequest = null;
+let resumeStateRetries = 0;
+let resumeStateRetryTimer = 0;
 
 function activeChatState() {
     const form = document.querySelector('#message-form');
@@ -2087,19 +2089,48 @@ function reconcileActiveChat() {
     document.body.append(source);
     const stateURL = `/chats/${encodeURIComponent(active.chatID)}/state`;
     const request = htmx.ajax('GET', stateURL, { source, target: '#message-history', swap: 'none' });
-    resumeStateRequest = Promise.resolve(request)
-        .catch(() => {})
+    let failed = false;
+    const wrapped = Promise.resolve(request)
+        .catch(() => { failed = true; })
         .finally(() => {
             source.remove();
-            if (resumeStateRequest === wrapped) {
-                resumeStateRequest = null;
+            if (resumeStateRequest !== wrapped) {
+                return;
+            }
+            resumeStateRequest = null;
+            const changed = resumeStateGeneration !== generation;
+            if (document.visibilityState === 'visible' && (changed || failed)) {
+                scheduleResumeRetry();
+            } else if (!changed && !failed) {
+                resumeStateRetries = 0;
             }
         });
-    const wrapped = resumeStateRequest;
+    resumeStateRequest = wrapped;
     return wrapped;
 }
 
+function scheduleResumeRetry() {
+    if (resumeStateRetries >= 3 || resumeStateRetryTimer) {
+        return;
+    }
+    resumeStateRetries += 1;
+    resumeStateRetryTimer = window.setTimeout(() => {
+        resumeStateRetryTimer = 0;
+        if (document.visibilityState === 'visible' && !resumeStateRequest) {
+            reconcileActiveChat();
+        }
+    }, 250);
+}
+
 document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        window.clearTimeout(resumeStateRetryTimer);
+        resumeStateRetryTimer = 0;
+        resumeStateRetries = 0;
+        reconcileActiveChat();
+    }
+});
+window.addEventListener('focus', () => {
     if (document.visibilityState === 'visible') {
         reconcileActiveChat();
     }
@@ -2205,19 +2236,31 @@ document.addEventListener('htmx:sse:after:message', (event) => {
     }
 });
 document.addEventListener('htmx:sse:close', (event) => {
-    if (event.detail?.reason === 'message') {
-        if (!reconcileActiveChat()) {
-            showCompletionNetworkError(event, 'Completion status expired. Retry the completion.');
-        }
+    if (document.visibilityState !== 'visible') {
+        return;
+    }
+    window.clearTimeout(resumeStateRetryTimer);
+    resumeStateRetryTimer = 0;
+    resumeStateRetries = 0;
+    if (!reconcileActiveChat() && event.detail?.reason === 'message') {
+        showCompletionNetworkError(event, 'Completion status expired. Retry the completion.');
     }
 });
 document.addEventListener('htmx:response:error', (event) => {
+    if (isResumeStateSource(event.detail?.ctx?.sourceElement)) {
+        scheduleResumeRetry();
+        return;
+    }
     const actions = shareActionsFor(event.detail?.ctx?.sourceElement);
     if (actions) {
         setShareStatus(actions, 'Could not create share link. Try Share again.', 'error');
     }
 });
 document.addEventListener('htmx:error', (event) => {
+    if (isResumeStateSource(event.detail?.ctx?.sourceElement)) {
+        scheduleResumeRetry();
+        return;
+    }
     const actions = shareActionsFor(event.detail?.ctx?.sourceElement);
     if (actions) {
         setShareStatus(actions, 'Could not create share link. Try Share again.', 'error');
