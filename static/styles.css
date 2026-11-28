@@ -915,7 +915,9 @@ main {
                     }
                 }
 
-				.settings-mcp-list:empty + .settings-mcp-actions {
+				.settings-append-list:empty + .settings-section-actions,
+				.settings-mcp-list:empty + .settings-section-actions,
+				.settings-provider-list:empty + .settings-section-actions {
 					padding-top: 1rem;
 				}
 
@@ -985,23 +987,33 @@ main {
                     }
                 }
 
-                .settings-append-actions,
-				.settings-mcp-actions {
+                .settings-section-actions {
                     display: flex;
-                    justify-content: flex-end;
+                    justify-content: flex-start;
                     gap: .65rem;
                     padding: 0 1rem 1rem;
+                }
 
-					>.settings-add {
-                        margin-right: auto;
-                        border-color: var(--color-border);
-                        background: transparent;
+                .settings-add {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    box-sizing: border-box;
+                    min-height: 2.75rem;
+                    padding: .5rem .85rem;
+                    border-color: var(--color-border);
+                    background: transparent;
+                    color: var(--color-text);
+                    font-size: .78rem;
+                    font-weight: 600;
+                    line-height: 1.2;
+                    white-space: nowrap;
+
+                    &:hover,
+                    &:focus-visible {
+                        border-color: var(--color-border-strong);
+                        background: var(--color-surface-muted);
                         color: var(--color-text);
-
-                        &:hover {
-                            border-color: var(--color-border-strong);
-                            background: var(--color-surface-muted);
-                        }
                     }
                 }
 
@@ -1133,17 +1145,12 @@ main {
                         }
                     }
 
-                    .settings-append-actions,
-					.settings-mcp-actions {
+                    .settings-section-actions {
                         flex-wrap: wrap;
+                    }
 
-                        button {
-                            flex: 1;
-                        }
-
-                        .settings-add {
-                            min-width: 100%;
-                        }
+                    .settings-add {
+                        width: 100%;
                     }
 
                     .settings-save-bar {
@@ -4251,7 +4258,12 @@ body:has(#chat-title-request.htmx-request) #history-entries .history-entry.curre
 
 .settings-provider-list {
     display: grid;
-    gap: .75rem;
+    gap: .9rem;
+    padding: 1rem;
+
+    &:empty {
+        display: none;
+    }
 }
 
 .settings-provider {
@@ -4298,10 +4310,6 @@ body:has(#chat-title-request.htmx-request) #history-entries .history-entry.curre
     align-items: center;
     gap: .4rem;
     font-size: 12px;
-}
-
-.settings-provider-add {
-    margin-top: .75rem;
 }
 
 .settings-provider-readonly {

@@ -591,7 +591,7 @@ templ SettingsPage(data SettingsPanelData) {
 						</fieldset>
 					}
 				</div>
-				<div class="settings-append-actions">
+				<div class="settings-section-actions settings-append-actions">
 					<button class="settings-add" type="submit" name="append_action" value="add" formnovalidate>Add append</button>
 				</div>
 			</section>
@@ -606,7 +606,9 @@ templ SettingsPage(data SettingsPanelData) {
 						@ProviderEditor(provider)
 					}
 				</div>
-				<button class="settings-provider-add" type="button" data-provider-add>+ Add provider</button>
+				<div class="settings-section-actions">
+					<button class="settings-add" type="button" data-provider-add>Add provider</button>
+				</div>
 				if data.LLMEnvironmentConfigured {
 					<p class="settings-help">The environment provider is read-only. Remove LLM_ENDPOINT and LLM_KEY from the environment to edit it here.</p>
 				}
@@ -683,7 +685,7 @@ templ SettingsPage(data SettingsPanelData) {
 						@GitHostEditor(host, slices.Contains(data.ClearGitTokenIDs, host.ID))
 					}
 				</div>
-				<div class="settings-mcp-actions">
+				<div class="settings-section-actions settings-mcp-actions">
 					<button
 						class="settings-add"
 						type="button"
@@ -709,7 +711,7 @@ templ SettingsPage(data SettingsPanelData) {
 						@MCPServerEditor(server, slices.Contains(data.DefaultTools, kritui_db.MCPServerCapability(server.ID)), slices.Contains(data.ClearMCPAuthorizationIDs, server.ID))
 					}
 				</div>
-				<div class="settings-mcp-actions">
+				<div class="settings-section-actions settings-mcp-actions">
 					<button
 						class="settings-add"
 						type="button"
